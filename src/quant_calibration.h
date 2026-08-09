@@ -15,6 +15,13 @@ namespace cujpegxl {
 // from the DCT8 AC dequant matrix.
 inline constexpr float DC_INV_QUANT[3] = {4096.0f, 512.0f, 256.0f};
 
+// libjxl default base chroma-from-luma Y-to-B correlation (kYToBRatio). The
+// decoder adds dequant_y * Y_TO_B_RATIO to every B coefficient (DC and AC), so
+// the encoder must subtract the roundtrip Y coefficient from B before
+// quantizing; otherwise djxl's default correlation reconstructs B at ~2x. The
+// Y-to-X default is 0 (no-op).
+inline constexpr float Y_TO_B_RATIO = 1.0f;
+
 // libjxl distance->quant constants (lib/jxl/enc_adaptive_quantization.cc and
 // lib/jxl/quantizer.{h,cc}).
 inline constexpr float K_AC_QUANT = 0.725f;

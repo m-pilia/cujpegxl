@@ -32,6 +32,11 @@ _ORACLE_BIN = pathlib.Path(sys.argv.pop(1)).resolve()
 # libjxl DC quantization reciprocals (kInvDCQuant), channels X, Y, B.
 _DC_INV_QUANT = (4096.0, 512.0, 256.0)
 
+# libjxl default base chroma-from-luma Y-to-B correlation (kYToBRatio). The
+# decoder adds dequant_y * Y_TO_B_RATIO to every B coefficient, so the encoder
+# quantizes the B residual after subtracting the roundtrip Y coefficient.
+_Y_TO_B_RATIO = 1.0
+
 
 def _calibrate(distance: float) -> dict:
     """Port of src/quant_calibration.h calibrate_quant (single-precision)."""
@@ -128,6 +133,7 @@ class QuantSelfConsistencyTest(unittest.TestCase):
         plane = width * height
         blocks_x = width // 8
         q = _kernel_quant(xyb, distance)
+        step_y = _coeff_steps(weights[1], 1, cal)
 
         for c in range(3):
             step = _coeff_steps(weights[c], c, cal)
@@ -135,12 +141,24 @@ class QuantSelfConsistencyTest(unittest.TestCase):
                 for bx in range(blocks_x):
                     block = xyb[c, by * 8 : by * 8 + 8, bx * 8 : bx * 8 + 8].reshape(64)
                     coeff = forward @ block
-                    q_ref = np.rint(coeff / step).astype(np.int32)
-                    base = c * plane + (by * blocks_x + bx) * 64
+                    block_idx = by * blocks_x + bx
+                    base = c * plane + block_idx * 64
                     q_block = q[base : base + 64]
+
+                    if c == 2:
+                        # The decoder adds the roundtrip Y coefficient
+                        # (x Y_TO_B_RATIO) to every B coefficient, so the kernel
+                        # encodes the B residual after the Y-to-B prediction.
+                        base_y = plane + block_idx * 64
+                        roundtrip_y = q[base_y : base_y + 64] * step_y
+                        q_ref = np.rint((coeff - roundtrip_y * _Y_TO_B_RATIO) / step).astype(np.int32)
+                        recon = inverse @ (q_block * step + roundtrip_y * _Y_TO_B_RATIO)
+                    else:
+                        q_ref = np.rint(coeff / step).astype(np.int32)
+                        recon = inverse @ (q_block * step)
+
                     np.testing.assert_array_equal(q_block, q_ref)
 
-                    recon = inverse @ (q_block * step)
                     bound = np.abs(inverse) @ (0.5 * step)
                     self.assertTrue(np.all(np.abs(recon - block) <= bound + 1e-4))
 
