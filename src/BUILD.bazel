@@ -34,6 +34,13 @@ cuda_library(
 )
 
 cuda_library(
+    name = "dct",
+    srcs = ["dct.cu"],
+    hdrs = ["dct.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cuda_library(
     name = "nv12_to_xyb_dump_lib",
     testonly = True,
     srcs = ["nv12_to_xyb_dump.cu"],
@@ -49,6 +56,55 @@ cc_binary(
         "manual",
     ],
     deps = [":nv12_to_xyb_dump_lib"],
+)
+
+cuda_library(
+    name = "dct_dump_lib",
+    testonly = True,
+    srcs = ["dct_dump.cu"],
+    deps = [":dct"],
+)
+
+cc_binary(
+    name = "dct_dump",
+    testonly = True,
+    srcs = ["dct_dump_main.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [":dct_dump_lib"],
+)
+
+cuda_library(
+    name = "quant",
+    srcs = ["quant.cu"],
+    hdrs = [
+        "quant.h",
+        "quant_weights_dct8.h",
+    ],
+    copts = RUNTIME_COPTS,
+)
+
+cuda_library(
+    name = "quant_dump_lib",
+    testonly = True,
+    srcs = ["quant_dump.cu"],
+    deps = [
+        ":dct",
+        ":quant",
+    ],
+)
+
+cc_binary(
+    name = "quant_dump",
+    testonly = True,
+    srcs = ["quant_dump_main.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [":quant_dump_lib"],
 )
 
 cc_library(

@@ -35,3 +35,39 @@ py_test(
         requirement("numpy"),
     ],
 )
+
+py_test(
+    name = "dct_conformance_test",
+    srcs = ["dct_conformance_test.py"],
+    args = [
+        "$(rootpath //src:dct_dump)",
+        "$(rootpath //tools/oracle:libjxl_oracle)",
+    ],
+    data = [
+        "//src:dct_dump",
+        "//tools/oracle:libjxl_oracle",
+    ],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [requirement("numpy")],
+)
+
+py_test(
+    name = "quant_selfconsistency_test",
+    srcs = ["quant_selfconsistency_test.py"],
+    args = [
+        "$(rootpath //src:quant_dump)",
+        "$(rootpath //tools/oracle:libjxl_oracle)",
+    ],
+    data = [
+        "//src:quant_dump",
+        "//tools/oracle:libjxl_oracle",
+    ],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [requirement("numpy")],
+)
