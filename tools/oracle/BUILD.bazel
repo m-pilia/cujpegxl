@@ -1,0 +1,34 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_binary(
+    name = "libjxl_oracle",
+    testonly = True,
+    srcs = ["libjxl_oracle.cc"],
+    deps = ["@libjxl//:jxl"],
+)
+
+py_library(
+    name = "oracle",
+    testonly = True,
+    srcs = ["oracle.py"],
+    imports = ["."],
+    deps = [requirement("numpy")],
+)
+
+py_test(
+    name = "oracle_test",
+    srcs = ["oracle_test.py"],
+    args = ["$(rootpath :libjxl_oracle)"],
+    data = [":libjxl_oracle"],
+    deps = [
+        ":oracle",
+        requirement("numpy"),
+    ],
+)

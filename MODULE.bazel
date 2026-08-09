@@ -36,6 +36,35 @@ bazel_dep(name = "rules_pkg", version = "1.3.0", dev_dependency = True)
 bazel_dep(name = "rules_python", version = "2.2.0", dev_dependency = True)
 bazel_dep(name = "pybind11_bazel", version = "3.0.1", dev_dependency = True)
 bazel_dep(name = "toolchains_llvm", version = "1.8.0", dev_dependency = True)
+bazel_dep(name = "rules_foreign_cc", version = "0.14.0", dev_dependency = True)
+
+# libjxl is fetched from pinned source and built (testonly) as the validation
+# oracle. Its internal encoder symbols (ToXYB, forward DCT) are not exported by
+# the system shared library, so the pinned source is compiled against the
+# already-present system highway/brotli/lcms2 to reach them. Never linked into
+# the runtime.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "libjxl",
+    build_file = "//third_party/libjxl:libjxl.BUILD",
+    # libjxl vendors its own Bazel BUILD files; they would split the tree into
+    # sub-packages and hide sources from the single-package glob that feeds the
+    # CMake build and the internal-header library. The CMake build uses only
+    # CMakeLists.txt, so the vendored BUILD files are safe to strip.
+    patch_cmds = [
+        "find . -mindepth 2 \\( -name BUILD -o -name 'BUILD.bazel' \\) -delete",
+    ],
+    sha256 = "ab38928f7f6248e2a98cc184956021acb927b16a0dee71b4d260dc040a4320ea",
+    strip_prefix = "libjxl-0.11.2",
+    urls = ["https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.2.tar.gz"],
+)
+
+register_toolchains(
+    "@rules_foreign_cc//toolchains:preinstalled_cmake_toolchain",
+    "@rules_foreign_cc//toolchains:preinstalled_make_toolchain",
+    dev_dependency = True,
+)
 
 PYTHON_VERSION = "3.12"
 
