@@ -3,4 +3,6 @@
 
 int run_nv12_to_xyb_dump(int argc, char** argv);
 
-int main(int argc, char** argv) { return run_nv12_to_xyb_dump(argc, argv); }
+int main(int argc, char** argv) {
+    return run_nv12_to_xyb_dump(argc, argv);
+}

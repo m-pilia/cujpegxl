@@ -23,8 +23,7 @@ struct HuffmanTree {
     std::int16_t index_right_or_value;
 };
 
-void set_depth(int p, std::vector<HuffmanTree>& pool, std::uint8_t* depth,
-               std::uint8_t level) {
+void set_depth(int p, std::vector<HuffmanTree>& pool, std::uint8_t* depth, std::uint8_t level) {
     const HuffmanTree& node{pool[p]};
     if (node.index_left >= 0) {
         set_depth(node.index_left, pool, depth, level + 1);
@@ -54,10 +53,9 @@ void create_huffman_tree(const std::uint32_t* data, std::size_t length, int tree
             break;
         }
 
-        std::stable_sort(tree.begin(), tree.end(),
-                         [](const HuffmanTree& a, const HuffmanTree& b) {
-                             return a.total_count < b.total_count;
-                         });
+        std::stable_sort(tree.begin(), tree.end(), [](const HuffmanTree& a, const HuffmanTree& b) {
+            return a.total_count < b.total_count;
+        });
 
         const HuffmanTree sentinel{std::numeric_limits<std::uint32_t>::max(), -1, -1};
         tree.push_back(sentinel);
@@ -99,7 +97,7 @@ void create_huffman_tree(const std::uint32_t* data, std::size_t length, int tree
 
 std::uint16_t reverse_bits(int num_bits, std::uint16_t bits) {
     static const std::size_t LUT[16]{0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
-                                      0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf};
+                                     0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf};
     std::size_t retval{LUT[bits & 0xf]};
     for (int i{4}; i < num_bits; i += 4) {
         retval <<= 4;
@@ -140,9 +138,8 @@ void reverse(std::uint8_t* v, std::size_t start, std::size_t end) {
     }
 }
 
-void write_repetitions(std::uint8_t previous_value, std::uint8_t value,
-                       std::size_t repetitions, std::size_t& tree_size,
-                       std::uint8_t* tree, std::uint8_t* extra_bits) {
+void write_repetitions(std::uint8_t previous_value, std::uint8_t value, std::size_t repetitions,
+                       std::size_t& tree_size, std::uint8_t* tree, std::uint8_t* extra_bits) {
     if (previous_value != value) {
         tree[tree_size] = value;
         extra_bits[tree_size] = 0;
@@ -179,8 +176,8 @@ void write_repetitions(std::uint8_t previous_value, std::uint8_t value,
     }
 }
 
-void write_repetitions_zeros(std::size_t repetitions, std::size_t& tree_size,
-                             std::uint8_t* tree, std::uint8_t* extra_bits) {
+void write_repetitions_zeros(std::size_t repetitions, std::size_t& tree_size, std::uint8_t* tree,
+                             std::uint8_t* extra_bits) {
     if (repetitions == 11) {
         tree[tree_size] = 0;
         extra_bits[tree_size] = 0;
@@ -211,9 +208,8 @@ void write_repetitions_zeros(std::size_t repetitions, std::size_t& tree_size,
     }
 }
 
-void write_huffman_tree(const std::uint8_t* depth, std::size_t length,
-                        std::size_t& tree_size, std::uint8_t* tree,
-                        std::uint8_t* extra_bits) {
+void write_huffman_tree(const std::uint8_t* depth, std::size_t length, std::size_t& tree_size,
+                        std::uint8_t* tree, std::uint8_t* extra_bits) {
     std::uint8_t previous_value{8};
 
     std::size_t new_length{length};
@@ -240,11 +236,10 @@ void write_huffman_tree(const std::uint8_t* depth, std::size_t length,
     }
 }
 
-void store_huffman_tree_of_huffman_tree(int num_codes,
-                                        const std::uint8_t* code_length_bitdepth,
+void store_huffman_tree_of_huffman_tree(int num_codes, const std::uint8_t* code_length_bitdepth,
                                         BitWriter& w) {
-    static const std::uint8_t STORAGE_ORDER[CODE_LENGTH_CODES]{
-        1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    static const std::uint8_t STORAGE_ORDER[CODE_LENGTH_CODES]{1, 2, 3, 4,  0,  5,  17, 6,  16,
+                                                               7, 8, 9, 10, 11, 12, 13, 14, 15};
     static const std::uint8_t SYMBOLS[6]{0, 7, 3, 2, 1, 15};
     static const std::uint8_t BIT_LENGTHS[6]{2, 4, 3, 2, 2, 4};
 
@@ -271,8 +266,7 @@ void store_huffman_tree_of_huffman_tree(int num_codes,
     }
 }
 
-void store_huffman_tree_to_bit_mask(std::size_t huffman_tree_size,
-                                    const std::uint8_t* huffman_tree,
+void store_huffman_tree_to_bit_mask(std::size_t huffman_tree_size, const std::uint8_t* huffman_tree,
                                     const std::uint8_t* huffman_tree_extra_bits,
                                     const std::uint8_t* code_length_bitdepth,
                                     const std::uint16_t* code_length_bitdepth_symbols,
@@ -289,8 +283,7 @@ void store_huffman_tree_to_bit_mask(std::size_t huffman_tree_size,
 }
 
 void store_simple_huffman_tree(const std::uint8_t* depths, std::size_t symbols[4],
-                               std::size_t num_symbols, std::size_t max_bits,
-                               BitWriter& w) {
+                               std::size_t num_symbols, std::size_t max_bits, BitWriter& w) {
     w.write(2, 1);
     w.write(2, num_symbols - 1);
 
@@ -323,8 +316,7 @@ void store_huffman_tree(const std::uint8_t* depths, std::size_t num, BitWriter& 
     std::uint8_t* huffman_tree{arena.data()};
     std::uint8_t* huffman_tree_extra_bits{arena.data() + num};
     std::size_t huffman_tree_size{0};
-    write_huffman_tree(depths, num, huffman_tree_size, huffman_tree,
-                       huffman_tree_extra_bits);
+    write_huffman_tree(depths, num, huffman_tree_size, huffman_tree, huffman_tree_extra_bits);
 
     std::uint32_t huffman_tree_histogram[CODE_LENGTH_CODES]{};
     for (std::size_t i{0}; i < huffman_tree_size; ++i) {
@@ -357,9 +349,8 @@ void store_huffman_tree(const std::uint8_t* depths, std::size_t num, BitWriter& 
         code_length_bitdepth[code] = 0;
     }
 
-    store_huffman_tree_to_bit_mask(huffman_tree_size, huffman_tree,
-                                   huffman_tree_extra_bits, code_length_bitdepth,
-                                   code_length_bitdepth_symbols, w);
+    store_huffman_tree_to_bit_mask(huffman_tree_size, huffman_tree, huffman_tree_extra_bits,
+                                   code_length_bitdepth, code_length_bitdepth_symbols, w);
 }
 
 }  // namespace

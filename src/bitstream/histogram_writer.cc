@@ -26,8 +26,7 @@ std::size_t ceil_log2(std::size_t x) {
     return bits;
 }
 
-void encode_uint_config(BitWriter& w, const HybridUintConfig& config,
-                        std::size_t log_alpha_size) {
+void encode_uint_config(BitWriter& w, const HybridUintConfig& config, std::size_t log_alpha_size) {
     w.write(ceil_log2(log_alpha_size + 1), config.split_exponent);
     if (config.split_exponent == log_alpha_size) {
         return;

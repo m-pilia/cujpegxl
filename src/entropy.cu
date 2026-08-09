@@ -6,8 +6,8 @@
 #include <mutex>
 #include <utility>
 
-#include <cub/device/device_scan.cuh>
 #include <cuda_runtime.h>
+#include <cub/device/device_scan.cuh>
 
 namespace cujpegxl {
 namespace {
@@ -65,8 +65,8 @@ void ensure_constants() {
     std::call_once(flag, init_constants);
 }
 
-__device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token,
-                              std::uint32_t& nbits, std::uint32_t& bits) {
+__device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token, std::uint32_t& nbits,
+                              std::uint32_t& bits) {
     const std::uint32_t split{1u << SPLIT_EXPONENT};
     if (value < split) {
         token = value;
@@ -80,15 +80,13 @@ __device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token,
     }
     const std::uint32_t m{value - (1u << n)};
     token = split + ((n - SPLIT_EXPONENT) << (MSB_IN_TOKEN + LSB_IN_TOKEN)) +
-            ((m >> (n - MSB_IN_TOKEN)) << LSB_IN_TOKEN) +
-            (m & ((1u << LSB_IN_TOKEN) - 1));
+            ((m >> (n - MSB_IN_TOKEN)) << LSB_IN_TOKEN) + (m & ((1u << LSB_IN_TOKEN) - 1));
     nbits = n - MSB_IN_TOKEN - LSB_IN_TOKEN;
     bits = (value >> LSB_IN_TOKEN) & ((1u << nbits) - 1);
 }
 
 __device__ std::uint32_t pack_signed(std::int32_t value) {
-    return (static_cast<std::uint32_t>(value) << 1) ^
-           static_cast<std::uint32_t>(value >> 31);
+    return (static_cast<std::uint32_t>(value) << 1) ^ static_cast<std::uint32_t>(value >> 31);
 }
 
 // LSB-first bit writer matching the host BitWriter, packing into a byte buffer
@@ -101,9 +99,8 @@ struct DeviceBitWriter {
 
     __device__ void write(std::uint32_t n_bits, std::uint32_t value) {
         while (n_bits > 0) {
-            const int take{static_cast<int>(n_bits) < (8 - bit_pos)
-                               ? static_cast<int>(n_bits)
-                               : (8 - bit_pos)};
+            const int take{static_cast<int>(n_bits) < (8 - bit_pos) ? static_cast<int>(n_bits)
+                                                                    : (8 - bit_pos)};
             const std::uint32_t mask{(1u << take) - 1};
             cur |= static_cast<std::uint8_t>((value & mask) << bit_pos);
             value >>= take;
@@ -135,8 +132,7 @@ struct GroupExtent {
     std::size_t gbh;
 };
 
-__device__ GroupExtent group_extent(std::size_t g, std::size_t bw, std::size_t bh,
-                                    std::size_t xg) {
+__device__ GroupExtent group_extent(std::size_t g, std::size_t bw, std::size_t bh, std::size_t xg) {
     const std::size_t gx{g % xg};
     const std::size_t gy{g / xg};
     GroupExtent e{};
@@ -191,9 +187,8 @@ __global__ void histogram_kernel(const std::int32_t* q, std::size_t bw, std::siz
 }
 
 __global__ void group_size_kernel(const std::int32_t* q, std::size_t bw, std::size_t bh,
-                                  std::size_t plane, std::size_t xg,
-                                  std::size_t num_groups, const std::uint8_t* depth,
-                                  std::uint32_t* group_sizes) {
+                                  std::size_t plane, std::size_t xg, std::size_t num_groups,
+                                  const std::uint8_t* depth, std::uint32_t* group_sizes) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= num_groups) {
         return;
@@ -205,10 +200,8 @@ __global__ void group_size_kernel(const std::int32_t* q, std::size_t bw, std::si
             const std::size_t block{(e.by0 + by) * bw + (e.bx0 + bx)};
             for (int p{0}; p < 3; ++p) {
                 const int c{CHANNEL_ORDER[p]};
-                const std::int32_t* blk{q + static_cast<std::size_t>(c) * plane +
-                                        block * 64};
-                for_each_token(blk, [&](std::uint32_t symbol, std::uint32_t nbits,
-                                        std::uint32_t) {
+                const std::int32_t* blk{q + static_cast<std::size_t>(c) * plane + block * 64};
+                for_each_token(blk, [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t) {
                     nbits_total += depth[symbol] + nbits;
                 });
             }
@@ -218,10 +211,9 @@ __global__ void group_size_kernel(const std::int32_t* q, std::size_t bw, std::si
 }
 
 __global__ void group_emit_kernel(const std::int32_t* q, std::size_t bw, std::size_t bh,
-                                  std::size_t plane, std::size_t xg,
-                                  std::size_t num_groups, const std::uint8_t* depth,
-                                  const std::uint16_t* bits_table, std::uint8_t* out,
-                                  const std::uint32_t* group_offsets) {
+                                  std::size_t plane, std::size_t xg, std::size_t num_groups,
+                                  const std::uint8_t* depth, const std::uint16_t* bits_table,
+                                  std::uint8_t* out, const std::uint32_t* group_offsets) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= num_groups) {
         return;
@@ -233,15 +225,14 @@ __global__ void group_emit_kernel(const std::int32_t* q, std::size_t bw, std::si
             const std::size_t block{(e.by0 + by) * bw + (e.bx0 + bx)};
             for (int p{0}; p < 3; ++p) {
                 const int c{CHANNEL_ORDER[p]};
-                const std::int32_t* blk{q + static_cast<std::size_t>(c) * plane +
-                                        block * 64};
-                for_each_token(blk, [&](std::uint32_t symbol, std::uint32_t nbits,
-                                        std::uint32_t raw) {
-                    w.write(depth[symbol], bits_table[symbol]);
-                    if (nbits) {
-                        w.write(nbits, raw);
-                    }
-                });
+                const std::int32_t* blk{q + static_cast<std::size_t>(c) * plane + block * 64};
+                for_each_token(blk,
+                               [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t raw) {
+                                   w.write(depth[symbol], bits_table[symbol]);
+                                   if (nbits) {
+                                       w.write(nbits, raw);
+                                   }
+                               });
             }
         }
     }
@@ -290,12 +281,11 @@ struct DcCtx {
     std::size_t m;  // total items
 };
 
-__device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* q, std::size_t bw,
-                              std::size_t bh, std::size_t plane, std::size_t xdg,
-                              std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
-                              const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
-                              const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
-                              const std::uint32_t* blob_pre_off,
+__device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* q, std::size_t bw, std::size_t bh,
+                              std::size_t plane, std::size_t xdg, std::uint32_t raw_quant_field,
+                              const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
+                              const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
+                              const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
                               const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
                               const std::uint32_t* blob_mid_off,
                               const std::uint32_t* blob_mid_bits) {
@@ -357,8 +347,8 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
 // 32-bit word buffer, via atomicOr so concurrent writers of disjoint bit ranges
 // (adjacent runs sharing a byte) compose. Requires n_bits <= 31 and a
 // zero-initialized buffer.
-__device__ void atomic_put_bits(unsigned int* words, unsigned long long pos,
-                                std::uint32_t n_bits, std::uint32_t value) {
+__device__ void atomic_put_bits(unsigned int* words, unsigned long long pos, std::uint32_t n_bits,
+                                std::uint32_t value) {
     while (n_bits > 0) {
         const unsigned long long word{pos >> 5};
         const std::uint32_t bit_in_word{static_cast<std::uint32_t>(pos & 31)};
@@ -429,8 +419,7 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) 
 
 // Block-wide exclusive scan of `val` over `sh` (blockDim entries); returns this
 // thread's exclusive prefix and writes the inclusive total.
-__device__ unsigned long long block_scan_exclusive(unsigned long long val,
-                                                   unsigned long long* sh,
+__device__ unsigned long long block_scan_exclusive(unsigned long long val, unsigned long long* sh,
                                                    unsigned long long& total) {
     const unsigned int tid{threadIdx.x};
     sh[tid] = val;
@@ -451,8 +440,7 @@ __device__ unsigned long long block_scan_exclusive(unsigned long long val,
 }
 
 __global__ void dc_histogram_kernel(const std::int32_t* q, std::size_t bw, std::size_t bh,
-                                    std::size_t plane, std::size_t xdg,
-                                    std::uint32_t* histograms) {
+                                    std::size_t plane, std::size_t xdg, std::uint32_t* histograms) {
     const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
     const std::size_t total{3 * bw * bh};
     if (idx >= total) {
@@ -472,19 +460,14 @@ __global__ void dc_histogram_kernel(const std::int32_t* q, std::size_t bw, std::
     atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
 }
 
-__global__ void dc_group_size_kernel(const std::int32_t* q, std::size_t bw, std::size_t bh,
-                                     std::size_t plane, std::size_t xdg,
-                                     std::size_t num_groups, std::uint32_t raw_quant_field,
-                                     const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
-                                     const std::uint8_t* acmeta_depth,
-                                     const std::uint16_t* acmeta_bits,
-                                     const std::uint8_t* blob_pre,
-                                     const std::uint32_t* blob_pre_off,
-                                     const std::uint32_t* blob_pre_bits,
-                                     const std::uint8_t* blob_mid,
-                                     const std::uint32_t* blob_mid_off,
-                                     const std::uint32_t* blob_mid_bits,
-                                     std::uint32_t* group_sizes) {
+__global__ void dc_group_size_kernel(
+    const std::int32_t* q, std::size_t bw, std::size_t bh, std::size_t plane, std::size_t xdg,
+    std::size_t num_groups, std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
+    const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
+    const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
+    const std::uint32_t* blob_mid_bits, std::uint32_t* group_sizes) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
@@ -508,19 +491,14 @@ __global__ void dc_group_size_kernel(const std::int32_t* q, std::size_t bw, std:
     }
 }
 
-__global__ void dc_group_emit_kernel(const std::int32_t* q, std::size_t bw, std::size_t bh,
-                                     std::size_t plane, std::size_t xdg,
-                                     std::size_t num_groups, std::uint32_t raw_quant_field,
-                                     const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
-                                     const std::uint8_t* acmeta_depth,
-                                     const std::uint16_t* acmeta_bits,
-                                     const std::uint8_t* blob_pre,
-                                     const std::uint32_t* blob_pre_off,
-                                     const std::uint32_t* blob_pre_bits,
-                                     const std::uint8_t* blob_mid,
-                                     const std::uint32_t* blob_mid_off,
-                                     const std::uint32_t* blob_mid_bits, std::uint8_t* out,
-                                     const std::uint32_t* group_offsets) {
+__global__ void dc_group_emit_kernel(
+    const std::int32_t* q, std::size_t bw, std::size_t bh, std::size_t plane, std::size_t xdg,
+    std::size_t num_groups, std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
+    const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
+    const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
+    const std::uint32_t* blob_mid_bits, std::uint8_t* out, const std::uint32_t* group_offsets) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
@@ -563,8 +541,7 @@ bool ac_build_histogram(const std::int32_t* q, std::size_t width, std::size_t he
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t plane{width * height};
-    if (cudaMemset(histogram, 0, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
-        cudaSuccess) {
+    if (cudaMemset(histogram, 0, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     const std::size_t total{3 * bw * bh};
@@ -576,9 +553,9 @@ bool ac_build_histogram(const std::int32_t* q, std::size_t width, std::size_t he
 
 bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits,
-                      std::size_t alphabet_size, std::uint8_t* out,
-                      std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes) {
+                      std::size_t alphabet_size, std::uint8_t* out, std::size_t out_capacity,
+                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                      std::size_t* total_bytes) {
     ensure_constants();
     (void)alphabet_size;
     const std::size_t bw{width / 8};
@@ -589,8 +566,7 @@ bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
 
     const unsigned int threads{128};
     const unsigned int blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
-    group_size_kernel<<<blocks, threads>>>(q, bw, bh, plane, xg, num_groups, depth,
-                                           group_sizes);
+    group_size_kernel<<<blocks, threads>>>(q, bw, bh, plane, xg, num_groups, depth, group_sizes);
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         return false;
     }
@@ -623,8 +599,8 @@ bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
         return false;
     }
 
-    group_emit_kernel<<<blocks, threads>>>(q, bw, bh, plane, xg, num_groups, depth, bits,
-                                           out, group_offsets);
+    group_emit_kernel<<<blocks, threads>>>(q, bw, bh, plane, xg, num_groups, depth, bits, out,
+                                           group_offsets);
     return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
@@ -644,8 +620,8 @@ bool dc_build_histograms(const std::int32_t* q, std::size_t width, std::size_t h
     const std::size_t plane{width * height};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemset(histograms, 0,
-                   num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
+    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+        cudaSuccess) {
         return false;
     }
     const std::size_t total{3 * bw * bh};
@@ -672,11 +648,10 @@ bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
     const std::size_t num_groups{dc_num_groups(width, height)};
 
     const unsigned int grid{static_cast<unsigned int>(num_groups)};
-    dc_group_size_kernel<<<grid, DC_EMIT_THREADS>>>(q, bw, bh, plane, xdg, num_groups,
-                                                    raw_quant_field, dc_depth, dc_bits,
-                                                    acmeta_depth, acmeta_bits, blob_pre,
-                                                    blob_pre_off, blob_pre_bits, blob_mid,
-                                                    blob_mid_off, blob_mid_bits, group_sizes);
+    dc_group_size_kernel<<<grid, DC_EMIT_THREADS>>>(
+        q, bw, bh, plane, xdg, num_groups, raw_quant_field, dc_depth, dc_bits, acmeta_depth,
+        acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
+        group_sizes);
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         return false;
     }
@@ -717,12 +692,10 @@ bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
         return false;
     }
 
-    dc_group_emit_kernel<<<grid, DC_EMIT_THREADS>>>(q, bw, bh, plane, xdg, num_groups,
-                                                    raw_quant_field, dc_depth, dc_bits,
-                                                    acmeta_depth, acmeta_bits, blob_pre,
-                                                    blob_pre_off, blob_pre_bits, blob_mid,
-                                                    blob_mid_off, blob_mid_bits, out,
-                                                    group_offsets);
+    dc_group_emit_kernel<<<grid, DC_EMIT_THREADS>>>(
+        q, bw, bh, plane, xdg, num_groups, raw_quant_field, dc_depth, dc_bits, acmeta_depth,
+        acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
+        out, group_offsets);
     return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 

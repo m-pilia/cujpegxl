@@ -20,9 +20,8 @@ namespace cujpegxl {
 // row-major.
 //
 // width and height must be even. Returns false on a CUDA error.
-bool nv12_to_xyb(const std::uint8_t* luma, std::size_t luma_pitch,
-                 const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                 std::size_t height, float* xyb);
+bool nv12_to_xyb(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                 std::size_t chroma_pitch, std::size_t width, std::size_t height, float* xyb);
 
 }  // namespace cujpegxl
 

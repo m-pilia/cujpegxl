@@ -15,7 +15,7 @@ namespace cujpegxl::bitstream {
 // written into increasing byte addresses, and within a byte least-significant
 // bit first.
 class BitWriter {
-  public:
+public:
     void write(std::size_t n_bits, std::uint64_t bits) {
         assert(n_bits <= 56);
         assert(n_bits == 64 || (bits >> n_bits) == 0);
@@ -38,7 +38,9 @@ class BitWriter {
         }
     }
 
-    std::size_t bits_written() const { return bytes_.empty() ? 0 : (bytes_.size() - 1) * 8 + (bit_pos_ == 0 ? 8 : bit_pos_); }
+    std::size_t bits_written() const {
+        return bytes_.empty() ? 0 : (bytes_.size() - 1) * 8 + (bit_pos_ == 0 ? 8 : bit_pos_);
+    }
 
     bool byte_aligned() const { return bit_pos_ == 0; }
 
@@ -52,7 +54,7 @@ class BitWriter {
     const std::vector<std::uint8_t>& bytes() const { return bytes_; }
     std::size_t size_bytes() const { return bytes_.size(); }
 
-  private:
+private:
     std::vector<std::uint8_t> bytes_{};
     std::size_t bit_pos_{0};
 };

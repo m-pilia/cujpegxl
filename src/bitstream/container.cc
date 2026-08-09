@@ -6,9 +6,8 @@
 namespace cujpegxl::bitstream {
 
 const std::array<std::uint8_t, 32> CONTAINER_HEADER = {
-    0,    0,   0,   0x0c, 'J', 'X', 'L', ' ', 0x0d, 0x0a, 0x87,
-    0x0a, 0,   0,   0,    0x14, 'f', 't', 'y', 'p', 'j', 'x',
-    'l',  ' ', 0,   0,    0,   0,   'j', 'x', 'l', ' '};
+    0,   0,   0,   0x0c, 'J', 'X', 'L', ' ', 0x0d, 0x0a, 0x87, 0x0a, 0,   0,   0,   0x14,
+    'f', 't', 'y', 'p',  'j', 'x', 'l', ' ', 0,    0,    0,    0,    'j', 'x', 'l', ' '};
 
 namespace {
 

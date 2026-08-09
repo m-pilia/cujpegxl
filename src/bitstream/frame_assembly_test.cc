@@ -68,8 +68,8 @@ TEST(FrameAssembly, DcGroupBlobsMatchOracle) {
         dc_hists.insert(dc_hists.end(), padded.begin(), padded.end());
     }
 
-    const DcGroupBlobs blobs{build_dc_group_blobs(fc.width, fc.height, params_of(fc),
-                                                  dc_hists.data())};
+    const DcGroupBlobs blobs{
+        build_dc_group_blobs(fc.width, fc.height, params_of(fc), dc_hists.data())};
     ASSERT_EQ(ref.groups.size(), dc_group_count(fc.width, fc.height));
 
     for (std::size_t g{0}; g < ref.groups.size(); ++g) {
@@ -103,8 +103,8 @@ TEST(FrameAssembly, DcGroupBlobsMatchOracle) {
 TEST(FrameAssembly, AcPrefixCodeMatchesOracle) {
     const FrameCoefficients fc{make_frame(512, 512)};
     const AcReference ref{reference_ac_encode(fc)};
-    const AcGlobalResult ac{build_ac_global(pad(ref.histogram).data(),
-                                            ac_group_count(fc.width, fc.height))};
+    const AcGlobalResult ac{
+        build_ac_global(pad(ref.histogram).data(), ac_group_count(fc.width, fc.height))};
     EXPECT_EQ(ac.depth, ref.depth);
     EXPECT_EQ(ac.bits, ref.bits);
 }

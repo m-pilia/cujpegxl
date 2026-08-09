@@ -50,8 +50,8 @@ testing::AssertionResult decode(const std::vector<std::uint8_t>& file, Decoded& 
             out.ysize = info.ysize;
         } else if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
             out.pixels.assign(static_cast<std::size_t>(out.xsize) * out.ysize * 3, 0);
-            if (JxlDecoderSetImageOutBuffer(dec, &format, out.pixels.data(),
-                                            out.pixels.size()) != JXL_DEC_SUCCESS) {
+            if (JxlDecoderSetImageOutBuffer(dec, &format, out.pixels.data(), out.pixels.size()) !=
+                JXL_DEC_SUCCESS) {
                 JxlDecoderDestroy(dec);
                 return testing::AssertionFailure() << "SetImageOutBuffer failed";
             }
@@ -83,13 +83,12 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 
 TEST(Container, HeaderMatchesJxlSignatureAndFtyp) {
     // The JXL signature box: length 12, type "JXL ", payload 0x0D0A870A.
-    const std::array<std::uint8_t, 12> signature{0,   0,   0,    0x0c, 'J', 'X',
+    const std::array<std::uint8_t, 12> signature{0,   0,   0,    0x0c, 'J',  'X',
                                                  'L', ' ', 0x0d, 0x0a, 0x87, 0x0a};
     // The ftyp box: length 20, type "ftyp", major brand "jxl ", minor version 0,
     // compatible brand "jxl ".
-    const std::array<std::uint8_t, 20> ftyp{0,   0,   0,   0x14, 'f', 't', 'y',
-                                            'p', 'j', 'x', 'l', ' ', 0,   0,
-                                            0,   0,   'j', 'x', 'l', ' '};
+    const std::array<std::uint8_t, 20> ftyp{0,   0,   0, 0x14, 'f', 't', 'y', 'p', 'j', 'x',
+                                            'l', ' ', 0, 0,    0,   0,   'j', 'x', 'l', ' '};
     for (std::size_t i{0}; i < signature.size(); ++i) {
         EXPECT_EQ(CONTAINER_HEADER[i], signature[i]) << "signature byte " << i;
     }

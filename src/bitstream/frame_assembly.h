@@ -45,7 +45,7 @@ std::vector<std::uint8_t> build_dc_global(const QuantParams& qp);
 // AcMetadata histograms are content-independent and computed here from the
 // geometry and quant field.
 struct DcGroupBlobs {
-    std::vector<std::uint8_t> dc_depth{};      // num_groups * HISTOGRAM_STRIDE
+    std::vector<std::uint8_t> dc_depth{};  // num_groups * HISTOGRAM_STRIDE
     std::vector<std::uint16_t> dc_bits{};
     std::vector<std::uint8_t> acmeta_depth{};  // num_groups * HISTOGRAM_STRIDE
     std::vector<std::uint16_t> acmeta_bits{};

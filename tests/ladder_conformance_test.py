@@ -34,10 +34,11 @@ _FRAMES = sorted(pathlib.Path("data").glob("*.png"))
 _DISTANCE = 1.0
 
 # Worst measured PSNR per rung minus a 2 dB margin (see module docstring).
+# Measured on the GTX 1080Ti dev host at distance 1.0.
 _THRESHOLDS_DB = {
-    "2160p": 0.0,
-    "1080p": 0.0,
-    "720p": 0.0,
+    "2160p": 31.4,
+    "1080p": 28.99,
+    "720p": 28.9,
 }
 
 

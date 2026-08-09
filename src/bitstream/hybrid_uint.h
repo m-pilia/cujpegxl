@@ -34,8 +34,7 @@ struct HybridUintConfig {
         }
         const std::uint32_t m{value - (1u << n)};
         token = split + ((n - split_exponent) << (msb_in_token + lsb_in_token)) +
-                ((m >> (n - msb_in_token)) << lsb_in_token) +
-                (m & ((1u << lsb_in_token) - 1));
+                ((m >> (n - msb_in_token)) << lsb_in_token) + (m & ((1u << lsb_in_token) - 1));
         nbits = n - msb_in_token - lsb_in_token;
         bits = (value >> lsb_in_token) & ((1u << nbits) - 1);
     }
@@ -44,8 +43,7 @@ struct HybridUintConfig {
 // libjxl PackSigned: maps signed values to unsigned so small magnitudes get
 // small tokens (0,-1,1,-2,2,... -> 0,1,2,3,4,...).
 inline std::uint32_t pack_signed(std::int32_t value) {
-    return (static_cast<std::uint32_t>(value) << 1) ^
-           static_cast<std::uint32_t>(value >> 31);
+    return (static_cast<std::uint32_t>(value) << 1) ^ static_cast<std::uint32_t>(value >> 31);
 }
 
 }  // namespace cujpegxl::bitstream

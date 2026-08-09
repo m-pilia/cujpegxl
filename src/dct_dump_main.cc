@@ -3,4 +3,6 @@
 
 int run_dct_dump(int argc, char** argv);
 
-int main(int argc, char** argv) { return run_dct_dump(argc, argv); }
+int main(int argc, char** argv) {
+    return run_dct_dump(argc, argv);
+}

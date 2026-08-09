@@ -35,9 +35,9 @@ bool ac_build_histogram(const std::int32_t* q, std::size_t width, std::size_t he
 // pointers except `total_bytes`.
 bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits,
-                      std::size_t alphabet_size, std::uint8_t* out,
-                      std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes);
+                      std::size_t alphabet_size, std::uint8_t* out, std::size_t out_capacity,
+                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                      std::size_t* total_bytes);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

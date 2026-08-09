@@ -24,9 +24,9 @@ struct DcDeviceResult {
     std::vector<std::uint8_t> stream{};  // concatenated byte-aligned DcGroup sections
 };
 
-bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width,
-                      std::size_t height, std::uint32_t raw_quant_field,
-                      const bitstream::DcReference& ref, DcDeviceResult& out);
+bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+                      std::uint32_t raw_quant_field, const bitstream::DcReference& ref,
+                      DcDeviceResult& out);
 
 }  // namespace cujpegxl
 

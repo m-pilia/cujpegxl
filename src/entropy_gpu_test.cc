@@ -98,7 +98,9 @@ void check_matches_reference(const FrameCoefficients& fc) {
     EXPECT_EQ(dev.stream.size(), offset);
 }
 
-TEST(EntropyGpu, SingleGroupAllZero) { check_matches_reference(make_frame(256, 256)); }
+TEST(EntropyGpu, SingleGroupAllZero) {
+    check_matches_reference(make_frame(256, 256));
+}
 
 TEST(EntropyGpu, SingleGroupPattern) {
     FrameCoefficients fc{make_frame(256, 256)};

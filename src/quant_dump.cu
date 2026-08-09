@@ -33,7 +33,8 @@ bool read_floats(const char* path, std::size_t count, std::vector<float>* out) {
 
 int run_quant_dump(int argc, char** argv) {
     if (argc != 7 || std::strcmp(argv[1], "quant") != 0) {
-        std::fprintf(stderr, "usage: %s quant <width> <height> <distance> <in_xyb_f32> <out_q_i32>\n",
+        std::fprintf(stderr,
+                     "usage: %s quant <width> <height> <distance> <in_xyb_f32> <out_q_i32>\n",
                      argv[0]);
         return 2;
     }

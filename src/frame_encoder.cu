@@ -32,8 +32,8 @@ bool upload(const std::vector<T>& host, T** device) {
     if (cudaMalloc(device, host.size() * sizeof(T)) != cudaSuccess) {
         return false;
     }
-    return cudaMemcpy(*device, host.data(), host.size() * sizeof(T),
-                      cudaMemcpyHostToDevice) == cudaSuccess;
+    return cudaMemcpy(*device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice) ==
+           cudaSuccess;
 }
 
 // A device allocation freed when the encode returns, keeping the orchestrator's
@@ -125,12 +125,12 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
         !upload(blobs.blob_mid_off, &d_mid_off) || !upload(blobs.blob_mid_bits, &d_mid_bits)) {
         return false;
     }
-    for (void* p : {static_cast<void*>(d_ac_depth), static_cast<void*>(d_ac_bits),
-                    static_cast<void*>(d_dc_depth), static_cast<void*>(d_dc_bits),
-                    static_cast<void*>(d_am_depth), static_cast<void*>(d_am_bits),
-                    static_cast<void*>(d_pre), static_cast<void*>(d_pre_off),
-                    static_cast<void*>(d_pre_bits), static_cast<void*>(d_mid),
-                    static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits)}) {
+    for (void* p :
+         {static_cast<void*>(d_ac_depth), static_cast<void*>(d_ac_bits),
+          static_cast<void*>(d_dc_depth), static_cast<void*>(d_dc_bits),
+          static_cast<void*>(d_am_depth), static_cast<void*>(d_am_bits), static_cast<void*>(d_pre),
+          static_cast<void*>(d_pre_off), static_cast<void*>(d_pre_bits), static_cast<void*>(d_mid),
+          static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits)}) {
         if (p) {
             scope.track(p);
         }
@@ -148,8 +148,7 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets || !d_dc_sizes ||
-        !d_dc_offsets) {
+    if (!d_ac_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets || !d_dc_sizes || !d_dc_offsets) {
         return false;
     }
 
@@ -207,9 +206,8 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
             cudaSuccess &&
         (at += dc_global.size(),
          cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
-        (at += dc_total,
-         cudaMemcpy(d_body + at, ac_global.section.data(), ac_global.section.size(),
-                    cudaMemcpyHostToDevice) == cudaSuccess) &&
+        (at += dc_total, cudaMemcpy(d_body + at, ac_global.section.data(), ac_global.section.size(),
+                                    cudaMemcpyHostToDevice) == cudaSuccess) &&
         (at += ac_global.section.size(),
          cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
@@ -292,8 +290,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     }
     if (stats != nullptr) {
         StageTiming frontend{"frontend", 0, us_since(frontend_start), 0.0};
-        frontend.bytes_moved = width * height + width * height / 2 +
-                               5 * 3 * plane * sizeof(float);
+        frontend.bytes_moved = width * height + width * height / 2 + 5 * 3 * plane * sizeof(float);
         stats->push_back(frontend);
     }
     return encode_frame(d_q, width, height, qp, out_file, stats);

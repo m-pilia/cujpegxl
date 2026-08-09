@@ -21,17 +21,23 @@ struct Distr {
     std::uint32_t extra_bits{0};
 };
 
-constexpr Distr Val(std::uint32_t v) { return Distr{true, v, 0}; }
+constexpr Distr Val(std::uint32_t v) {
+    return Distr{true, v, 0};
+}
 constexpr Distr BitsOffset(std::uint32_t bits, std::uint32_t offset) {
     return Distr{false, offset, bits};
 }
-constexpr Distr Bits(std::uint32_t bits) { return BitsOffset(bits, 0); }
+constexpr Distr Bits(std::uint32_t bits) {
+    return BitsOffset(bits, 0);
+}
 
 struct U32Enc {
     Distr d[4];
 };
 
-inline void write_bool(BitWriter& w, bool value) { w.write(1, value ? 1 : 0); }
+inline void write_bool(BitWriter& w, bool value) {
+    w.write(1, value ? 1 : 0);
+}
 
 inline void write_bits(BitWriter& w, std::size_t bits, std::uint32_t value) {
     w.write(bits, value);
@@ -114,7 +120,9 @@ inline std::uint16_t float_to_half(float value) {
                                       (mant >> 13));
 }
 
-inline void write_f16(BitWriter& w, float value) { w.write(16, float_to_half(value)); }
+inline void write_f16(BitWriter& w, float value) {
+    w.write(16, float_to_half(value));
+}
 
 inline void write_enum(BitWriter& w, std::uint32_t value) {
     write_u32(w, U32Enc{{Val(0), Val(1), BitsOffset(4, 2), BitsOffset(6, 18)}}, value);

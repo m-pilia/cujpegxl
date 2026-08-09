@@ -21,8 +21,8 @@ struct AcDeviceResult {
     std::vector<std::uint8_t> stream{};  // concatenated byte-aligned AcGroups
 };
 
-bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width,
-                      std::size_t height, const std::vector<std::uint8_t>& depth,
+bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+                      const std::vector<std::uint8_t>& depth,
                       const std::vector<std::uint16_t>& bits, AcDeviceResult& out);
 
 }  // namespace cujpegxl

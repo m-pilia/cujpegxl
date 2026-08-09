@@ -35,7 +35,9 @@ __device__ inline float srgb_to_linear(float encoded) {
                                : powf((encoded + 0.055f) * (1.0f / 1.055f), 2.4f);
 }
 
-__device__ inline float clamp01(float v) { return fminf(fmaxf(v, 0.0f), 1.0f); }
+__device__ inline float clamp01(float v) {
+    return fminf(fmaxf(v, 0.0f), 1.0f);
+}
 
 __global__ void nv12_to_xyb_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
                                    cudaTextureObject_t chroma_tex, std::size_t width,

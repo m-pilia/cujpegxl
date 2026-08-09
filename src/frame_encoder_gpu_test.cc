@@ -74,8 +74,8 @@ bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& ou
     if (cudaMalloc(&d_q, q.size() * sizeof(std::int32_t)) != cudaSuccess) {
         return false;
     }
-    bool ok{cudaMemcpy(d_q, q.data(), q.size() * sizeof(std::int32_t),
-                       cudaMemcpyHostToDevice) == cudaSuccess};
+    bool ok{cudaMemcpy(d_q, q.data(), q.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
+            cudaSuccess};
     ok = ok && encode_frame(d_q, fc.width, fc.height,
                             QuantParams{fc.global_scale, fc.quant_dc, fc.raw_quant_field}, out);
     cudaFree(d_q);
@@ -138,11 +138,17 @@ void check(const FrameCoefficients& fc) {
     EXPECT_EQ(ys, fc.height);
 }
 
-TEST(FrameEncoderGpu, SingleDcGroupMultiAcGroup) { check(make_frame(512, 512)); }
+TEST(FrameEncoderGpu, SingleDcGroupMultiAcGroup) {
+    check(make_frame(512, 512));
+}
 
-TEST(FrameEncoderGpu, PartialEdgeGroups) { check(make_frame(640, 384)); }
+TEST(FrameEncoderGpu, PartialEdgeGroups) {
+    check(make_frame(640, 384));
+}
 
-TEST(FrameEncoderGpu, MultiDcGroup) { check(make_frame(2560, 256)); }
+TEST(FrameEncoderGpu, MultiDcGroup) {
+    check(make_frame(2560, 256));
+}
 
 TEST(FrameEncoderGpu, Deterministic) {
     const FrameCoefficients fc{make_frame(640, 384)};

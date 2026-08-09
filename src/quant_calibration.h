@@ -49,10 +49,9 @@ struct QuantCalibration {
 inline QuantCalibration calibrate_quant(float distance) {
     const float quant_ac = K_AC_QUANT / distance;
 
-    const float bt_dc =
-        std::max(0.5f * distance,
-                 std::min(distance, K_DC_MUL * std::pow((1.0f / K_DC_MUL) * distance,
-                                                        K_DC_QUANT_POW)));
+    const float bt_dc = std::max(
+        0.5f * distance,
+        std::min(distance, K_DC_MUL * std::pow((1.0f / K_DC_MUL) * distance, K_DC_QUANT_POW)));
     const float quant_dc_float = std::min(K_DC_QUANT / bt_dc, 50.0f);
 
     // ComputeGlobalScaleAndQuant with a uniform field: median == quant_ac and
@@ -65,8 +64,7 @@ inline QuantCalibration calibrate_quant(float distance) {
         scale = static_cast<float>(1 << 15);
     }
     int global_scale = static_cast<int>(scale);
-    const int scaled_quant_dc =
-        static_cast<int>(quant_dc_float * K_GLOBAL_SCALE_NUMERATOR * 1.6f);
+    const int scaled_quant_dc = static_cast<int>(quant_dc_float * K_GLOBAL_SCALE_NUMERATOR * 1.6f);
     if (global_scale > scaled_quant_dc) {
         global_scale = scaled_quant_dc <= 0 ? 1 : scaled_quant_dc;
     }

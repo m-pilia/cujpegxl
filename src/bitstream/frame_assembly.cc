@@ -30,7 +30,9 @@ constexpr U32Enc GLOBAL_SCALE_ENC{
 constexpr U32Enc QUANT_DC_ENC{{Val(16), BitsOffset(5, 1), BitsOffset(8, 1), BitsOffset(16, 1)}};
 constexpr U32Enc ORDER_ENC{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
 
-std::size_t ceil_div(std::size_t a, std::size_t b) { return (a + b - 1) / b; }
+std::size_t ceil_div(std::size_t a, std::size_t b) {
+    return (a + b - 1) / b;
+}
 
 std::size_t ceil_log2_nonzero(std::size_t x) {
     if (x <= 1) {
@@ -108,7 +110,7 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t nu
     out.bits.assign(alpha, 0);
 
     BitWriter w{};
-    write_bool(w, true);  // DequantMatrices::Decode all_default
+    write_bool(w, true);                                 // DequantMatrices::Decode all_default
     write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);  // num_histograms - 1
     write_u32(w, ORDER_ENC, 0);                          // used_orders = 0 (natural)
     write_prefix_histograms(w, ac_histogram, alpha, NUM_AC_CONTEXTS, HybridUintConfig{},
@@ -123,9 +125,9 @@ std::vector<std::uint8_t> build_dc_global(const QuantParams& qp) {
     write_bool(w, true);  // DequantMatrices::DecodeDC all_default
     write_u32(w, GLOBAL_SCALE_ENC, qp.global_scale);
     write_u32(w, QUANT_DC_ENC, qp.quant_dc);  // Quantizer::Decode
-    write_bool(w, true);   // DecodeBlockCtxMap is_default
-    write_bool(w, true);   // ColorCorrelation::DecodeDC all_default
-    write_bool(w, false);  // modular global has_tree = 0
+    write_bool(w, true);                      // DecodeBlockCtxMap is_default
+    write_bool(w, true);                      // ColorCorrelation::DecodeDC all_default
+    write_bool(w, false);                     // modular global has_tree = 0
     w.zero_pad_to_byte();
     return w.bytes();
 }
