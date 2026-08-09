@@ -1,0 +1,4 @@
+berlin_central.png: Diego Delso, CC-BY-SA 4.0, https://commons.wikimedia.org/wiki/File:Estaci%C3%B3n_Central,_Berl%C3%ADn,_Alemania,_2016-04-21,_DD_43-45_HDR.JPG
+sveti_stefan.png: Marcin Konsek, CC-BY-SA 4.0, https://commons.wikimedia.org/wiki/File:Sveti_Stefan_(06).jpg
+akranes_lighthouse.png: Diego Delso, CC-BY-SA 4.0, https://commons.wikimedia.org/wiki/File:Antiguo_faro_de_Akranes,_Vesturland,_Islandia,_2014-08-14,_DD_008.JPG
+wulingyuan.png: chensiyuan, CC-BY-SA 4.0, https://commons.wikimedia.org/wiki/File:Antiguo_faro_de_Akranes,_Vesturland,_Islandia,_2014-08-14,_DD_008.JPG
