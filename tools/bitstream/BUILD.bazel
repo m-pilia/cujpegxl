@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "bitstream",
+    srcs = ["codestream.cc"],
+    hdrs = [
+        "bit_writer.h",
+        "codestream.h",
+        "field_coder.h",
+    ],
+    testonly = True,
+)
+
+cc_test(
+    name = "codestream_parse_test",
+    srcs = ["codestream_parse_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
