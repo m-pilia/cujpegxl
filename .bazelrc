@@ -1,0 +1,18 @@
+common --enable_bzlmod
+
+build --incompatible_enable_cc_toolchain_resolution
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17
+
+build --@rules_cuda//cuda:compiler=clang
+build --@rules_cuda//cuda:archs=sm_61;sm_87
+
+# Drive CUDA device compilation with the registered hermetic clang cc toolchain
+# rather than whatever clang is on PATH, so the PTX ISA version stays matched to
+# the hermetic ptxas.
+common --repo_env=CUDA_COMPILER_USE_CC_TOOLCHAIN=true
+
+# Statically link the CUDA runtime so consumers can link it without a CUDA toolkit.
+build --@rules_cuda//cuda:runtime=@cuda//:cuda_runtime_static
+
+test --test_output=errors

@@ -1,0 +1,35 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+py_library(
+    name = "corpus_prep_lib",
+    srcs = ["corpus_prep.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_binary(
+    name = "corpus_prep",
+    srcs = ["corpus_prep.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_test(
+    name = "corpus_prep_test",
+    srcs = ["corpus_prep_test.py"],
+    deps = [
+        ":corpus_prep_lib",
+        requirement("numpy"),
+    ],
+)

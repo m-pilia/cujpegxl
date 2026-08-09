@@ -1,0 +1,8 @@
+# A bazel_dep consumer rebuilds cujpegxl from source, so it needs the same
+# hermetic-clang CUDA configuration the library itself uses.
+common --repo_env=CUDA_COMPILER_USE_CC_TOOLCHAIN=true
+
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17
+build --@rules_cuda//cuda:compiler=clang
+build --@rules_cuda//cuda:archs=sm_61;sm_87

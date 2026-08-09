@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+py_library(
+    name = "budget_model_lib",
+    srcs = ["budget_model.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "budget_model",
+    srcs = ["budget_model.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "budget_model_test",
+    srcs = ["budget_model_test.py"],
+    deps = [":budget_model_lib"],
+)
+
+py_test(
+    name = "budget_smoke_test",
+    srcs = ["budget_smoke_test.py"],
+    args = ["$(location sample_stage_records.json)"],
+    data = ["sample_stage_records.json"],
+    deps = [":budget_model_lib"],
+)

@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+module(
+    name = "cujpegxl_bazel_consumer",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "rules_cuda", version = "0.3.0")
+bazel_dep(name = "cujpegxl", version = "0.0.0")
+local_path_override(
+    module_name = "cujpegxl",
+    path = "../..",
+)
+
+# The root module owns the C++ toolchain. cujpegxl builds its CUDA sources with
+# the registered cc toolchain's clang, so the consumer supplies the same
+# hermetic clang the library is developed against.
+bazel_dep(name = "toolchains_llvm", version = "1.8.0")
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(
+    llvm_version = "19.1.0",
+    stdlib = {"linux-x86_64": "stdc++"},
+)
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
+
+# The root module also owns the hermetic CUDA toolkit cujpegxl compiles against.
+cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
+cuda.redist_json(
+    name = "cujpegxl_cuda_redist",
+    version = "12.6.3",
+)
+cuda.toolkit(name = "cuda")
+use_repo(cuda, "cuda")

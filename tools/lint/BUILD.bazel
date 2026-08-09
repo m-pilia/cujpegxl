@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_python//python:defs.bzl", "py_test")
+
+py_test(
+    name = "public_headers_cuda_free_test",
+    srcs = ["check_public_headers.py"],
+    args = ["$(location //:include/cujpegxl/cujpegxl.h)"],
+    data = ["//:include/cujpegxl/cujpegxl.h"],
+    main = "check_public_headers.py",
+)

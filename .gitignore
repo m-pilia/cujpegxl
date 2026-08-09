@@ -1,3 +1,15 @@
 plan.md
 MILESTONE_*.md
 HANDOFF.md
+
+# Bazel
+/bazel-*
+examples/*/bazel-*
+MODULE.bazel.lock.tmp*
+
+# Generated corpus buffers (produced on demand from the source frames)
+*.nv12
+
+# Python
+__pycache__/
+*.pyc

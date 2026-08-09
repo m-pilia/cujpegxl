@@ -1,0 +1,70 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    name: Build, test, package, consumers (CPU only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bazelisk
+        run: |
+          sudo curl -fsSLo /usr/local/bin/bazelisk \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazelisk
+
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: bazel-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-
+
+      # GPU-tagged tests are excluded here and run only on the development host.
+      - name: Build and test
+        run: bazelisk test //... --test_tag_filters=-gpu
+
+      - name: Build CMake install tree
+        run: bazelisk build //packaging:install_tree
+
+      - name: CMake consumer (no Bazel, no CUDA toolkit)
+        run: |
+          prefix="$RUNNER_TEMP/cujpegxl-prefix"
+          mkdir -p "$prefix"
+          tar xzf bazel-bin/packaging/install_tree.tar.gz -C "$prefix"
+          cmake -DCMAKE_PREFIX_PATH="$prefix" \
+            -S examples/cmake_consumer -B "$RUNNER_TEMP/cmake-build"
+          cmake --build "$RUNNER_TEMP/cmake-build"
+          "$RUNNER_TEMP/cmake-build/consumer"
+
+      - name: Bazel bazel_dep consumer
+        working-directory: examples/bazel_consumer
+        run: bazelisk run //:consumer
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: pipx install clang-format==19.1.7
+      - name: Check formatting
+        run: |
+          find src include cli python examples \
+            \( -name '*.cc' -o -name '*.cu' -o -name '*.h' -o -name '*.c' \) -print0 \
+            | xargs -0 clang-format --dry-run --Werror

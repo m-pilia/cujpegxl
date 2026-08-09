@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_shared_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "cujpegxl_headers",
+    hdrs = ["include/cujpegxl/cujpegxl.h"],
+    strip_include_prefix = "include",
+)
+
+cc_shared_library(
+    name = "cujpegxl",
+    additional_linker_inputs = ["cujpegxl.lds"],
+    shared_lib_name = "libcujpegxl.so.1",
+    user_link_flags = [
+        "-Wl,--version-script=$(location cujpegxl.lds)",
+        "-Wl,-soname,libcujpegxl.so.1",
+    ],
+    deps = ["//src:cujpegxl_lib"],
+)

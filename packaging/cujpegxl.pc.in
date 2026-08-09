@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: cujpegxl
+Description: CUDA-accelerated JPEG XL lossy encoder
+Version: @VERSION@
+Libs: -L${libdir} -lcujpegxl
+Cflags: -I${includedir}

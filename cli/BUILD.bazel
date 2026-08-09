@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "cli",
+    srcs = ["main.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//:cujpegxl_headers",
+        "//src:cujpegxl_lib",
+    ],
+)

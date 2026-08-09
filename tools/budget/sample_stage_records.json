@@ -1,0 +1,13 @@
+{
+  "fps": 15.0,
+  "projection": {
+    "gpu_time": 1.0,
+    "cpu_time": 1.0,
+    "bandwidth": 1.0
+  },
+  "stages": [
+    {"name": "frontend_fused", "bytes_moved": 110000000, "gpu_us": 6000.0, "cpu_us": 1500.0},
+    {"name": "entropy", "bytes_moved": 20000000, "gpu_us": 7000.0, "cpu_us": 40000.0},
+    {"name": "assembly", "bytes_moved": 8000000, "gpu_us": 1500.0, "cpu_us": 20000.0}
+  ]
+}

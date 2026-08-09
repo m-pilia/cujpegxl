@@ -1,0 +1,152 @@
+{
+  "assets": [
+    {
+      "height": 2160,
+      "name": "akranes_lighthouse_2160p.nv12",
+      "nv12_bytes": 12441600,
+      "rung": "2160p",
+      "sha256": "c74a24ff4f2ca2ca0c4834b28d2e96f6d93faa835903ef7e3de44700c77e236f",
+      "source": "akranes_lighthouse.png",
+      "width": 3840
+    },
+    {
+      "height": 1080,
+      "name": "akranes_lighthouse_1080p.nv12",
+      "nv12_bytes": 3110400,
+      "rung": "1080p",
+      "sha256": "15f057e12b515090aa2f32ad9ab83130c97eb72301e2e4ff87293199bfd0081e",
+      "source": "akranes_lighthouse.png",
+      "width": 1920
+    },
+    {
+      "height": 720,
+      "name": "akranes_lighthouse_720p.nv12",
+      "nv12_bytes": 1382400,
+      "rung": "720p",
+      "sha256": "706dc9d1425f9ff9f3cdf608fdb8f18f4149ed111796d409908f3af92e1357b0",
+      "source": "akranes_lighthouse.png",
+      "width": 1280
+    },
+    {
+      "height": 540,
+      "name": "akranes_lighthouse_540p.nv12",
+      "nv12_bytes": 777600,
+      "rung": "540p",
+      "sha256": "3478f8edd31204732f7c39cca2ffb86e8b43973293139ab8242965b581510500",
+      "source": "akranes_lighthouse.png",
+      "width": 960
+    },
+    {
+      "height": 2160,
+      "name": "berlin_central_2160p.nv12",
+      "nv12_bytes": 12441600,
+      "rung": "2160p",
+      "sha256": "87573d4a37e9d06ee6b90db02b565d463ff8ba71c4c432514b7543c83e9b42e4",
+      "source": "berlin_central.png",
+      "width": 3840
+    },
+    {
+      "height": 1080,
+      "name": "berlin_central_1080p.nv12",
+      "nv12_bytes": 3110400,
+      "rung": "1080p",
+      "sha256": "03236e4089e47f97d313362754aa9114303d40b3bdd3caab8459988095ec3e67",
+      "source": "berlin_central.png",
+      "width": 1920
+    },
+    {
+      "height": 720,
+      "name": "berlin_central_720p.nv12",
+      "nv12_bytes": 1382400,
+      "rung": "720p",
+      "sha256": "6bae38324222b456567357fd80a86d421723c54723255a45279e21d884698a3d",
+      "source": "berlin_central.png",
+      "width": 1280
+    },
+    {
+      "height": 540,
+      "name": "berlin_central_540p.nv12",
+      "nv12_bytes": 777600,
+      "rung": "540p",
+      "sha256": "ac4cc4d0fce314ff3667a7bc586b6abc5b779990040b02113f1f865fce28ada8",
+      "source": "berlin_central.png",
+      "width": 960
+    },
+    {
+      "height": 2160,
+      "name": "sveti_stefan_2160p.nv12",
+      "nv12_bytes": 12441600,
+      "rung": "2160p",
+      "sha256": "856e1f9eb478453529f0fb46d5608a12200637c5b5582cb487b6204b1c4cecfb",
+      "source": "sveti_stefan.png",
+      "width": 3840
+    },
+    {
+      "height": 1080,
+      "name": "sveti_stefan_1080p.nv12",
+      "nv12_bytes": 3110400,
+      "rung": "1080p",
+      "sha256": "9ca3965f9dd5decb67cadbc608242dba712bbf5d1aa78154b09a35d0c44258aa",
+      "source": "sveti_stefan.png",
+      "width": 1920
+    },
+    {
+      "height": 720,
+      "name": "sveti_stefan_720p.nv12",
+      "nv12_bytes": 1382400,
+      "rung": "720p",
+      "sha256": "87fccd8b9e191808f0e872a0e6075124b229283a1edda441c3e29e98b9f9a1d0",
+      "source": "sveti_stefan.png",
+      "width": 1280
+    },
+    {
+      "height": 540,
+      "name": "sveti_stefan_540p.nv12",
+      "nv12_bytes": 777600,
+      "rung": "540p",
+      "sha256": "b0ebec9f8330878a06c635c4fc1e0915c5017888439a234ced140845dc9c0d70",
+      "source": "sveti_stefan.png",
+      "width": 960
+    },
+    {
+      "height": 2160,
+      "name": "wulingyuan_2160p.nv12",
+      "nv12_bytes": 12441600,
+      "rung": "2160p",
+      "sha256": "441bb69751f2e968e209ee65ca36327762f68b618539893535c48ec46ff6ec0e",
+      "source": "wulingyuan.png",
+      "width": 3840
+    },
+    {
+      "height": 1080,
+      "name": "wulingyuan_1080p.nv12",
+      "nv12_bytes": 3110400,
+      "rung": "1080p",
+      "sha256": "ee07301dcb12903b190b249e163e897013259cc417b7c95cb4018172ddf886ae",
+      "source": "wulingyuan.png",
+      "width": 1920
+    },
+    {
+      "height": 720,
+      "name": "wulingyuan_720p.nv12",
+      "nv12_bytes": 1382400,
+      "rung": "720p",
+      "sha256": "cbc53e018a0b7bfc11b1239712cb787d482d2f10f711b6b265a479eb51bc7442",
+      "source": "wulingyuan.png",
+      "width": 1280
+    },
+    {
+      "height": 540,
+      "name": "wulingyuan_540p.nv12",
+      "nv12_bytes": 777600,
+      "rung": "540p",
+      "sha256": "e1188f42a5c54fbdd1588f74a93023c81ffebf93cef5fe72a8d1fef20d9e8553",
+      "source": "wulingyuan.png",
+      "width": 960
+    }
+  ],
+  "chroma": "420",
+  "colorspace": "bt709",
+  "format": "nv12",
+  "range": "full"
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Host (GTX 1080 Ti, Pascal SM 6.1) to Orin Nano 8GB (Ampere SM 8.7) projection factors used by budget_model.py. These are identity placeholders until real on-device measurements are available; bytes moved are platform-independent, so only the time factors are expected to change.",
+  "gpu_time": 1.0,
+  "cpu_time": 1.0,
+  "bandwidth": 1.0
+}
