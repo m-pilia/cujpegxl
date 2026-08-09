@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "reference",
+    testonly = True,
+    srcs = ["reference.py"],
+    imports = ["."],
+    deps = [requirement("numpy")],
+)
+
+py_test(
+    name = "xyb_conformance_test",
+    srcs = ["xyb_conformance_test.py"],
+    args = [
+        "$(rootpath //src:nv12_to_xyb_dump)",
+        "$(rootpath //tools/oracle:libjxl_oracle)",
+    ],
+    data = [
+        "//src:nv12_to_xyb_dump",
+        "//tools/oracle:libjxl_oracle",
+    ],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":reference",
+        "//tools/oracle:oracle",
+        requirement("numpy"),
+    ],
+)

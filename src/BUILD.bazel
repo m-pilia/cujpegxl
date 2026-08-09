@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
@@ -24,6 +24,31 @@ cuda_library(
     srcs = ["capability_cuda.cu"],
     copts = RUNTIME_COPTS,
     deps = [":capability"],
+)
+
+cuda_library(
+    name = "xyb",
+    srcs = ["xyb.cu"],
+    hdrs = ["xyb.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cuda_library(
+    name = "nv12_to_xyb_dump_lib",
+    testonly = True,
+    srcs = ["nv12_to_xyb_dump.cu"],
+    deps = [":xyb"],
+)
+
+cc_binary(
+    name = "nv12_to_xyb_dump",
+    testonly = True,
+    srcs = ["nv12_to_xyb_dump_main.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [":nv12_to_xyb_dump_lib"],
 )
 
 cc_library(
