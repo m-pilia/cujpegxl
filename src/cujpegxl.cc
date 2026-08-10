@@ -47,14 +47,6 @@ cujpegxl_status validate_config(const cujpegxl_config& config) {
     return CUJPEGXL_OK;
 }
 
-// Placeholder distance->Quantizer mapping. quantize_dct8 applies `distance`
-// linearly; these fields only need to yield a decodable Quantizer. Calibrating
-// them against cjxl's Butteraugli semantics is the W7 conformance item.
-cujpegxl::bitstream::QuantParams quant_params_for_distance(float distance) {
-    (void)distance;
-    return cujpegxl::bitstream::QuantParams{4096, 32, 32};
-}
-
 std::size_t worst_case_output(std::uint32_t width, std::uint32_t height) {
     const std::size_t bw{width / 8u};
     const std::size_t bh{height / 8u};
@@ -181,7 +173,7 @@ cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegx
         reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
         reinterpret_cast<const std::uint8_t*>(input->chroma), input->chroma_pitch, config.width,
         config.height, config.device_ordinal, config.distance,
-        quant_params_for_distance(config.distance), file)};
+        cujpegxl::quant_params_for_distance(config.distance), file)};
     if (!ok) {
         return CUJPEGXL_INTERNAL_ERROR;
     }

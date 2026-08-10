@@ -12,6 +12,18 @@
 
 namespace cujpegxl {
 
+// Per-stage instrumentation record consumed by the budget model
+// (tools/budget/budget_model.py). `gpu_us`/`cpu_us` are measured wall time of
+// the device and host portions of a stage; because the device sub-calls are
+// synchronous, blocking wall time attributes cleanly to each. `bytes_moved` is
+// the analytic DRAM traffic of the stage.
+struct StageTiming {
+    const char* name{""};
+    std::size_t bytes_moved{0};
+    double gpu_us{0.0};
+    double cpu_us{0.0};
+};
+
 // Encodes a device-resident quantized DCT8 coefficient buffer into a complete
 // ISOBMFF `.jxl` file, returned in `out_file` (host bytes).
 //
@@ -27,8 +39,16 @@ namespace cujpegxl {
 // O(alphabet)); the body is gathered into one device buffer and copied out with
 // a single bulk D2H. Returns false on a CUDA error, if a coded section exceeds
 // its worst-case buffer, or if the frame has a single AC group.
+// When `stats` is non-null it receives the "entropy" and "assembly" stage
+// timings for the budget model; passing null (the default) emits no records.
 bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file);
+                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file,
+                  std::vector<StageTiming>* stats = nullptr);
+
+// Maps a Butteraugli `distance` to the serialized Quantizer state written into
+// the codestream. Placeholder linear mapping; calibrating it against cjxl's
+// Butteraugli semantics is the W7 conformance item.
+bitstream::QuantParams quant_params_for_distance(float distance);
 
 // Full device encode path for the C ABI: selects `device_ordinal`, runs
 // nv12_to_xyb -> forward_dct8 -> quantize_dct8 -> encode_frame over a
@@ -40,10 +60,12 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 // quantize_dct8; `qp` is the quantizer state written into the codestream. width
 // and height must be multiples of 8 and span more than one AC group. Returns
 // false on a CUDA error or an unsupported single-AC-group frame.
+// When `stats` is non-null it receives the "frontend", "entropy" and "assembly"
+// stage timings for the budget model.
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                  std::size_t chroma_pitch, std::size_t width, std::size_t height,
                  std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                 std::vector<std::uint8_t>& out_file);
+                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
 
 }  // namespace cujpegxl
 

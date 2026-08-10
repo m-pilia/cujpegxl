@@ -3,6 +3,8 @@
 
 #include "frame_encoder.h"
 
+#include <chrono>
+
 #include <cuda_runtime.h>
 
 #include "dct.h"
@@ -13,6 +15,12 @@
 
 namespace cujpegxl {
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double us_since(Clock::time_point start) {
+    return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+}
 
 template <typename T>
 bool upload(const std::vector<T>& host, T** device) {
@@ -51,7 +59,8 @@ struct DeviceScope {
 }  // namespace
 
 bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file) {
+                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file,
+                  std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -61,6 +70,9 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     }
 
     DeviceScope scope{};
+    StageTiming entropy{"entropy", 0, 0.0, 0.0};
+    StageTiming assembly{"assembly", 0, 0.0, 0.0};
+    const Clock::time_point entropy_gpu_start{Clock::now()};
 
     // Device histograms -> host.
     std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_HISTOGRAM_SIZE)};
@@ -80,14 +92,18 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
+    entropy.gpu_us += us_since(entropy_gpu_start);
 
     // Host globals + per-group prefix codes and header blobs.
+    const Clock::time_point entropy_cpu_start{Clock::now()};
     const bitstream::AcGlobalResult ac_global{bitstream::build_ac_global(ac_hist.data(), num_ac)};
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
     const bitstream::DcGroupBlobs blobs{
         bitstream::build_dc_group_blobs(width, height, qp, dc_hist.data())};
+    entropy.cpu_us += us_since(entropy_cpu_start);
 
     // Upload the entropy-coder inputs.
+    const Clock::time_point entropy_encode_start{Clock::now()};
     std::uint8_t* d_ac_depth{nullptr};
     std::uint16_t* d_ac_bits{nullptr};
     std::uint8_t* d_dc_depth{nullptr};
@@ -157,8 +173,11 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
+    entropy.gpu_us += us_since(entropy_encode_start);
+    entropy.bytes_moved = 2 * 3 * bw * bh * 64 * sizeof(std::int32_t) + ac_total + dc_total;
 
     // Section sizes in codestream order: DcGlobal, DcGroups, AcGlobal, AcGroups.
+    const Clock::time_point assembly_head_start{Clock::now()};
     std::vector<std::uint32_t> section_sizes{};
     section_sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
     for (std::uint32_t s : dc_sizes) {
@@ -171,10 +190,12 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 
     const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), section_sizes)};
+    assembly.cpu_us += us_since(assembly_head_start);
 
     // Gather the body [DcGlobal | DcGroups | AcGlobal | AcGroups] into one device
     // buffer (byte-aligned sections -> byte concatenation), then a single D2H.
     const std::size_t body_size{dc_global.size() + dc_total + ac_global.section.size() + ac_total};
+    const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
         return false;
@@ -193,25 +214,42 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     if (!gathered) {
         return false;
     }
+    assembly.gpu_us += us_since(assembly_gather_start);
 
+    const Clock::time_point assembly_finish_start{Clock::now()};
     const std::size_t codestream_size{head.size() + body_size};
     std::vector<std::uint8_t> file{bitstream::container_framing(codestream_size)};
     const std::size_t framing{file.size()};
     file.resize(framing + codestream_size);
     std::copy(head.begin(), head.end(), file.begin() + framing);
+    assembly.cpu_us += us_since(assembly_finish_start);
+
+    const Clock::time_point assembly_d2h_start{Clock::now()};
     if (cudaMemcpy(file.data() + framing + head.size(), d_body, body_size,
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
+    }
+    assembly.gpu_us += us_since(assembly_d2h_start);
+    assembly.bytes_moved = 2 * body_size;
+
+    if (stats != nullptr) {
+        stats->push_back(entropy);
+        stats->push_back(assembly);
     }
 
     out_file = std::move(file);
     return true;
 }
 
+bitstream::QuantParams quant_params_for_distance(float distance) {
+    (void)distance;
+    return bitstream::QuantParams{4096, 32, 32};
+}
+
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                  std::size_t chroma_pitch, std::size_t width, std::size_t height,
                  std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                 std::vector<std::uint8_t>& out_file) {
+                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
@@ -245,12 +283,19 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         chroma_src_pitch = aligned_pitch;
     }
 
+    const Clock::time_point frontend_start{Clock::now()};
     if (!nv12_to_xyb(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, d_xyb) ||
         !forward_dct8(d_xyb, width, height, d_coeffs) ||
         !quantize_dct8(d_coeffs, width, height, distance, d_q)) {
         return false;
     }
-    return encode_frame(d_q, width, height, qp, out_file);
+    if (stats != nullptr) {
+        StageTiming frontend{"frontend", 0, us_since(frontend_start), 0.0};
+        frontend.bytes_moved = width * height + width * height / 2 +
+                               5 * 3 * plane * sizeof(float);
+        stats->push_back(frontend);
+    }
+    return encode_frame(d_q, width, height, qp, out_file, stats);
 }
 
 }  // namespace cujpegxl

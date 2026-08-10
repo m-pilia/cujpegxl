@@ -1,14 +1,27 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+
+cuda_library(
+    name = "nv12_host_encode",
+    testonly = True,
+    srcs = ["nv12_host_encode.cu"],
+    hdrs = ["nv12_host_encode.h"],
+    visibility = ["//visibility:public"],
+    deps = ["//src:frame_encoder"],
+)
 
 pybind_extension(
     name = "pycujpegxl",
     srcs = ["pycujpegxl.cc"],
+    testonly = True,
     visibility = ["//visibility:public"],
     deps = [
+        ":nv12_host_encode",
         "//:cujpegxl_headers",
         "//src:cujpegxl_lib",
     ],
@@ -19,4 +32,32 @@ py_test(
     srcs = ["pycujpegxl_test.py"],
     imports = ["."],
     deps = [":pycujpegxl"],
+)
+
+py_binary(
+    name = "encode_cli",
+    testonly = True,
+    srcs = ["encode_cli.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":pycujpegxl",
+        requirement("numpy"),
+    ],
+)
+
+py_test(
+    name = "pycujpegxl_encode_gpu_test",
+    srcs = ["pycujpegxl_encode_gpu_test.py"],
+    imports = ["."],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":pycujpegxl",
+        "//tools/budget:budget_model_lib",
+        "//tools/determinism:determinism_runner_lib",
+        requirement("numpy"),
+    ],
 )
