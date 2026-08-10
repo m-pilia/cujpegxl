@@ -8,7 +8,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "bit_writer.h"
+#include "src/bitstream/bit_writer.h"
+
 #include "entropy_encoder.h"
 
 namespace cujpegxl::bitstream {

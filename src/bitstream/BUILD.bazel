@@ -1,0 +1,70 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
+package(default_visibility = ["//visibility:public"])
+
+RUNTIME_COPTS = [
+    "-fno-exceptions",
+    "-fno-rtti",
+]
+
+cc_library(
+    name = "bitstream",
+    srcs = [
+        "codestream.cc",
+        "container.cc",
+        "histogram_writer.cc",
+        "prefix_code.cc",
+    ],
+    hdrs = [
+        "bit_writer.h",
+        "codestream.h",
+        "container.h",
+        "field_coder.h",
+        "histogram_writer.h",
+        "hybrid_uint.h",
+        "prefix_code.h",
+    ],
+    copts = RUNTIME_COPTS,
+)
+
+cc_library(
+    name = "frame_assembly",
+    srcs = ["frame_assembly.cc"],
+    hdrs = ["frame_assembly.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":bitstream"],
+)
+
+cc_test(
+    name = "frame_assembly_test",
+    srcs = ["frame_assembly_test.cc"],
+    deps = [
+        ":frame_assembly",
+        "//tools/bitstream:vardct_frame",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "codestream_parse_test",
+    srcs = ["codestream_parse_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "container_test",
+    srcs = ["container_test.cc"],
+    deps = [
+        ":bitstream",
+        "//tools/bitstream:vardct_frame",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)

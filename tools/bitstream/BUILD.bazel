@@ -6,29 +6,11 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
-    name = "bitstream",
-    srcs = ["codestream.cc"],
-    hdrs = [
-        "bit_writer.h",
-        "codestream.h",
-        "field_coder.h",
-    ],
-    testonly = True,
-)
-
-cc_library(
     name = "entropy_encoder",
-    srcs = [
-        "entropy_encoder.cc",
-        "prefix_code.cc",
-    ],
-    hdrs = [
-        "entropy_encoder.h",
-        "hybrid_uint.h",
-        "prefix_code.h",
-    ],
+    srcs = ["entropy_encoder.cc"],
+    hdrs = ["entropy_encoder.h"],
     testonly = True,
-    deps = [":bitstream"],
+    deps = ["//src/bitstream"],
 )
 
 cc_library(
@@ -37,15 +19,9 @@ cc_library(
     hdrs = ["modular.h"],
     testonly = True,
     deps = [
-        ":bitstream",
         ":entropy_encoder",
+        "//src/bitstream",
     ],
-)
-
-cc_library(
-    name = "container",
-    srcs = ["container.cc"],
-    hdrs = ["container.h"],
 )
 
 cc_library(
@@ -54,19 +30,9 @@ cc_library(
     hdrs = ["vardct_frame.h"],
     testonly = True,
     deps = [
-        ":bitstream",
         ":entropy_encoder",
         ":modular",
-    ],
-)
-
-cc_test(
-    name = "codestream_parse_test",
-    srcs = ["codestream_parse_test.cc"],
-    deps = [
-        ":bitstream",
-        "@libjxl//:jxl",
-        "@googletest//:gtest_main",
+        "//src/bitstream",
     ],
 )
 
@@ -85,17 +51,6 @@ cc_test(
     srcs = ["modular_test.cc"],
     deps = [
         ":modular",
-        "@libjxl//:jxl",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "container_test",
-    srcs = ["container_test.cc"],
-    deps = [
-        ":container",
-        ":vardct_frame",
         "@libjxl//:jxl",
         "@googletest//:gtest_main",
     ],

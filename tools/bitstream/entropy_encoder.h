@@ -8,8 +8,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "bit_writer.h"
-#include "hybrid_uint.h"
+#include "src/bitstream/bit_writer.h"
+#include "src/bitstream/hybrid_uint.h"
 
 namespace cujpegxl::bitstream {
 

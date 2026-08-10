@@ -137,6 +137,34 @@ cc_test(
 )
 
 cuda_library(
+    name = "frame_encoder",
+    srcs = ["frame_encoder.cu"],
+    hdrs = ["frame_encoder.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":entropy",
+        "//src/bitstream",
+        "//src/bitstream:frame_assembly",
+    ],
+)
+
+cc_test(
+    name = "frame_encoder_gpu_test",
+    srcs = ["frame_encoder_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":frame_encoder",
+        "//src/bitstream",
+        "//tools/bitstream:vardct_frame",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cuda_library(
     name = "dc_entropy_roundtrip",
     testonly = True,
     srcs = ["dc_entropy_roundtrip.cu"],

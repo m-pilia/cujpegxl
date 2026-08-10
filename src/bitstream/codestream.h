@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef CUJPEGXL_TOOLS_BITSTREAM_CODESTREAM_H_
-#define CUJPEGXL_TOOLS_BITSTREAM_CODESTREAM_H_
+#ifndef CUJPEGXL_SRC_BITSTREAM_CODESTREAM_H_
+#define CUJPEGXL_SRC_BITSTREAM_CODESTREAM_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -34,4 +34,4 @@ void write_toc_multi_section(BitWriter& w, const std::vector<std::uint32_t>& sec
 
 }  // namespace cujpegxl::bitstream
 
-#endif  // CUJPEGXL_TOOLS_BITSTREAM_CODESTREAM_H_
+#endif  // CUJPEGXL_SRC_BITSTREAM_CODESTREAM_H_

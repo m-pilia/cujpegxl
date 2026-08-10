@@ -7,11 +7,12 @@
 #include <cassert>
 #include <utility>
 
-#include "bit_writer.h"
-#include "codestream.h"
+#include "src/bitstream/bit_writer.h"
+#include "src/bitstream/codestream.h"
+#include "src/bitstream/field_coder.h"
+#include "src/bitstream/hybrid_uint.h"
+
 #include "entropy_encoder.h"
-#include "field_coder.h"
-#include "hybrid_uint.h"
 #include "modular.h"
 
 namespace cujpegxl::bitstream {

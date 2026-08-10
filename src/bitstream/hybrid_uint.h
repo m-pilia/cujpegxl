@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef CUJPEGXL_TOOLS_BITSTREAM_HYBRID_UINT_H_
-#define CUJPEGXL_TOOLS_BITSTREAM_HYBRID_UINT_H_
+#ifndef CUJPEGXL_SRC_BITSTREAM_HYBRID_UINT_H_
+#define CUJPEGXL_SRC_BITSTREAM_HYBRID_UINT_H_
 
 #include <cassert>
 #include <cstdint>
@@ -50,4 +50,4 @@ inline std::uint32_t pack_signed(std::int32_t value) {
 
 }  // namespace cujpegxl::bitstream
 
-#endif  // CUJPEGXL_TOOLS_BITSTREAM_HYBRID_UINT_H_
+#endif  // CUJPEGXL_SRC_BITSTREAM_HYBRID_UINT_H_

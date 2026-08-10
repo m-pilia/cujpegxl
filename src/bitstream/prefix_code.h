@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-#ifndef CUJPEGXL_TOOLS_BITSTREAM_PREFIX_CODE_H_
-#define CUJPEGXL_TOOLS_BITSTREAM_PREFIX_CODE_H_
+#ifndef CUJPEGXL_SRC_BITSTREAM_PREFIX_CODE_H_
+#define CUJPEGXL_SRC_BITSTREAM_PREFIX_CODE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -26,4 +26,4 @@ void build_and_store_huffman_tree(const std::uint32_t* histogram, std::size_t le
 
 }  // namespace cujpegxl::bitstream
 
-#endif  // CUJPEGXL_TOOLS_BITSTREAM_PREFIX_CODE_H_
+#endif  // CUJPEGXL_SRC_BITSTREAM_PREFIX_CODE_H_

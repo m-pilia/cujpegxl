@@ -4,7 +4,7 @@
 #include "modular.h"
 
 #include "entropy_encoder.h"
-#include "hybrid_uint.h"
+#include "src/bitstream/hybrid_uint.h"
 
 namespace cujpegxl::bitstream {
 namespace {

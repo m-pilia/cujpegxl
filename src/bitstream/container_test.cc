@@ -14,7 +14,8 @@
 #include <gtest/gtest.h>
 
 #include "container.h"
-#include "vardct_frame.h"
+
+#include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl::bitstream {
 namespace {
