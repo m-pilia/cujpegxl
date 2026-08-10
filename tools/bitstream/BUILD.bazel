@@ -43,6 +43,12 @@ cc_library(
 )
 
 cc_library(
+    name = "container",
+    srcs = ["container.cc"],
+    hdrs = ["container.h"],
+)
+
+cc_library(
     name = "vardct_frame",
     srcs = ["vardct_frame.cc"],
     hdrs = ["vardct_frame.h"],
@@ -79,6 +85,17 @@ cc_test(
     srcs = ["modular_test.cc"],
     deps = [
         ":modular",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "container_test",
+    srcs = ["container_test.cc"],
+    deps = [
+        ":container",
+        ":vardct_frame",
         "@libjxl//:jxl",
         "@googletest//:gtest_main",
     ],
