@@ -142,7 +142,10 @@ cuda_library(
     hdrs = ["frame_encoder.h"],
     copts = RUNTIME_COPTS,
     deps = [
+        ":dct",
         ":entropy",
+        ":quant",
+        ":xyb",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",
     ],
@@ -197,7 +200,24 @@ cc_library(
     deps = [
         ":capability",
         ":capability_cuda",
+        ":frame_encoder",
         "//:cujpegxl_headers",
+        "//src/bitstream:frame_assembly",
+    ],
+)
+
+cc_test(
+    name = "cujpegxl_encode_gpu_test",
+    srcs = ["cujpegxl_encode_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":cujpegxl_lib",
+        "//:cujpegxl_headers",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
     ],
 )
 

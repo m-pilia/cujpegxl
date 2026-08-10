@@ -30,6 +30,21 @@ namespace cujpegxl {
 bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
                   const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file);
 
+// Full device encode path for the C ABI: selects `device_ordinal`, runs
+// nv12_to_xyb -> forward_dct8 -> quantize_dct8 -> encode_frame over a
+// device-resident NV12 image and returns the `.jxl` file bytes in `out_file`.
+//
+// `luma`/`chroma` are device addresses (see nv12_to_xyb). The chroma texture
+// requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
+// plane is copied into an internally allocated aligned buffer. `distance` drives
+// quantize_dct8; `qp` is the quantizer state written into the codestream. width
+// and height must be multiples of 8 and span more than one AC group. Returns
+// false on a CUDA error or an unsupported single-AC-group frame.
+bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                 std::vector<std::uint8_t>& out_file);
+
 }  // namespace cujpegxl
 
 #endif  // CUJPEGXL_SRC_FRAME_ENCODER_H_

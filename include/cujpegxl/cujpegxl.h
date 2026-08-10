@@ -29,7 +29,8 @@ typedef enum cujpegxl_status {
     CUJPEGXL_INVALID_ARGUMENT = 2,
     CUJPEGXL_UNSUPPORTED_RESOLUTION = 3,
     CUJPEGXL_NO_DEVICE = 4,
-    CUJPEGXL_INTERNAL_ERROR = 5
+    CUJPEGXL_INTERNAL_ERROR = 5,
+    CUJPEGXL_BUFFER_TOO_SMALL = 6
 } cujpegxl_status;
 
 typedef enum cujpegxl_backend {
@@ -67,6 +68,10 @@ const char* cujpegxl_status_string(cujpegxl_status status);
 const char* cujpegxl_backend_string(cujpegxl_backend backend);
 
 cujpegxl_status cujpegxl_query_backend(int32_t device_ordinal, cujpegxl_backend* out_backend);
+
+/* Worst-case codestream size (in bytes) for `config`, so a caller can
+ * preallocate the output buffer before `cujpegxl_encoder_encode`. */
+cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* out_bytes);
 
 cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config,
                                         cujpegxl_encoder** out_encoder);

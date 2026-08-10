@@ -5,8 +5,11 @@
 
 #include <cuda_runtime.h>
 
+#include "dct.h"
 #include "entropy.h"
+#include "quant.h"
 #include "src/bitstream/container.h"
+#include "xyb.h"
 
 namespace cujpegxl {
 namespace {
@@ -203,6 +206,51 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 
     out_file = std::move(file);
     return true;
+}
+
+bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                 std::vector<std::uint8_t>& out_file) {
+    if (cudaSetDevice(device_ordinal) != cudaSuccess) {
+        return false;
+    }
+
+    DeviceScope scope{};
+    const std::size_t plane{width * height};
+    float* d_xyb{scope.alloc<float>(3 * plane)};
+    float* d_coeffs{scope.alloc<float>(3 * plane)};
+    std::int32_t* d_q{scope.alloc<std::int32_t>(3 * plane)};
+    if (!d_xyb || !d_coeffs || !d_q) {
+        return false;
+    }
+
+    // The chroma pitch2D texture requires a 32-byte-aligned row pitch; re-pitch
+    // the plane into an aligned device buffer when the caller's is not.
+    constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
+    const std::uint8_t* chroma_src{chroma};
+    std::size_t chroma_src_pitch{chroma_pitch};
+    if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
+        void* aligned{nullptr};
+        std::size_t aligned_pitch{0};
+        if (cudaMallocPitch(&aligned, &aligned_pitch, width, height / 2) != cudaSuccess) {
+            return false;
+        }
+        scope.track(aligned);
+        if (cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width, height / 2,
+                         cudaMemcpyDeviceToDevice) != cudaSuccess) {
+            return false;
+        }
+        chroma_src = static_cast<const std::uint8_t*>(aligned);
+        chroma_src_pitch = aligned_pitch;
+    }
+
+    if (!nv12_to_xyb(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, d_xyb) ||
+        !forward_dct8(d_xyb, width, height, d_coeffs) ||
+        !quantize_dct8(d_coeffs, width, height, distance, d_q)) {
+        return false;
+    }
+    return encode_frame(d_q, width, height, qp, out_file);
 }
 
 }  // namespace cujpegxl
