@@ -18,16 +18,34 @@ namespace cujpegxl {
 namespace {
 
 // Tile geometry: one CUDA block processes TB x TB image blocks. The shared XYB
-// region carries a one-pixel halo (PAD) for the adaptive-quant Laplacian; the
-// pre-erosion map is at 4x-subsampled resolution (CELLS x CELLS cells).
+// region carries a two-pixel halo (PAD): the inner pixel feeds the
+// adaptive-quant Laplacian, and the full two pixels feed the 5x5
+// gaborish-inverse pre-sharpening applied before the DCT. The pre-erosion map
+// is at 4x-subsampled resolution (CELLS x CELLS cells).
+constexpr int HALO = 2;
 constexpr int TB = 4;
 constexpr int TILE_PX = TB * 8;
-constexpr int PAD = TILE_PX + 2;
-// X and B never need the Laplacian halo (only Y does), so they are stored
-// interior-only to cut shared-memory footprint and raise occupancy. The +1
-// column padding dodges shared-bank conflicts on the strided column reads.
-constexpr int INT_STRIDE = TILE_PX + 1;
+constexpr int PAD = TILE_PX + 2 * HALO;
 constexpr int CELLS = 2 * TB;
+
+// GaborishInverse (libjxl enc_gaborish.cc) normalized 5x5 symmetric sharpening,
+// evaluated at the encoder's default per-channel strength mul = 1 so all three
+// XYB planes share one kernel. Applied to the opsin before the DCT, it cancels
+// the decoder's default gaborish smoothing (loop_filter all_default), which
+// otherwise blurs away high-frequency detail no quantizer step can recover.
+// Weights follow the WeightsSymmetric5 quadrant layout {c, r, R, d, L, D}.
+constexpr float GAB_K0 = -0.09495815671340026f;
+constexpr float GAB_K1 = -0.041031725066768575f;
+constexpr float GAB_K2 = 0.013710004822696948f;
+constexpr float GAB_K3 = 0.006510206083837737f;
+constexpr float GAB_K4 = -0.0014789063378272242f;
+constexpr float GAB_NM = 1.0f / (1.0f + 4.0f * (GAB_K0 + GAB_K1 + GAB_K2 + GAB_K4 + 2.0f * GAB_K3));
+constexpr float GAB_WC = GAB_NM;            // center (0,0)
+constexpr float GAB_WR = GAB_NM * GAB_K0;   // r: (1,0),(0,1)
+constexpr float GAB_WR2 = GAB_NM * GAB_K2;  // R: (2,0),(0,2)
+constexpr float GAB_WD = GAB_NM * GAB_K1;   // d: (1,1)
+constexpr float GAB_WL = GAB_NM * GAB_K3;   // L: (2,1),(1,2)
+constexpr float GAB_WD2 = GAB_NM * GAB_K4;  // D: (2,2)
 
 __constant__ float DCT_A[64];
 __constant__ float QUANT_WEIGHTS[3][64];
@@ -66,10 +84,19 @@ __device__ inline float warp_reduce_sum(float v) {
     return v;
 }
 
-// Interior (halo-stripped) index for the X/B planes from a PAD-space coordinate
-// (px, py); valid for 1 <= px, py <= TILE_PX.
-__device__ inline int interior_idx(int px, int py) {
-    return (py - 1) * INT_STRIDE + (px - 1);
+// GaborishInverse 5x5 symmetric filter at PAD-space index idx (stride PAD),
+// exploiting the {c, r, R, d, L, D} tap symmetry. Requires a two-pixel halo
+// around idx.
+__device__ inline float gaborish_inverse(const float* __restrict__ p, int idx) {
+    const float e{p[idx - 1] + p[idx + 1] + p[idx - PAD] + p[idx + PAD]};
+    const float r2{p[idx - 2] + p[idx + 2] + p[idx - 2 * PAD] + p[idx + 2 * PAD]};
+    const float dg{p[idx - PAD - 1] + p[idx - PAD + 1] + p[idx + PAD - 1] + p[idx + PAD + 1]};
+    const float l8{p[idx - 2 * PAD - 1] + p[idx - 2 * PAD + 1] + p[idx + 2 * PAD - 1] +
+                   p[idx + 2 * PAD + 1] + p[idx - PAD - 2] + p[idx - PAD + 2] + p[idx + PAD - 2] +
+                   p[idx + PAD + 2]};
+    const float d4{p[idx - 2 * PAD - 2] + p[idx - 2 * PAD + 2] + p[idx + 2 * PAD - 2] +
+                   p[idx + 2 * PAD + 2]};
+    return GAB_WC * p[idx] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 + GAB_WD2 * d4;
 }
 
 // FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
@@ -101,8 +128,11 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
                                       std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc,
                                       std::int32_t* __restrict__ quant_field) {
     __shared__ float sh_y[PAD * PAD];
-    __shared__ float sh_x[TILE_PX * INT_STRIDE];
-    __shared__ float sh_b[TILE_PX * INT_STRIDE];
+    __shared__ float sh_x[PAD * PAD];
+    __shared__ float sh_b[PAD * PAD];
+    __shared__ float sh_sx[64];  // gaborish-inverse sharpened block (X/Y/B)
+    __shared__ float sh_sy[64];
+    __shared__ float sh_sb[64];
     __shared__ float sh_pre[CELLS * CELLS];
     __shared__ float sh_red[2][4];
     __shared__ int sh_q;
@@ -118,8 +148,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     for (int i{tid}; i < PAD * PAD; i += 64) {
         const int lx{i % PAD};
         const int ly{i / PAD};
-        long gx{static_cast<long>(px0) + lx - 1};
-        long gy{static_cast<long>(py0) + ly - 1};
+        long gx{static_cast<long>(px0) + lx - HALO};
+        long gy{static_cast<long>(py0) + ly - HALO};
         gx = gx < 0 ? 0 : (gx >= static_cast<long>(width) ? static_cast<long>(width) - 1 : gx);
         gy = gy < 0 ? 0 : (gy >= static_cast<long>(height) ? static_cast<long>(height) - 1 : gy);
         const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
@@ -129,11 +159,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         float bo{};
         nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
         sh_y[i] = yo;
-        if (lx >= 1 && lx <= TILE_PX && ly >= 1 && ly <= TILE_PX) {
-            const int ii{interior_idx(lx, ly)};
-            sh_x[ii] = xo;
-            sh_b[ii] = bo;
-        }
+        sh_x[i] = xo;
+        sh_b[i] = bo;
     }
     __syncthreads();
 
@@ -144,8 +171,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         float sum{0.0f};
         for (int dy{0}; dy < 4; ++dy) {
             for (int dx{0}; dx < 4; ++dx) {
-                const int lx{ccx * 4 + dx + 1};
-                const int ly{ccy * 4 + dy + 1};
+                const int lx{ccx * 4 + dx + HALO};
+                const int ly{ccy * 4 + dy + HALO};
                 const float yv{sh_y[ly * PAD + lx]};
                 const float base{0.25f * (sh_y[(ly + 1) * PAD + lx] + sh_y[(ly - 1) * PAD + lx] +
                                           sh_y[ly * PAD + lx - 1] + sh_y[ly * PAD + lx + 1])};
@@ -175,8 +202,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         if (gbx >= bw || gby >= bh) {
             continue;
         }
-        const int x0{lbx * 8 + 1};  // shared interior origin (+halo)
-        const int y0{lby * 8 + 1};
+        const int x0{lbx * 8 + HALO};  // shared interior origin (+halo)
+        const int y0{lby * 8 + HALO};
 
         // Adaptive quant integer: each thread reduces its own pixel's modulation
         // contributions across the 64-thread block; thread 0 combines the
@@ -185,10 +212,9 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         // so the per-pixel partials can be summed in parallel.
         {
             const int idx{(y0 + fy) * PAD + x0 + fx};
-            const int iidx{interior_idx(x0 + fx, y0 + fy)};
             const float yv{sh_y[idx]};
-            const float xv{sh_x[iidx]};
-            const float bv{sh_b[iidx]};
+            const float xv{sh_x[idx]};
+            const float bv{sh_b[idx]};
 
             constexpr float valmin{0.0206f};
             float hf_part{0.0f};
@@ -256,6 +282,19 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         }
         __syncthreads();
 
+        // GaborishInverse pre-sharpening: replace this block's 8x8 opsin with
+        // its 5x5-sharpened values before the DCT, cancelling the decoder's
+        // default gaborish smoothing. The AQ field above intentionally used the
+        // unsharpened opsin, matching libjxl's ordering (InitialQuantField
+        // precedes GaborishInverse).
+        {
+            const int idx{(y0 + fy) * PAD + x0 + fx};
+            sh_sx[fy * 8 + fx] = gaborish_inverse(sh_x, idx);
+            sh_sy[fy * 8 + fx] = gaborish_inverse(sh_y, idx);
+            sh_sb[fy * 8 + fx] = gaborish_inverse(sh_b, idx);
+        }
+        __syncthreads();
+
         const float ac_scale{static_cast<float>(sh_q) * gsf};
         const std::size_t blk{gby * bw + gbx};
 
@@ -269,11 +308,10 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         float rb{0.0f};
         for (int x{0}; x < 8; ++x) {
             const float a{DCT_A[fy * 8 + x]};
-            const int s{(y0 + fx) * PAD + x0 + x};
-            const int si{interior_idx(x0 + x, y0 + fx)};
-            ry += a * sh_y[s];
-            rx += a * sh_x[si];
-            rb += a * sh_b[si];
+            const int s{fx * 8 + x};
+            ry += a * sh_sy[s];
+            rx += a * sh_sx[s];
+            rb += a * sh_sb[s];
         }
         float acc_y{0.0f};
         float acc_x{0.0f};
