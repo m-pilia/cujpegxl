@@ -48,6 +48,10 @@ void write_codestream_headers(BitWriter& w, std::uint32_t xsize, std::uint32_t y
     // codestream; the default opsin inverse matrix and upsampling weights are
     // one "all default" bit.
     write_bool(w, true);
+    // The decoder jumps to a byte boundary after the codestream headers, before
+    // the frame header (JxlDecoder ReadAllHeaders). No-op when the headers
+    // already end on a byte (as they do for the ladder's small-form sizes).
+    w.zero_pad_to_byte();
 }
 
 void write_frame_header(BitWriter& w) {
@@ -80,6 +84,15 @@ void write_toc_single_section(BitWriter& w, std::size_t section_size_bytes) {
     write_bool(w, false);  // no permutation
     w.zero_pad_to_byte();
     write_u32(w, TOC_DIST, static_cast<std::uint32_t>(section_size_bytes));
+    w.zero_pad_to_byte();
+}
+
+void write_toc_multi_section(BitWriter& w, const std::vector<std::uint32_t>& section_sizes) {
+    write_bool(w, false);  // no permutation
+    w.zero_pad_to_byte();
+    for (std::uint32_t size : section_sizes) {
+        write_u32(w, TOC_DIST, size);
+    }
     w.zero_pad_to_byte();
 }
 

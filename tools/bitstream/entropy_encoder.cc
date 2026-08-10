@@ -96,7 +96,14 @@ void EntropyEncoder::write_histograms(BitWriter& w) const {
 }
 
 void EntropyEncoder::write_tokens(BitWriter& w) const {
-    for (const Token& t : tokens_) {
+    write_tokens_range(w, 0, tokens_.size());
+}
+
+void EntropyEncoder::write_tokens_range(BitWriter& w, std::size_t begin,
+                                        std::size_t end) const {
+    assert(begin <= end && end <= tokens_.size());
+    for (std::size_t i{begin}; i < end; ++i) {
+        const Token& t{tokens_[i]};
         w.write(depth_[t.symbol], bits_[t.symbol]);
         if (t.nbits) {
             w.write(t.nbits, t.bits);

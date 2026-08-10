@@ -138,5 +138,63 @@ TEST(VarDctFrame, SmallerDimensionsDecode) {
     EXPECT_EQ(out.ysize, 128u);
 }
 
+// Fills every AC group with a distinct low-frequency pattern so the multi-group
+// token split (per-group AcGroup sections sharing one AcGlobal prefix code) is
+// exercised, not just all-zero groups.
+void fill_ac_pattern(FrameCoefficients& fc) {
+    const std::size_t bw{fc.width / 8};
+    const std::size_t bh{fc.height / 8};
+    for (std::size_t by{0}; by < bh; ++by) {
+        for (std::size_t bx{0}; bx < bw; ++bx) {
+            const std::size_t block{by * bw + bx};
+            for (int c{0}; c < 3; ++c) {
+                std::int32_t* blk{&fc.ac[c][block * 64]};
+                blk[1] = static_cast<std::int32_t>((bx + c) % 5) - 2;
+                blk[8] = static_cast<std::int32_t>((by + c) % 3) - 1;
+                blk[9] = static_cast<std::int32_t>((bx + by) % 7) - 3;
+            }
+            for (int c{0}; c < 3; ++c) {
+                fc.dc[c][block] = static_cast<std::int32_t>((bx * 3 + by + c) % 9) - 4;
+            }
+        }
+    }
+}
+
+TEST(VarDctFrame, MultiGroupAllZeroDecodes) {
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(make_frame(512, 512)), out));
+    EXPECT_EQ(out.xsize, 512u);
+    EXPECT_EQ(out.ysize, 512u);
+}
+
+TEST(VarDctFrame, MultiGroupNonZeroDecodes) {
+    FrameCoefficients fc{make_frame(512, 512)};
+    fill_ac_pattern(fc);
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(fc), out));
+    EXPECT_EQ(out.xsize, 512u);
+    EXPECT_EQ(out.ysize, 512u);
+}
+
+TEST(VarDctFrame, MultiGroupPartialEdgeGroupsDecode) {
+    // 640x384 -> 80x48 blocks -> 3x2 AC groups, the right and bottom groups
+    // being partial (80 % 32 = 16 wide, 48 % 32 = 16 tall).
+    FrameCoefficients fc{make_frame(640, 384)};
+    fill_ac_pattern(fc);
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(fc), out));
+    EXPECT_EQ(out.xsize, 640u);
+    EXPECT_EQ(out.ysize, 384u);
+}
+
+TEST(VarDctFrame, MultiGroupSingleRowOfGroupsDecodes) {
+    FrameCoefficients fc{make_frame(1024, 256)};
+    fill_ac_pattern(fc);
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(fc), out));
+    EXPECT_EQ(out.xsize, 1024u);
+    EXPECT_EQ(out.ysize, 256u);
+}
+
 }  // namespace
 }  // namespace cujpegxl::bitstream

@@ -39,6 +39,19 @@ struct FrameCoefficients {
 // freshly allocated byte buffer. The output is decodable by libjxl/djxl.
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
 
+// The host reference for the device AC entropy encoder: the pooled symbol
+// histogram, the shared prefix code (depth/bits), and each AC group's
+// byte-aligned token stream (one AcGroup TOC section per group, raster order).
+// This is exactly what write_vardct_codestream emits for the AC groups; the
+// device port must reproduce `histogram` and `group_streams` byte-for-byte.
+struct AcReference {
+    std::vector<std::uint32_t> histogram{};
+    std::vector<std::uint8_t> depth{};
+    std::vector<std::uint16_t> bits{};
+    std::vector<std::vector<std::uint8_t>> group_streams{};
+};
+AcReference reference_ac_encode(const FrameCoefficients& fc);
+
 // The natural (scan) coefficient order for an 8x8 DCT block: order[k] is the
 // libjxl-raster index of the k-th coefficient in scan order (order[0] == 0, the
 // DC). Exposed for tests.

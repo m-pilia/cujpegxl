@@ -107,6 +107,35 @@ cc_binary(
     deps = [":quant_dump_lib"],
 )
 
+cuda_library(
+    name = "entropy",
+    srcs = ["entropy.cu"],
+    hdrs = ["entropy.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cuda_library(
+    name = "entropy_roundtrip",
+    testonly = True,
+    srcs = ["entropy_roundtrip.cu"],
+    hdrs = ["entropy_roundtrip.h"],
+    deps = [":entropy"],
+)
+
+cc_test(
+    name = "entropy_gpu_test",
+    srcs = ["entropy_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":entropy_roundtrip",
+        "//tools/bitstream:vardct_frame",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "cujpegxl_lib",
     srcs = ["cujpegxl.cc"],
