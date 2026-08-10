@@ -44,6 +44,10 @@ void write_codestream_headers(BitWriter& w, std::uint32_t xsize, std::uint32_t y
     // sRGB, no extra channels, default tone mapping -> the whole bundle is one
     // "all default" bit.
     write_bool(w, true);
+    // CustomTransformData (transform_data) always follows ImageMetadata in the
+    // codestream; the default opsin inverse matrix and upsampling weights are
+    // one "all default" bit.
+    write_bool(w, true);
 }
 
 void write_frame_header(BitWriter& w) {

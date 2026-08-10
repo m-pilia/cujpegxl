@@ -50,6 +50,10 @@ TEST(CodestreamHeaders, RoundTripsThroughLibjxlParsers) {
     EXPECT_TRUE(metadata.m.color_encoding.IsSRGB());
     metadata.size = size;
 
+    // CustomTransformData follows ImageMetadata in the codestream.
+    metadata.transform_data.nonserialized_xyb_encoded = metadata.m.xyb_encoded;
+    ASSERT_TRUE(jxl::Bundle::Read(&br, &metadata.transform_data));
+
     jxl::FrameHeader fh{&metadata};
     ASSERT_TRUE(jxl::ReadFrameHeader(&br, &fh));
     EXPECT_EQ(fh.encoding, jxl::FrameEncoding::kVarDCT);

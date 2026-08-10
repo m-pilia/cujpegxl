@@ -16,11 +16,79 @@ cc_library(
     testonly = True,
 )
 
+cc_library(
+    name = "entropy_encoder",
+    srcs = [
+        "entropy_encoder.cc",
+        "prefix_code.cc",
+    ],
+    hdrs = [
+        "entropy_encoder.h",
+        "hybrid_uint.h",
+        "prefix_code.h",
+    ],
+    testonly = True,
+    deps = [":bitstream"],
+)
+
+cc_library(
+    name = "modular",
+    srcs = ["modular.cc"],
+    hdrs = ["modular.h"],
+    testonly = True,
+    deps = [
+        ":bitstream",
+        ":entropy_encoder",
+    ],
+)
+
+cc_library(
+    name = "vardct_frame",
+    srcs = ["vardct_frame.cc"],
+    hdrs = ["vardct_frame.h"],
+    testonly = True,
+    deps = [
+        ":bitstream",
+        ":entropy_encoder",
+        ":modular",
+    ],
+)
+
 cc_test(
     name = "codestream_parse_test",
     srcs = ["codestream_parse_test.cc"],
     deps = [
         ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "entropy_encoder_test",
+    srcs = ["entropy_encoder_test.cc"],
+    deps = [
+        ":entropy_encoder",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "modular_test",
+    srcs = ["modular_test.cc"],
+    deps = [
+        ":modular",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "vardct_frame_test",
+    srcs = ["vardct_frame_test.cc"],
+    deps = [
+        ":vardct_frame",
         "@libjxl//:jxl",
         "@googletest//:gtest_main",
     ],
