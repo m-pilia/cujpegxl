@@ -39,8 +39,13 @@ class CorpusPrepTest(unittest.TestCase):
         self.assertEqual(len(nv12), 4 * 6 + (4 // 2) * 6)
 
     def test_ladder_geometry(self):
-        self.assertEqual([r.width for r in cp.LADDER], [3840, 1920, 1280, 960])
-        self.assertEqual([r.height for r in cp.LADDER], [2160, 1080, 720, 540])
+        self.assertEqual([r.width for r in cp.LADDER], [3840, 1920, 1280])
+        self.assertEqual([r.height for r in cp.LADDER], [2160, 1080, 720])
+
+    def test_ladder_dims_are_block_aligned(self):
+        for rung in cp.LADDER:
+            self.assertEqual(rung.width % 8, 0)
+            self.assertEqual(rung.height % 8, 0)
 
 
 if __name__ == "__main__":

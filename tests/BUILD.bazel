@@ -71,3 +71,30 @@ py_test(
     ],
     deps = [requirement("numpy")],
 )
+
+py_library(
+    name = "conformance_util",
+    testonly = True,
+    srcs = ["conformance_util.py"],
+    imports = ["."],
+    deps = [requirement("numpy")],
+)
+
+py_test(
+    name = "ladder_conformance_test",
+    srcs = ["ladder_conformance_test.py"],
+    args = ["/usr/bin/djxl"],
+    data = ["//data:frames"],
+    imports = ["../python"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":conformance_util",
+        "//python:pycujpegxl",
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)

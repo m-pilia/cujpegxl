@@ -81,6 +81,7 @@ cuda_library(
     srcs = ["quant.cu"],
     hdrs = [
         "quant.h",
+        "quant_calibration.h",
         "quant_weights_dct8.h",
     ],
     copts = RUNTIME_COPTS,

@@ -10,6 +10,7 @@
 #include "dct.h"
 #include "entropy.h"
 #include "quant.h"
+#include "quant_calibration.h"
 #include "src/bitstream/container.h"
 #include "xyb.h"
 
@@ -242,8 +243,8 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 }
 
 bitstream::QuantParams quant_params_for_distance(float distance) {
-    (void)distance;
-    return bitstream::QuantParams{4096, 32, 32};
+    const QuantCalibration cal{calibrate_quant(distance)};
+    return bitstream::QuantParams{cal.global_scale, cal.quant_dc, cal.raw_quant_field};
 }
 
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
