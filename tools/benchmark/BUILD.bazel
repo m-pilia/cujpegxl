@@ -3,7 +3,7 @@
 
 load("@cujpegxl_pip//:requirements.bzl", "requirement")
 load("@rules_cc//cc:defs.bzl", "cc_binary")
-load("@rules_python//python:defs.bzl", "py_binary")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -21,6 +21,20 @@ cc_binary(
     ],
 )
 
+py_library(
+    name = "benchmark_lib",
+    srcs = ["benchmark.py"],
+    imports = [
+        ".",
+        "../corpus",
+    ],
+    deps = [
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
 py_binary(
     name = "benchmark",
     srcs = ["benchmark.py"],
@@ -28,10 +42,23 @@ py_binary(
         ":encode_bench",
         "//data:frames",
     ],
-    imports = ["../corpus"],
-    deps = [
-        "//tools/corpus:corpus_prep_lib",
-        requirement("numpy"),
-        requirement("pillow"),
+    imports = [
+        ".",
+        "../corpus",
     ],
+    deps = [":benchmark_lib"],
+)
+
+py_binary(
+    name = "comparison",
+    srcs = ["comparison.py"],
+    data = [
+        ":encode_bench",
+        "//data:frames",
+    ],
+    imports = [
+        ".",
+        "../corpus",
+    ],
+    deps = [":benchmark_lib"],
 )

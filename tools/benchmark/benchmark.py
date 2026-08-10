@@ -25,14 +25,88 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict, dataclass
 
 import corpus_prep as cp
 
 
-def _resolve_encode_bench() -> pathlib.Path:
+@dataclass
+class BenchStats:
+    """Parsed per-encode timing statistics from one encode_bench invocation."""
+
+    codec: str
+    setting: str  # "d=1.0" (cujpegxl) or "q=90" (nvJPEG)
+    width: int
+    height: int
+    images: int
+    iterations: int
+    warmup: int
+    n: int
+    total_us: float
+    mean_us: float
+    fps: float
+    stddev_us: float
+    min_us: float
+    p50_us: float
+    p99_us: float
+    max_us: float
+
+    @property
+    def megapixels(self) -> float:
+        return self.width * self.height / 1.0e6
+
+    @property
+    def megapixels_per_s(self) -> float:
+        return self.megapixels * self.fps
+
+    def as_dict(self) -> dict:
+        data = asdict(self)
+        data["megapixels_per_s"] = self.megapixels_per_s
+        return data
+
+
+def parse_stats(output: str) -> BenchStats:
+    """Parse the human-readable encode_bench report into a BenchStats."""
+
+    def field(pattern: str) -> re.Match:
+        match = re.search(pattern, output)
+        if match is None:
+            raise ValueError(f"could not parse encode_bench output for /{pattern}/:\n{output}")
+        return match
+
+    codec = field(r"codec:\s+(\S+)").group(1)
+    width = int(field(r"dims:\s+(\d+)x\d+").group(1))
+    height = int(field(r"dims:\s+\d+x(\d+)").group(1))
+    if codec == "cujpegxl":
+        setting = f"d={float(field(r'distance:\s+([\d.]+)').group(1))}"
+    else:
+        setting = f"q={int(field(r'quality:\s+(\d+)').group(1))}"
+    mean_match = field(r"mean:\s+([\d.]+)\s+\(([\d.]+) fps\)")
+    return BenchStats(
+        codec=codec,
+        setting=setting,
+        width=width,
+        height=height,
+        images=int(field(r"images:\s+(\d+)").group(1)),
+        iterations=int(field(r"iterations:\s+(\d+)").group(1)),
+        warmup=int(field(r"warmup:\s+(\d+)").group(1)),
+        n=int(field(r"\bn:\s+(\d+)").group(1)),
+        total_us=float(field(r"total:\s+([\d.]+)").group(1)),
+        mean_us=float(mean_match.group(1)),
+        fps=float(mean_match.group(2)),
+        stddev_us=float(field(r"stddev:\s+([\d.]+)").group(1)),
+        min_us=float(field(r"min:\s+([\d.]+)").group(1)),
+        p50_us=float(field(r"p50:\s+([\d.]+)").group(1)),
+        p99_us=float(field(r"p99:\s+([\d.]+)").group(1)),
+        max_us=float(field(r"max:\s+([\d.]+)").group(1)),
+    )
+
+
+def resolve_encode_bench() -> pathlib.Path:
     candidate = pathlib.Path(__file__).resolve().parent / "encode_bench"
     if candidate.exists():
         return candidate
@@ -46,15 +120,15 @@ def _resolve_encode_bench() -> pathlib.Path:
     )
 
 
-def _data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
+def data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
     frames = sorted(data_dir.glob("*.png"))
     if not frames:
         raise FileNotFoundError(f"no *.png frames found under {data_dir}")
     return frames
 
 
-def _generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
-                     out_dir: pathlib.Path) -> list[pathlib.Path]:
+def generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
+                    out_dir: pathlib.Path) -> list[pathlib.Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     nv12_files: list[pathlib.Path] = []
     for source in frames:
@@ -65,6 +139,43 @@ def _generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
         path.write_bytes(nv12)
         nv12_files.append(path)
     return nv12_files
+
+
+def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
+                  codec: str, iterations: int, warmup: int, device: int, distance: float = 1.0,
+                  quality: int = 90, profile: bool = False) -> list[str]:
+    cmd = [
+        str(bench),
+        "--codec", codec,
+        "--dims", f"{rung.width}x{rung.height}",
+        "--iterations", str(iterations),
+        "--warmup", str(warmup),
+        "--device", str(device),
+    ]
+    cmd += ["--distance", str(distance)] if codec == "cujpegxl" else ["--quality", str(quality)]
+    if profile:
+        cmd.append("--profile")
+    cmd += [str(p) for p in nv12_files]
+    return cmd
+
+
+def benchmark_codec(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
+                    codec: str, iterations: int, warmup: int, device: int, distance: float = 1.0,
+                    quality: int = 90) -> BenchStats:
+    """Run one encode_bench invocation and return its parsed timing statistics.
+
+    Each call includes its own warmup iterations (excluded from the timed window
+    by encode_bench), so a codec is never measured cold.
+    """
+    cmd = build_command(bench, nv12_files, rung, codec=codec, iterations=iterations, warmup=warmup,
+                        device=device, distance=distance, quality=quality)
+    print(f"running: {' '.join(cmd)}", file=sys.stderr)
+    completed = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"encode_bench failed (exit {completed.returncode}):\n{completed.stderr}"
+        )
+    return parse_stats(completed.stdout)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,39 +223,25 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--profile is only supported with --codec=cujpegxl")
 
     rung = next(r for r in cp.LADDER if r.name == args.rung)
-    bench = args.encode_bench if args.encode_bench is not None else _resolve_encode_bench()
+    bench = args.encode_bench if args.encode_bench is not None else resolve_encode_bench()
     if not bench.exists():
         parser.error(f"encode_bench binary not found at {bench}")
 
-    frames = _data_frames(args.data_dir)
+    frames = data_frames(args.data_dir)
 
     if args.nv12_dir is not None:
-        nv12_files = _generate_corpus(frames, rung, args.nv12_dir)
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            nv12_files = _generate_corpus(frames, rung, pathlib.Path(tmp))
-            return _invoke_bench(bench, nv12_files, args, rung)
-    return _invoke_bench(bench, nv12_files, args, rung)
+        nv12_files = generate_corpus(frames, rung, args.nv12_dir)
+        return _invoke_bench(bench, nv12_files, args, rung)
+    with tempfile.TemporaryDirectory() as tmp:
+        nv12_files = generate_corpus(frames, rung, pathlib.Path(tmp))
+        return _invoke_bench(bench, nv12_files, args, rung)
 
 
 def _invoke_bench(bench: pathlib.Path, nv12_files: list[pathlib.Path], args: argparse.Namespace,
                   rung: cp.Rung) -> int:
-    cmd = [
-        str(bench),
-        "--codec", args.codec,
-        "--dims", f"{rung.width}x{rung.height}",
-        "--iterations", str(args.iterations),
-        "--warmup", str(args.warmup),
-        "--device", str(args.device),
-    ]
-    if args.codec == "cujpegxl":
-        cmd += ["--distance", str(args.distance)]
-    else:
-        cmd += ["--quality", str(args.quality)]
-    if args.profile:
-        cmd.append("--profile")
-    cmd += [str(p) for p in nv12_files]
-
+    cmd = build_command(bench, nv12_files, rung, codec=args.codec, iterations=args.iterations,
+                        warmup=args.warmup, device=args.device, distance=args.distance,
+                        quality=args.quality, profile=args.profile)
     print(f"running: {' '.join(cmd)}", file=sys.stderr)
     completed = subprocess.run(cmd, check=False)
     return completed.returncode
