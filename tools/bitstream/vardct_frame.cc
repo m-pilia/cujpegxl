@@ -331,6 +331,61 @@ AcReference reference_ac_encode(const FrameCoefficients& fc) {
     return ref;
 }
 
+DcReference reference_dc_encode(const FrameCoefficients& fc) {
+    assert(fc.width % 8 == 0 && fc.height % 8 == 0);
+    const std::size_t bw{fc.width / 8};
+    const std::size_t bh{fc.height / 8};
+    const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
+    const std::size_t ydg{ceil_div(bh, DC_GROUP_BLOCKS)};
+
+    DcReference ref{};
+    ref.groups.resize(xdg * ydg);
+    for (std::size_t i{0}; i < xdg * ydg; ++i) {
+        const std::size_t gx{i % xdg};
+        const std::size_t gy{i / xdg};
+        const std::size_t bx0{gx * DC_GROUP_BLOCKS};
+        const std::size_t by0{gy * DC_GROUP_BLOCKS};
+        const std::size_t dgw{std::min(DC_GROUP_BLOCKS, bw - bx0)};
+        const std::size_t dgh{std::min(DC_GROUP_BLOCKS, bh - by0)};
+
+        DcGroupReference& g{ref.groups[i]};
+        g.bx0 = bx0;
+        g.by0 = by0;
+        g.dgw = dgw;
+        g.dgh = dgh;
+
+        const std::vector<ModularChannel> dc_ch{
+            make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh)};
+        const std::vector<ModularChannel> meta_ch{make_ac_metadata_channels(fc, dgw, dgh)};
+
+        BitWriter pre{};
+        write_bits(pre, 2, 0);  // DecodeVarDCTDC extra_precision = 0
+        EntropyEncoder dc_data{1};
+        write_modular_header(pre, dc_ch, dc_data);
+        g.blob_pre = pre.bytes();
+        g.blob_pre_bits = pre.bits_written();
+        g.dc_depth = dc_data.code_depth();
+        g.dc_bits = dc_data.code_bits();
+        g.dc_histogram = dc_data.histogram();
+
+        BitWriter mid{};
+        write_bits(mid, static_cast<std::size_t>(ceil_log2_nonzero(dgw * dgh)),
+                   static_cast<std::uint32_t>(dgw * dgh - 1));  // AcMetadata count - 1
+        EntropyEncoder meta_data{1};
+        write_modular_header(mid, meta_ch, meta_data);
+        g.blob_mid = mid.bytes();
+        g.blob_mid_bits = mid.bits_written();
+        g.acmeta_depth = meta_data.code_depth();
+        g.acmeta_bits = meta_data.code_bits();
+
+        BitWriter sec{};
+        write_dc_group(sec, fc, bw, bx0, by0, dgw, dgh);
+        sec.zero_pad_to_byte();
+        g.section = sec.bytes();
+    }
+    return ref;
+}
+
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc) {
     assert(fc.width % 8 == 0 && fc.height % 8 == 0);
     const std::size_t bw{fc.width / 8};

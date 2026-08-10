@@ -57,6 +57,45 @@ AcReference reference_ac_encode(const FrameCoefficients& fc);
 // DC). Exposed for tests.
 const std::array<std::uint32_t, 64>& dct8_natural_order();
 
+// The host reference for the device DcGroup coder. Per DcGroup it carries the
+// full byte-aligned section (the truth to diff against) plus the pieces that
+// drive the device: the two header bit blobs that bracket the device-emitted
+// token runs, the two shared prefix codes, the per-group DC histogram, and the
+// group's block geometry. The section is exactly what write_vardct_codestream
+// emits for that DcGroup; the device must reproduce it byte-for-byte.
+//
+// Section layout (bit-contiguous, then zero-padded):
+//   blob_pre  = extra_precision(2) + VarDCTDC modular header (GroupHeader + tree
+//               + DC data histograms)
+//   DC tokens = the 3 DC channels (physical order Y, X, B), row-major,
+//               PackSigned, prefix-coded with dc_depth/dc_bits  [device]
+//   blob_mid  = AcMetadata count-1 + AcMetadata modular header
+//   AcMetadata tokens = YtoX, YtoB, ACS+QF, EPF channels, row-major, PackSigned,
+//               prefix-coded with acmeta_depth/acmeta_bits      [device]
+struct DcGroupReference {
+    std::vector<std::uint8_t> section{};
+
+    std::vector<std::uint8_t> blob_pre{};
+    std::size_t blob_pre_bits{0};
+    std::vector<std::uint8_t> blob_mid{};
+    std::size_t blob_mid_bits{0};
+
+    std::vector<std::uint8_t> dc_depth{};
+    std::vector<std::uint16_t> dc_bits{};
+    std::vector<std::uint8_t> acmeta_depth{};
+    std::vector<std::uint16_t> acmeta_bits{};
+    std::vector<std::uint32_t> dc_histogram{};
+
+    std::size_t bx0{0};
+    std::size_t by0{0};
+    std::size_t dgw{0};
+    std::size_t dgh{0};
+};
+struct DcReference {
+    std::vector<DcGroupReference> groups{};
+};
+DcReference reference_dc_encode(const FrameCoefficients& fc);
+
 }  // namespace cujpegxl::bitstream
 
 #endif  // CUJPEGXL_TOOLS_BITSTREAM_VARDCT_FRAME_H_

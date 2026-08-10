@@ -136,6 +136,31 @@ cc_test(
     ],
 )
 
+cuda_library(
+    name = "dc_entropy_roundtrip",
+    testonly = True,
+    srcs = ["dc_entropy_roundtrip.cu"],
+    hdrs = ["dc_entropy_roundtrip.h"],
+    deps = [
+        ":entropy",
+        "//tools/bitstream:vardct_frame",
+    ],
+)
+
+cc_test(
+    name = "dc_entropy_gpu_test",
+    srcs = ["dc_entropy_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":dc_entropy_roundtrip",
+        "//tools/bitstream:vardct_frame",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "cujpegxl_lib",
     srcs = ["cujpegxl.cc"],

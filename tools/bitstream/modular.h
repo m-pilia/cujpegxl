@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bit_writer.h"
+#include "entropy_encoder.h"
 
 namespace cujpegxl::bitstream {
 
@@ -27,6 +28,19 @@ struct ModularChannel {
 // are skipped, matching the decoder's channel iteration. Not byte-aligned on
 // exit.
 void write_modular_image(BitWriter& w, const std::vector<ModularChannel>& channels);
+
+// The header half of write_modular_image: GroupHeader + single-leaf MA tree +
+// the channel data container's histogram description. `data` is populated with
+// the channel-sample tokens and its shared prefix code (from write_histograms),
+// so write_modular_tokens(w, data) can emit the token bits separately. Splitting
+// the image this way lets the device DcGroup coder emit the tokens while the
+// header stays a host-built bit blob.
+void write_modular_header(BitWriter& w, const std::vector<ModularChannel>& channels,
+                          EntropyEncoder& data);
+
+// The token half: the channel samples' prefix-coded bits, using the code built
+// by a prior write_modular_header on the same `data`.
+void write_modular_tokens(BitWriter& w, const EntropyEncoder& data);
 
 }  // namespace cujpegxl::bitstream
 

@@ -41,12 +41,11 @@ void write_single_leaf_tree(BitWriter& w) {
 
 }  // namespace
 
-void write_modular_image(BitWriter& w, const std::vector<ModularChannel>& channels) {
+void write_modular_header(BitWriter& w, const std::vector<ModularChannel>& channels,
+                          EntropyEncoder& data) {
     write_group_header(w);
     write_single_leaf_tree(w);
 
-    // (tree.size() + 1) / 2 == 1 histogram context for the channel samples.
-    EntropyEncoder data{1};
     for (const ModularChannel& ch : channels) {
         if (ch.w == 0 || ch.h == 0) {
             continue;
@@ -55,7 +54,18 @@ void write_modular_image(BitWriter& w, const std::vector<ModularChannel>& channe
             data.add_token(0, pack_signed(v));
         }
     }
-    data.write(w);
+    data.write_histograms(w);
+}
+
+void write_modular_tokens(BitWriter& w, const EntropyEncoder& data) {
+    data.write_tokens(w);
+}
+
+void write_modular_image(BitWriter& w, const std::vector<ModularChannel>& channels) {
+    // (tree.size() + 1) / 2 == 1 histogram context for the channel samples.
+    EntropyEncoder data{1};
+    write_modular_header(w, channels, data);
+    write_modular_tokens(w, data);
 }
 
 }  // namespace cujpegxl::bitstream
