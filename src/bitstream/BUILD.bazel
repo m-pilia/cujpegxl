@@ -6,6 +6,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 package(default_visibility = ["//visibility:public"])
 
 RUNTIME_COPTS = [
+    "-O3",
     "-fno-exceptions",
     "-fno-rtti",
 ]

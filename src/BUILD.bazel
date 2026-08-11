@@ -7,6 +7,7 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 package(default_visibility = ["//visibility:public"])
 
 RUNTIME_COPTS = [
+    "-O3",
     "-fno-exceptions",
     "-fno-rtti",
 ]

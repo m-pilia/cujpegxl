@@ -4,6 +4,7 @@
 #include "frame_encoder.h"
 
 #include <chrono>
+#include <cstdint>
 
 #include <cuda_runtime.h>
 
@@ -23,13 +24,26 @@ double us_since(Clock::time_point start) {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
 
+// Retain freed blocks in the device's default stream-ordered memory pool instead
+// of returning them to the driver, so the per-frame scratch (the ~300 MB
+// frontend planes and the entropy/assembly bodies) is reused across encodes
+// rather than re-allocated every frame.
+void retain_default_mempool(int device) {
+    cudaMemPool_t pool{};
+    if (cudaDeviceGetDefaultMemPool(&pool, device) != cudaSuccess) {
+        return;
+    }
+    std::uint64_t threshold{UINT64_MAX};
+    cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold);
+}
+
 template <typename T>
 bool upload(const std::vector<T>& host, T** device) {
     if (host.empty()) {
         *device = nullptr;
         return true;
     }
-    if (cudaMalloc(device, host.size() * sizeof(T)) != cudaSuccess) {
+    if (cudaMallocAsync(device, host.size() * sizeof(T), 0) != cudaSuccess) {
         return false;
     }
     return cudaMemcpy(*device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice) ==
@@ -37,13 +51,14 @@ bool upload(const std::vector<T>& host, T** device) {
 }
 
 // A device allocation freed when the encode returns, keeping the orchestrator's
-// many scratch buffers out of the happy-path control flow.
+// many scratch buffers out of the happy-path control flow. Backed by the
+// stream-ordered pool allocator so the freed blocks are recycled across frames.
 struct DeviceScope {
     std::vector<void*> ptrs{};
     template <typename T>
     T* alloc(std::size_t count) {
         void* p{nullptr};
-        if (cudaMalloc(&p, count * sizeof(T)) != cudaSuccess) {
+        if (cudaMallocAsync(&p, count * sizeof(T), 0) != cudaSuccess) {
             return nullptr;
         }
         ptrs.push_back(p);
@@ -52,7 +67,7 @@ struct DeviceScope {
     void track(void* p) { ptrs.push_back(p); }
     ~DeviceScope() {
         for (void* p : ptrs) {
-            cudaFree(p);
+            cudaFreeAsync(p, 0);
         }
     }
 };
@@ -69,6 +84,10 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     if (num_ac <= 1) {
         return false;  // combined-section (single-group) layout not handled here
     }
+
+    int device{0};
+    cudaGetDevice(&device);
+    retain_default_mempool(device);
 
     DeviceScope scope{};
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
@@ -252,6 +271,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
+    retain_default_mempool(device_ordinal);
 
     DeviceScope scope{};
     const std::size_t plane{width * height};
@@ -268,17 +288,18 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     const std::uint8_t* chroma_src{chroma};
     std::size_t chroma_src_pitch{chroma_pitch};
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
-        void* aligned{nullptr};
-        std::size_t aligned_pitch{0};
-        if (cudaMallocPitch(&aligned, &aligned_pitch, width, height / 2) != cudaSuccess) {
+        // 512-byte row pitch satisfies any device's texture pitch alignment and
+        // keeps the buffer in the stream-ordered pool (freed with cudaFreeAsync).
+        const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
+        std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
+        if (!aligned) {
             return false;
         }
-        scope.track(aligned);
         if (cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width, height / 2,
                          cudaMemcpyDeviceToDevice) != cudaSuccess) {
             return false;
         }
-        chroma_src = static_cast<const std::uint8_t*>(aligned);
+        chroma_src = aligned;
         chroma_src_pitch = aligned_pitch;
     }
 
