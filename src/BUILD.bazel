@@ -36,7 +36,6 @@ cc_library(
 # opsin transform (xyb_impl.cuh); the production path is the fused front-end.
 cuda_library(
     name = "xyb",
-    testonly = True,
     srcs = ["xyb.cu"],
     hdrs = ["xyb.h"],
     copts = RUNTIME_COPTS,
@@ -111,11 +110,11 @@ cc_test(
 
 cuda_library(
     name = "frontend_transform",
-    # testonly until wired into the runtime (T6 step 5); it composes the
-    # standalone (testonly) nv12_to_xyb kernel of the correctness-first path.
-    testonly = True,
     srcs = ["frontend_transform.cu"],
-    hdrs = ["frontend_transform.h"],
+    hdrs = [
+        "frontend_transform.h",
+        "gaborish.h",
+    ],
     copts = RUNTIME_COPTS,
     deps = [
         ":transform_select",
@@ -364,7 +363,10 @@ cuda_library(
     deps = [
         ":entropy",
         ":frontend_fused",
+        ":frontend_quantize",
+        ":frontend_transform",
         ":quant_consts",
+        ":vardct_layout",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",
     ],
@@ -382,6 +384,21 @@ cc_test(
         ":frame_encoder",
         "//src/bitstream",
         "//tools/bitstream:vardct_frame",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "frame_encoder_m3_gpu_test",
+    srcs = ["frame_encoder_m3_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":frame_encoder",
+        "//src/bitstream:frame_assembly",
         "@libjxl//:jxl",
         "@googletest//:gtest_main",
     ],

@@ -134,7 +134,8 @@ std::vector<std::uint8_t> build_dc_global(const QuantParams& qp) {
 
 DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
                                   const std::uint32_t* dc_histograms,
-                                  const std::uint32_t* acmeta_histograms) {
+                                  const std::uint32_t* acmeta_histograms,
+                                  const std::size_t* first_block_counts) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
@@ -156,7 +157,9 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
         const std::size_t gy{g / xdg};
         const std::size_t dgw{std::min(DC_GROUP_BLOCKS, bw - gx * DC_GROUP_BLOCKS)};
         const std::size_t dgh{std::min(DC_GROUP_BLOCKS, bh - gy * DC_GROUP_BLOCKS)};
-        const std::size_t count{dgw * dgh};
+        const std::size_t total_blocks{dgw * dgh};
+        const std::size_t count{first_block_counts == nullptr ? total_blocks
+                                                              : first_block_counts[g]};
 
         // VarDCTDC: extra_precision + modular header over the 3 DC channels. The
         // DC histogram is the device's; the modular header emits its description.
@@ -182,7 +185,7 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
         std::vector<std::uint8_t> meta_depth{};
         std::vector<std::uint16_t> meta_bits{};
         BitWriter mid{};
-        write_bits(mid, ceil_log2_nonzero(count), static_cast<std::uint32_t>(count - 1));
+        write_bits(mid, ceil_log2_nonzero(total_blocks), static_cast<std::uint32_t>(count - 1));
         write_modular_header(mid, meta_hist, meta_alpha, meta_depth, meta_bits);
         out.blob_mid_off[g] = static_cast<std::uint32_t>(out.blob_mid.size());
         out.blob_mid_bits[g] = static_cast<std::uint32_t>(mid.bits_written());

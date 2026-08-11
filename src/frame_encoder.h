@@ -72,6 +72,26 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
                  std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
                  std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
 
+// M3 encode: the mixed-block {8,16,32} + chroma-from-luma path. Assembles a
+// codestream from device-resident quantized coefficients in the covered-block
+// layout (`ac_device`: three int16 planes of (width/8 * height/8) * 64 slots;
+// `dc_device`: three int32 planes, one DC per 8x8 block), the per-8x8 transform
+// signal `acs`, the per-64x64-tile CfL maps `ytox_map`/`ytob_map`, and the
+// per-block `quant_field`. Uses the mixed-block device entropy path. Same
+// constraints as encode_frame (multi-AC-group ladder only).
+bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_device,
+                     const std::int8_t* acs, const std::int8_t* ytox_map,
+                     const std::int8_t* ytob_map, std::size_t width, std::size_t height,
+                     const bitstream::QuantParams& qp, const std::int32_t* quant_field,
+                     std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
+
+// M3 full device encode path (K1 select+transform, K2 CfL estimate, K3
+// residual+quantize, mixed-block entropy + assembly). Arguments as encode_nv12.
+bool encode_nv12_m3(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                    std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                    std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                    std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
+
 }  // namespace cujpegxl
 
 #endif  // CUJPEGXL_SRC_FRAME_ENCODER_H_

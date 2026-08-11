@@ -58,9 +58,14 @@ struct DcGroupBlobs {
     std::vector<std::uint32_t> blob_mid_off{};
     std::vector<std::uint32_t> blob_mid_bits{};
 };
+// `first_block_counts` (num_dc_groups, nullptr = all DCT8) gives each group's
+// number of first-blocks, which the AcMetadata `count` field encodes (the ACS/QF
+// channels have one column per first-block); its bit width stays the total-block
+// upper bound.
 DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
                                   const std::uint32_t* dc_histograms,
-                                  const std::uint32_t* acmeta_histograms);
+                                  const std::uint32_t* acmeta_histograms,
+                                  const std::size_t* first_block_counts = nullptr);
 
 // The codestream head: signature + SizeHeader + ImageMetadata + FrameHeader +
 // multi-entry TOC for `section_sizes` (in codestream order: DcGlobal, DcGroups,
