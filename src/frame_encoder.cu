@@ -8,13 +8,10 @@
 
 #include <cuda_runtime.h>
 
-#include "adaptive_quant.h"
-#include "dct.h"
 #include "entropy.h"
-#include "quant.h"
+#include "frontend_fused.h"
 #include "quant_calibration.h"
 #include "src/bitstream/container.h"
-#include "xyb.h"
 
 namespace cujpegxl {
 namespace {
@@ -280,10 +277,10 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
 
     DeviceScope scope{};
     const std::size_t plane{width * height};
-    float* d_xyb{scope.alloc<float>(3 * plane)};
-    float* d_coeffs{scope.alloc<float>(3 * plane)};
+    const std::size_t blocks{(width / 8) * (height / 8)};
     std::int32_t* d_q{scope.alloc<std::int32_t>(3 * plane)};
-    if (!d_xyb || !d_coeffs || !d_q) {
+    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
+    if (!d_q || !d_qf) {
         return false;
     }
 
@@ -308,22 +305,17 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         chroma_src_pitch = aligned_pitch;
     }
 
-    const std::size_t blocks{(width / 8) * (height / 8)};
-    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
-    if (!d_qf) {
-        return false;
-    }
-
     const Clock::time_point frontend_start{Clock::now()};
-    if (!nv12_to_xyb(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, d_xyb) ||
-        !compute_quant_field(d_xyb, width, height, distance, d_qf) ||
-        !forward_dct8(d_xyb, width, height, d_coeffs) ||
-        !quantize_dct8(d_coeffs, width, height, distance, d_qf, d_q)) {
+    if (!encode_frontend(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
+                         d_q, d_qf)) {
         return false;
     }
     if (stats != nullptr) {
         StageTiming frontend{"frontend", 0, us_since(frontend_start), 0.0};
-        frontend.bytes_moved = width * height + width * height / 2 + 5 * 3 * plane * sizeof(float);
+        // Fused front-end DRAM traffic: NV12 read + quantized coefficient write +
+        // quant field write. The XYB and DCT intermediates stay tile-resident.
+        frontend.bytes_moved = width * height + width * height / 2 +
+                               3 * plane * sizeof(std::int32_t) + blocks * sizeof(std::int32_t);
         stats->push_back(frontend);
     }
     return encode_frame(d_q, width, height, qp, d_qf, out_file, stats);

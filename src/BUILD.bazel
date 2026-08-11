@@ -27,15 +27,25 @@ cuda_library(
     deps = [":capability"],
 )
 
+cc_library(
+    name = "xyb_impl",
+    hdrs = ["xyb_impl.cuh"],
+)
+
+# Standalone stage kernel retained as a conformance-test harness over the shared
+# opsin transform (xyb_impl.cuh); the production path is the fused front-end.
 cuda_library(
     name = "xyb",
+    testonly = True,
     srcs = ["xyb.cu"],
     hdrs = ["xyb.h"],
     copts = RUNTIME_COPTS,
+    deps = [":xyb_impl"],
 )
 
 cuda_library(
     name = "dct",
+    testonly = True,
     srcs = ["dct.cu"],
     hdrs = ["dct.h"],
     copts = RUNTIME_COPTS,
@@ -77,23 +87,37 @@ cc_binary(
     deps = [":dct_dump_lib"],
 )
 
-cuda_library(
-    name = "quant",
-    srcs = ["quant.cu"],
+cc_library(
+    name = "quant_consts",
     hdrs = [
-        "quant.h",
         "quant_calibration.h",
         "quant_weights_dct8.h",
     ],
+)
+
+# Standalone quantizer kernel retained as the self-consistency-test harness over
+# the calibration constants; the production path is the fused front-end.
+cuda_library(
+    name = "quant",
+    testonly = True,
+    srcs = ["quant.cu"],
+    hdrs = ["quant.h"],
     copts = RUNTIME_COPTS,
+    deps = [":quant_consts"],
 )
 
 cuda_library(
-    name = "adaptive_quant",
-    srcs = ["adaptive_quant.cu"],
-    hdrs = ["adaptive_quant.h"],
+    name = "frontend_fused",
+    srcs = ["frontend_fused.cu"],
+    hdrs = [
+        "adaptive_quant_impl.cuh",
+        "frontend_fused.h",
+    ],
     copts = RUNTIME_COPTS,
-    deps = [":quant"],
+    deps = [
+        ":quant_consts",
+        ":xyb_impl",
+    ],
 )
 
 cuda_library(
@@ -103,6 +127,7 @@ cuda_library(
     deps = [
         ":dct",
         ":quant",
+        ":quant_consts",
     ],
 )
 
@@ -152,11 +177,9 @@ cuda_library(
     hdrs = ["frame_encoder.h"],
     copts = RUNTIME_COPTS,
     deps = [
-        ":adaptive_quant",
-        ":dct",
         ":entropy",
-        ":quant",
-        ":xyb",
+        ":frontend_fused",
+        ":quant_consts",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",
     ],
