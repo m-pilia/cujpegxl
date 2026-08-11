@@ -31,14 +31,17 @@ __device__ inline float quant_factor(std::size_t c, std::size_t k, float ac_scal
     return k == 0 ? DC_INV_QUANT_D[c] * dc_scale : ac_scale / QUANT_WEIGHTS[c][k];
 }
 
-// Phase 1: quantize Y (XYB channel 1). Y has no chroma-from-luma predictor.
+// Phase 1: quantize Y (XYB channel 1). Y has no chroma-from-luma predictor. The
+// per-block AC step is quant_field[block] * global_scale_float.
 __global__ void quantize_y_kernel(const float* __restrict__ coeffs, std::size_t plane,
-                                  float ac_scale, float dc_scale, std::int32_t* __restrict__ q) {
+                                  const std::int32_t* __restrict__ quant_field, float gsf,
+                                  float dc_scale, std::int32_t* __restrict__ q) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= plane) {
         return;
     }
     const std::size_t k{g % 64};
+    const float ac_scale{static_cast<float>(quant_field[g / 64]) * gsf};
     const float v{coeffs[plane + g]};
     q[plane + g] = static_cast<std::int32_t>(rintf(v * quant_factor(1, k, ac_scale, dc_scale)));
 }
@@ -48,13 +51,15 @@ __global__ void quantize_y_kernel(const float* __restrict__ coeffs, std::size_t 
 // adds dequant_y * Y_TO_B_RATIO back to every B coefficient, so we subtract the
 // roundtrip Y coefficient (read from the phase-1 output) before quantizing.
 __global__ void quantize_xb_kernel(const float* __restrict__ coeffs, std::size_t plane,
-                                   float ac_scale, float dc_scale, std::int32_t* __restrict__ q) {
+                                   const std::int32_t* __restrict__ quant_field, float gsf,
+                                   float dc_scale, std::int32_t* __restrict__ q) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= 2 * plane) {
         return;
     }
     const std::size_t local{g % plane};
     const std::size_t k{local % 64};
+    const float ac_scale{static_cast<float>(quant_field[local / 64]) * gsf};
     if (g < plane) {
         const float v{coeffs[g]};
         q[g] = static_cast<std::int32_t>(rintf(v * quant_factor(0, k, ac_scale, dc_scale)));
@@ -71,20 +76,20 @@ __global__ void quantize_xb_kernel(const float* __restrict__ coeffs, std::size_t
 }  // namespace
 
 bool quantize_dct8(const float* coeffs, std::size_t width, std::size_t height, float distance,
-                   std::int32_t* q) {
+                   const std::int32_t* quant_field, std::int32_t* q) {
     static std::once_flag weights_flag;
     std::call_once(weights_flag, init_quant_weights);
 
     const QuantCalibration cal{calibrate_quant(distance)};
-    const float ac_scale{static_cast<float>(cal.raw_quant_field) * cal.global_scale_float};
+    const float gsf{cal.global_scale_float};
     const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
 
     const std::size_t plane{width * height};
     const unsigned int threads{256};
     const unsigned int y_blocks{static_cast<unsigned int>((plane + threads - 1) / threads)};
-    quantize_y_kernel<<<y_blocks, threads>>>(coeffs, plane, ac_scale, dc_scale, q);
+    quantize_y_kernel<<<y_blocks, threads>>>(coeffs, plane, quant_field, gsf, dc_scale, q);
     const unsigned int xb_blocks{static_cast<unsigned int>((2 * plane + threads - 1) / threads)};
-    quantize_xb_kernel<<<xb_blocks, threads>>>(coeffs, plane, ac_scale, dc_scale, q);
+    quantize_xb_kernel<<<xb_blocks, threads>>>(coeffs, plane, quant_field, gsf, dc_scale, q);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};

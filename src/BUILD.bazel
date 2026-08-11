@@ -89,6 +89,14 @@ cuda_library(
 )
 
 cuda_library(
+    name = "adaptive_quant",
+    srcs = ["adaptive_quant.cu"],
+    hdrs = ["adaptive_quant.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":quant"],
+)
+
+cuda_library(
     name = "quant_dump_lib",
     testonly = True,
     srcs = ["quant_dump.cu"],
@@ -144,6 +152,7 @@ cuda_library(
     hdrs = ["frame_encoder.h"],
     copts = RUNTIME_COPTS,
     deps = [
+        ":adaptive_quant",
         ":dct",
         ":entropy",
         ":quant",

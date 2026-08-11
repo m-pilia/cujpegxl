@@ -8,6 +8,7 @@
 
 #include <cuda_runtime.h>
 
+#include "adaptive_quant.h"
 #include "dct.h"
 #include "entropy.h"
 #include "quant.h"
@@ -71,13 +72,6 @@ struct DeviceScope {
         }
     }
 };
-
-__global__ void fill_i32_kernel(std::int32_t* buf, std::size_t n, std::int32_t value) {
-    const std::size_t i{blockIdx.x * blockDim.x + threadIdx.x};
-    if (i < n) {
-        buf[i] = value;
-    }
-}
 
 }  // namespace
 
@@ -314,32 +308,23 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         chroma_src_pitch = aligned_pitch;
     }
 
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
+    if (!d_qf) {
+        return false;
+    }
+
     const Clock::time_point frontend_start{Clock::now()};
     if (!nv12_to_xyb(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, d_xyb) ||
+        !compute_quant_field(d_xyb, width, height, distance, d_qf) ||
         !forward_dct8(d_xyb, width, height, d_coeffs) ||
-        !quantize_dct8(d_coeffs, width, height, distance, d_q)) {
+        !quantize_dct8(d_coeffs, width, height, distance, d_qf, d_q)) {
         return false;
     }
     if (stats != nullptr) {
         StageTiming frontend{"frontend", 0, us_since(frontend_start), 0.0};
         frontend.bytes_moved = width * height + width * height / 2 + 5 * 3 * plane * sizeof(float);
         stats->push_back(frontend);
-    }
-
-    // Uniform per-block quant field (adaptive quantization not yet applied).
-    const std::size_t blocks{(width / 8) * (height / 8)};
-    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
-    if (!d_qf) {
-        return false;
-    }
-    const QuantCalibration cal{calibrate_quant(distance)};
-    const unsigned int fill_threads{256};
-    const unsigned int fill_blocks{static_cast<unsigned int>((blocks + fill_threads - 1) /
-                                                             fill_threads)};
-    fill_i32_kernel<<<fill_blocks, fill_threads>>>(d_qf, blocks,
-                                                   static_cast<std::int32_t>(cal.raw_quant_field));
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
-        return false;
     }
     return encode_frame(d_q, width, height, qp, d_qf, out_file, stats);
 }
