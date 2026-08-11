@@ -56,12 +56,18 @@ cmake(
 
 # Internal (non-installed) libjxl headers, rooted so that libjxl's own
 # repo-root-relative includes (e.g. "lib/jxl/enc_xyb.h") resolve.
+#
+# NDEBUG must match the Release jxl_build: JXL_IS_DEBUG_BUILD toggles an extra
+# virtual (Fields::Name) into every Fields-derived vtable, so a consumer that
+# compiles these headers without NDEBUG gets an ABI-incompatible vtable layout
+# from libjxl.a and corrupts encoder state. Propagated to all dependents.
 cc_library(
     name = "internal_headers",
     hdrs = glob(
         ["lib/**/*.h"],
         allow_empty = False,
     ),
+    defines = ["NDEBUG"],
     includes = ["."],
 )
 
@@ -78,5 +84,27 @@ cc_library(
     deps = [
         ":internal_headers",
         ":jxl_build",
+    ],
+)
+
+# SSIMULACRA2 reference implementation. Lives under tools/ in the libjxl tree
+# and is not compiled into libjxl.a, so the sources are compiled here against
+# the already-built static libjxl and its internal headers. gauss_blur.cc uses
+# highway's per-target compilation; it resolves to the compile-time target when
+# built as a single translation unit.
+cc_library(
+    name = "ssimulacra2",
+    testonly = True,
+    srcs = [
+        "tools/gauss_blur.cc",
+        "tools/no_memory_manager.cc",
+        "tools/ssimulacra2.cc",
+    ],
+    hdrs = glob(["tools/*.h"]),
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":internal_headers",
+        ":jxl",
     ],
 )
