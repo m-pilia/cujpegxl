@@ -4,6 +4,9 @@ build --incompatible_enable_cc_toolchain_resolution
 build --cxxopt=-std=c++17
 build --host_cxxopt=-std=c++17
 
+build --copt=-O3
+build --host_copt=-O3
+
 build --@rules_cuda//cuda:compiler=clang
 build --@rules_cuda//cuda:archs=sm_61;sm_87
 
