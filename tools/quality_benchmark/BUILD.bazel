@@ -1,0 +1,87 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+pybind_extension(
+    name = "pylibjxl",
+    testonly = True,
+    srcs = ["pylibjxl.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@libjxl//:jxl",
+        "@libjxl//:ssimulacra2",
+    ],
+)
+
+pybind_extension(
+    name = "pynvjpeg",
+    testonly = True,
+    srcs = ["pynvjpeg.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@cuda//:cuda_runtime_static",
+        "@cuda//:nvjpeg",
+    ],
+)
+
+py_library(
+    name = "quality_benchmark_lib",
+    testonly = True,
+    srcs = ["quality_benchmark.py"],
+    imports = [
+        ".",
+        "../corpus",
+        "../../python",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":pylibjxl",
+        ":pynvjpeg",
+        "//python:pycujpegxl",
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_binary(
+    name = "quality_benchmark",
+    testonly = True,
+    srcs = ["quality_benchmark.py"],
+    data = ["//data:frames"],
+    imports = [
+        ".",
+        "../corpus",
+        "../../python",
+    ],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [":quality_benchmark_lib"],
+)
+
+py_test(
+    name = "quality_benchmark_test",
+    srcs = ["quality_benchmark_test.py"],
+    imports = [
+        ".",
+        "../corpus",
+        "../../python",
+    ],
+    deps = [
+        ":quality_benchmark_lib",
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
