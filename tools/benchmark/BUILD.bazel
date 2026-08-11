@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_python//python:defs.bzl", "py_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_binary(
+    name = "encode_bench",
+    srcs = ["encode_bench.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        "//src:frame_encoder",
+        "@cuda//:nvjpeg",
+        "@cuda//:nvtx3",
+    ],
+)
+
+py_binary(
+    name = "benchmark",
+    srcs = ["benchmark.py"],
+    data = [
+        ":encode_bench",
+        "//data:frames",
+    ],
+    imports = ["../corpus"],
+    deps = [
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
