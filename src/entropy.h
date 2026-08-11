@@ -46,6 +46,24 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                       std::size_t* total_bytes);
 
+// Mixed-block (M3) AC histogram: as ac_build_histogram, but `ac` is the
+// covered-block layout (three channel planes of (width/8 * height/8) *
+// COEFFS_PER_BLOCK int16) and `acs` the per-8x8 transform signal (nullptr = all
+// DCT8). Each first-block tokenizes order[covered..size) of its size gathered via
+// covered_plane_slot; covered blocks contribute nothing. Byte-exact with the host
+// mixed-block reference. Deterministic. Returns false on a CUDA error.
+bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                           std::size_t height, std::uint32_t* histogram);
+
+// Mixed-block (M3) AC group emit: as ac_encode_groups, over the covered-block
+// layout under `acs`. `depth`/`bits` are the shared prefix code from the phase-1
+// histogram. Byte-exact with the host reference. Deterministic. Returns false on
+// a CUDA error or if `out_capacity` is exceeded.
+bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                         std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
+                         std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+                         std::uint32_t* group_offsets, std::size_t* total_bytes);
+
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.
 std::size_t dc_num_groups(std::size_t width, std::size_t height);

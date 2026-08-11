@@ -5,9 +5,13 @@
 
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #include <cuda_runtime.h>
 #include <cub/device/device_scan.cuh>
+
+#include "coeff_order.h"
+#include "vardct_layout.h"
 
 namespace cujpegxl {
 namespace {
@@ -24,8 +28,16 @@ constexpr std::uint32_t LSB_IN_TOKEN = 0;
 // planes 0=X, 1=Y, 2=B.
 __constant__ int CHANNEL_ORDER[3]{1, 0, 2};
 
-// order[k] = libjxl-raster index of the k-th coefficient in DCT8 scan order.
+// order[k] = libjxl-raster index of the k-th coefficient in the square DCT scan
+// order, per transform size. NATURAL_ORDER is DCT8 (M2 path); the DCT16/DCT32
+// tables drive the mixed-block (M3) tokenizer.
 __constant__ std::uint32_t NATURAL_ORDER[64];
+__constant__ std::uint32_t NATURAL_ORDER_16[256];
+__constant__ std::uint32_t NATURAL_ORDER_32[1024];
+
+__device__ const std::uint32_t* natural_order_dev(int side) {
+    return side == 16 ? NATURAL_ORDER_16 : (side == 32 ? NATURAL_ORDER_32 : NATURAL_ORDER);
+}
 
 void compute_natural_order(std::uint32_t out[64]) {
     constexpr std::size_t dim{8};
@@ -58,6 +70,10 @@ void init_constants() {
     std::uint32_t order[64];
     compute_natural_order(order);
     cudaMemcpyToSymbol(NATURAL_ORDER, order, sizeof(order));
+    const std::vector<std::uint32_t> o16{natural_coeff_order(16)};
+    const std::vector<std::uint32_t> o32{natural_coeff_order(32)};
+    cudaMemcpyToSymbol(NATURAL_ORDER_16, o16.data(), o16.size() * sizeof(std::uint32_t));
+    cudaMemcpyToSymbol(NATURAL_ORDER_32, o32.data(), o32.size() * sizeof(std::uint32_t));
 }
 
 void ensure_constants() {
@@ -662,6 +678,196 @@ __global__ void dc_chunk_emit_kernel(
     }
 }
 
+// --- Mixed-block (M3) AC path -------------------------------------------------
+// The M3 coefficient buffer is the covered-block layout (COEFFS_PER_BLOCK slots
+// per 8x8 position, per channel plane nblocks*COEFFS_PER_BLOCK); a first-block of
+// side N tokenizes order[covered..size) of its channel plane, gathered via
+// covered_plane_slot; covered blocks emit nothing. Mirrors the host tokenizer
+// (tools/bitstream tokenize_ac_group) so the device stays byte-exact.
+
+// Iterates one first-block-channel's tokens in decoder order. `plane` is the
+// channel's covered-block plane (nblocks*COEFFS_PER_BLOCK int16).
+template <typename Emit>
+__device__ void m3_for_each_token(const std::int16_t* plane, std::size_t bx, std::size_t by,
+                                 int side, std::size_t bw, Emit emit) {
+    const int cx{side / 8};
+    const int covered{cx * cx};
+    const int size{side * side};
+    const std::uint32_t* order{natural_order_dev(side)};
+    std::uint32_t nzeros{0};
+    for (int k{covered}; k < size; ++k) {
+        if (plane[covered_plane_slot(side, bx, by, bw, order[k])] != 0) {
+            ++nzeros;
+        }
+    }
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(nzeros, symbol, nbits, bits);
+    emit(symbol, nbits, bits);
+    std::uint32_t remaining{nzeros};
+    for (int k{covered}; k < size && remaining > 0; ++k) {
+        const std::int32_t v{plane[covered_plane_slot(side, bx, by, bw, order[k])]};
+        hybrid_encode(pack_signed(v), symbol, nbits, bits);
+        emit(symbol, nbits, bits);
+        if (v != 0) {
+            --remaining;
+        }
+    }
+}
+
+__global__ void histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* acs, std::size_t bw,
+                                    std::size_t bh, std::size_t nblocks,
+                                    std::uint32_t* histogram) {
+    __shared__ unsigned int sh[AC_HISTOGRAM_SIZE];
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        sh[i] = 0;
+    }
+    __syncthreads();
+
+    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
+    const std::size_t total{3 * bw * bh};
+    if (idx < total) {
+        const std::size_t block{idx / 3};
+        const int side{acs == nullptr ? 8 : acs[block]};
+        if (side != ACS_COVERED) {
+            const int p{static_cast<int>(idx % 3)};
+            const int c{CHANNEL_ORDER[p]};
+            const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks *
+                                               COEFFS_PER_BLOCK};
+            m3_for_each_token(plane, block % bw, block / bw, side, bw,
+                              [&](std::uint32_t symbol, std::uint32_t, std::uint32_t) {
+                                  atomicAdd(&sh[symbol], 1u);
+                              });
+        }
+    }
+    __syncthreads();
+
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        if (sh[i] != 0) {
+            atomicAdd(&histogram[i], sh[i]);
+        }
+    }
+}
+
+struct AcGroupCtxM3 {
+    const std::int16_t* ac;
+    const std::int8_t* acs;
+    std::size_t bw, nblocks;
+    std::size_t bx0, by0, gbw;
+    const std::uint8_t* depth;
+    const std::uint16_t* bits;
+    std::size_t n_items;  // gbw * gbh * 3, covered block-channels emit nothing
+};
+
+__device__ AcGroupCtxM3 build_ac_ctx_m3(std::size_t g, const std::int16_t* ac,
+                                        const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                        std::size_t nblocks, std::size_t xg,
+                                        const std::uint8_t* depth, const std::uint16_t* bits) {
+    const GroupExtent e{group_extent(g, bw, bh, xg)};
+    AcGroupCtxM3 c{};
+    c.ac = ac;
+    c.acs = acs;
+    c.bw = bw;
+    c.nblocks = nblocks;
+    c.bx0 = e.bx0;
+    c.by0 = e.by0;
+    c.gbw = e.gbw;
+    c.depth = depth;
+    c.bits = bits;
+    c.n_items = e.gbw * e.gbh * 3;
+    return c;
+}
+
+// The (block, channel) of item i, and its transform side (ACS_COVERED if the item
+// contributes no tokens).
+__device__ int ac_item_m3(const AcGroupCtxM3& c, std::size_t i, std::size_t& bx, std::size_t& by,
+                          const std::int16_t*& plane) {
+    const int p{static_cast<int>(i % 3)};
+    const std::size_t bidx{i / 3};
+    bx = c.bx0 + bidx % c.gbw;
+    by = c.by0 + bidx / c.gbw;
+    const int side{c.acs == nullptr ? 8 : c.acs[by * c.bw + bx]};
+    plane = c.ac + static_cast<std::size_t>(CHANNEL_ORDER[p]) * c.nblocks * COEFFS_PER_BLOCK;
+    return side;
+}
+
+__device__ std::uint32_t ac_item_bits_m3(const AcGroupCtxM3& c, std::size_t i) {
+    std::size_t bx{}, by{};
+    const std::int16_t* plane{};
+    const int side{ac_item_m3(c, i, bx, by, plane)};
+    if (side == ACS_COVERED) {
+        return 0;
+    }
+    std::uint32_t total{0};
+    m3_for_each_token(plane, bx, by, side, c.bw,
+                      [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t) {
+                          total += c.depth[sym] + nbits;
+                      });
+    return total;
+}
+
+__device__ void ac_item_emit_m3(const AcGroupCtxM3& c, std::size_t i, AtomicBitWriter& w) {
+    std::size_t bx{}, by{};
+    const std::int16_t* plane{};
+    const int side{ac_item_m3(c, i, bx, by, plane)};
+    if (side == ACS_COVERED) {
+        return;
+    }
+    m3_for_each_token(plane, bx, by, side, c.bw,
+                      [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw) {
+                          w.put(c.depth[sym], c.bits[sym]);
+                          if (nbits) {
+                              w.put(nbits, raw);
+                          }
+                      });
+}
+
+__global__ void group_size_m3_kernel(const std::int16_t* ac, const std::int8_t* acs, std::size_t bw,
+                                     std::size_t bh, std::size_t nblocks, std::size_t xg,
+                                     std::size_t num_groups, const std::uint8_t* depth,
+                                     std::uint32_t* group_sizes, unsigned long long* run_offsets) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const AcGroupCtxM3 c{build_ac_ctx_m3(g, ac, acs, bw, bh, nblocks, xg, depth, nullptr)};
+    const std::size_t r{(c.n_items + blockDim.x - 1) / blockDim.x};
+    const std::size_t k0{min(static_cast<std::size_t>(threadIdx.x) * r, c.n_items)};
+    const std::size_t k1{min(k0 + r, c.n_items)};
+    unsigned long long run_bits{0};
+    for (std::size_t k{k0}; k < k1; ++k) {
+        run_bits += ac_item_bits_m3(c, k);
+    }
+    __shared__ unsigned long long sh[AC_EMIT_THREADS];
+    unsigned long long total{0};
+    const unsigned long long run_off{block_scan_exclusive(run_bits, sh, total)};
+    run_offsets[g * blockDim.x + threadIdx.x] = run_off;
+    if (threadIdx.x == 0) {
+        group_sizes[g] = static_cast<std::uint32_t>((total + 7) / 8);
+    }
+}
+
+__global__ void group_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* acs, std::size_t bw,
+                                     std::size_t bh, std::size_t nblocks, std::size_t xg,
+                                     std::size_t num_groups, const std::uint8_t* depth,
+                                     const std::uint16_t* bits_table,
+                                     const unsigned long long* run_offsets, std::uint8_t* out,
+                                     const std::uint32_t* group_offsets) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const AcGroupCtxM3 c{build_ac_ctx_m3(g, ac, acs, bw, bh, nblocks, xg, depth, bits_table)};
+    const std::size_t r{(c.n_items + blockDim.x - 1) / blockDim.x};
+    const std::size_t k0{min(static_cast<std::size_t>(threadIdx.x) * r, c.n_items)};
+    const std::size_t k1{min(k0 + r, c.n_items)};
+    const unsigned long long run_off{run_offsets[g * blockDim.x + threadIdx.x]};
+    AtomicBitWriter w{reinterpret_cast<unsigned int*>(out),
+                      (static_cast<unsigned long long>(group_offsets[g]) << 3) + run_off};
+    for (std::size_t k{k0}; k < k1; ++k) {
+        ac_item_emit_m3(c, k, w);
+    }
+}
+
 }  // namespace
 
 std::size_t ac_num_groups(std::size_t width, std::size_t height) {
@@ -760,6 +966,93 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
 
     group_emit_kernel<<<grid, AC_EMIT_THREADS>>>(ac, bw, bh, nblocks, xg, num_groups, depth, bits,
                                                  run_offsets, out, group_offsets);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    free_run();
+    return ok;
+}
+
+bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                           std::size_t height, std::uint32_t* histogram) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    if (cudaMemset(histogram, 0, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
+        return false;
+    }
+    const std::size_t total{3 * bw * bh};
+    const unsigned int threads{256};
+    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
+    histogram_m3_kernel<<<blocks, threads>>>(ac, acs, bw, bh, nblocks, histogram);
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+}
+
+bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                         std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
+                         std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+                         std::uint32_t* group_offsets, std::size_t* total_bytes) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
+    const std::size_t num_groups{ac_num_groups(width, height)};
+
+    unsigned long long* run_offsets{nullptr};
+    if (cudaMallocAsync(&run_offsets, num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
+                        0) != cudaSuccess) {
+        return false;
+    }
+    const auto free_run = [&] { cudaFreeAsync(run_offsets, 0); };
+
+    const unsigned int grid{static_cast<unsigned int>(num_groups)};
+    group_size_m3_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, bw, bh, nblocks, xg, num_groups, depth,
+                                                    group_sizes, run_offsets);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        free_run();
+        return false;
+    }
+
+    void* d_temp{nullptr};
+    std::size_t temp_bytes{0};
+    cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&d_temp, temp_bytes, 0) != cudaSuccess) {
+        free_run();
+        return false;
+    }
+    cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(d_temp, 0);
+    if (scan_status != cudaSuccess) {
+        free_run();
+        return false;
+    }
+
+    std::uint32_t last_offset{0};
+    std::uint32_t last_size{0};
+    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        free_run();
+        return false;
+    }
+    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
+    if (*total_bytes > out_capacity) {
+        free_run();
+        return false;
+    }
+
+    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
+        free_run();
+        return false;
+    }
+
+    group_emit_m3_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, bw, bh, nblocks, xg, num_groups, depth,
+                                                    bits, run_offsets, out, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_run();
     return ok;

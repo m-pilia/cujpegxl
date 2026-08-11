@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "entropy_roundtrip.h"
+#include "src/vardct_layout.h"
 #include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl {
@@ -118,6 +119,85 @@ TEST(EntropyGpu, MultiGroupPartialEdges) {
     FrameCoefficients fc{make_frame(640, 384)};
     fill_ac_pattern(fc);
     check_matches_reference(fc);
+}
+
+// Marks a first-block of `side` and its covered interior in fc.acs.
+void set_first_block(FrameCoefficients& fc, std::size_t bw, int side, std::size_t bx,
+                     std::size_t by) {
+    const std::size_t s{static_cast<std::size_t>(side) / 8};
+    for (std::size_t dy{0}; dy < s; ++dy) {
+        for (std::size_t dx{0}; dx < s; ++dx) {
+            fc.acs[(by + dy) * bw + (bx + dx)] =
+                (dy == 0 && dx == 0) ? static_cast<std::int8_t>(side) : ACS_COVERED;
+        }
+    }
+}
+
+// Fills a mixed DCT32/DCT16/DCT8 frame with a per-coefficient pattern in the
+// covered-block layout, so the device mixed-block AC path is diffed against the
+// host reference across strategies.
+FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
+    FrameCoefficients fc{make_frame(w, h)};
+    const std::size_t bw{w / 8};
+    const std::size_t bh{h / 8};
+    fc.acs.assign(bw * bh, 8);
+    set_first_block(fc, bw, 32, 0, 0);
+    set_first_block(fc, bw, 16, 4, 0);
+    set_first_block(fc, bw, 16, 0, 4);
+    for (std::size_t by{0}; by < bh; ++by) {
+        for (std::size_t bx{0}; bx < bw; ++bx) {
+            const int side{fc.acs[by * bw + bx]};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            for (int raw{1}; raw < side * side; raw += 3) {
+                const std::size_t slot{covered_plane_slot(side, bx, by, bw,
+                                                          static_cast<std::size_t>(raw))};
+                for (int c{0}; c < 3; ++c) {
+                    fc.ac[c][slot] = static_cast<std::int32_t>((raw + bx + by + c) % 9) - 4;
+                }
+            }
+        }
+    }
+    return fc;
+}
+
+void check_matches_reference_m3(const FrameCoefficients& fc) {
+    const AcReference ref{reference_ac_encode(fc)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult dev{};
+    ASSERT_TRUE(ac_encode_device_m3(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, dev));
+
+    for (std::size_t s{0}; s < ref.histogram.size(); ++s) {
+        EXPECT_EQ(dev.histogram[s], ref.histogram[s]) << "histogram symbol " << s;
+    }
+    std::uint32_t offset{0};
+    for (std::size_t g{0}; g < ref.group_streams.size(); ++g) {
+        const std::vector<std::uint8_t>& expected{ref.group_streams[g]};
+        EXPECT_EQ(dev.group_sizes[g], expected.size()) << "group " << g << " size";
+        EXPECT_EQ(dev.group_offsets[g], offset) << "group " << g << " offset";
+        offset += dev.group_sizes[g];
+        for (std::size_t i{0}; i < expected.size(); ++i) {
+            EXPECT_EQ(dev.stream[dev.group_offsets[g] + i], expected[i])
+                << "group " << g << " byte " << i;
+        }
+    }
+    EXPECT_EQ(dev.stream.size(), offset);
+}
+
+TEST(EntropyGpuM3, Dct8OnlyMatchesReference) {
+    FrameCoefficients fc{make_frame(256, 256)};
+    fill_ac_pattern(fc);
+    fc.acs.assign((256 / 8) * (256 / 8), 8);  // explicit all-DCT8
+    check_matches_reference_m3(fc);
+}
+
+TEST(EntropyGpuM3, MixedSingleGroupMatchesReference) {
+    check_matches_reference_m3(make_mixed_frame(256, 256));
+}
+
+TEST(EntropyGpuM3, MixedMultiGroupMatchesReference) {
+    check_matches_reference_m3(make_mixed_frame(512, 384));
 }
 
 TEST(EntropyGpu, Deterministic) {

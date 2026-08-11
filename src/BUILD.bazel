@@ -327,6 +327,10 @@ cuda_library(
     srcs = ["entropy.cu"],
     hdrs = ["entropy.h"],
     copts = RUNTIME_COPTS,
+    deps = [
+        ":coeff_order",
+        ":vardct_layout",
+    ],
 )
 
 cuda_library(
@@ -346,6 +350,7 @@ cc_test(
     ],
     deps = [
         ":entropy_roundtrip",
+        ":vardct_layout",
         "//tools/bitstream:vardct_frame",
         "@googletest//:gtest_main",
     ],
