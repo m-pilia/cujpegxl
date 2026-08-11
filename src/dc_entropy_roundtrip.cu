@@ -71,10 +71,19 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     const std::size_t capacity{16 * blocks + blob_pre.size() + blob_mid.size() + num_groups * 64 +
                                4096};
 
-    const std::vector<std::int32_t> quant_field((width / 8) * (height / 8),
-                                                static_cast<std::int32_t>(raw_quant_field));
+    const std::vector<std::int32_t> quant_field(blocks, static_cast<std::int32_t>(raw_quant_field));
 
-    std::int32_t* d_q{nullptr};
+    // Adapt the combined int32 coefficient layout into the compact int32 DC buffer
+    // the device kernels now consume (one DC per block; channel-major planes).
+    const std::size_t plane{width * height};
+    std::vector<std::int32_t> dc(3 * blocks, 0);
+    for (std::size_t c{0}; c < 3; ++c) {
+        for (std::size_t b{0}; b < blocks; ++b) {
+            dc[c * blocks + b] = q[c * plane + b * 64];
+        }
+    }
+
+    std::int32_t* d_dc{nullptr};
     std::int32_t* d_qf{nullptr};
     std::uint8_t* d_dc_depth{nullptr};
     std::uint16_t* d_dc_bits{nullptr};
@@ -91,23 +100,22 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::uint32_t* d_offsets{nullptr};
     std::uint8_t* d_out{nullptr};
 
-    bool ok{upload(q, &d_q) && upload(quant_field, &d_qf) && upload(dc_depth, &d_dc_depth) &&
-            upload(dc_bits, &d_dc_bits) &&
-            upload(acmeta_depth, &d_am_depth) && upload(acmeta_bits, &d_am_bits) &&
-            upload(blob_pre, &d_pre) && upload(blob_pre_off, &d_pre_off) &&
-            upload(blob_pre_bits, &d_pre_bits) && upload(blob_mid, &d_mid) &&
-            upload(blob_mid_off, &d_mid_off) && upload(blob_mid_bits, &d_mid_bits) &&
+    bool ok{upload(dc, &d_dc) && upload(quant_field, &d_qf) && upload(dc_depth, &d_dc_depth) &&
+            upload(dc_bits, &d_dc_bits) && upload(acmeta_depth, &d_am_depth) &&
+            upload(acmeta_bits, &d_am_bits) && upload(blob_pre, &d_pre) &&
+            upload(blob_pre_off, &d_pre_off) && upload(blob_pre_bits, &d_pre_bits) &&
+            upload(blob_mid, &d_mid) && upload(blob_mid_off, &d_mid_off) &&
+            upload(blob_mid_bits, &d_mid_bits) &&
             cudaMalloc(&d_hist, code_span * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
 
     std::size_t total_bytes{0};
-    ok = ok && dc_build_histograms(d_q, width, height, d_hist);
-    ok = ok &&
-         dc_encode_groups(d_q, width, height, d_qf, d_dc_depth, d_dc_bits, d_am_depth,
-                          d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off, d_mid_bits,
-                          d_out, capacity, d_sizes, d_offsets, &total_bytes);
+    ok = ok && dc_build_histograms(d_dc, width, height, d_hist);
+    ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_dc_depth, d_dc_bits, d_am_depth,
+                                d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off,
+                                d_mid_bits, d_out, capacity, d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
         std::vector<std::uint32_t> flat_hist(code_span, 0);
@@ -131,7 +139,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
         }
     }
 
-    cudaFree(d_q);
+    cudaFree(d_dc);
     cudaFree(d_qf);
     cudaFree(d_dc_depth);
     cudaFree(d_dc_bits);

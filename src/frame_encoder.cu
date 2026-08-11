@@ -72,9 +72,10 @@ struct DeviceScope {
 
 }  // namespace
 
-bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                  std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, std::size_t width,
+                  std::size_t height, const bitstream::QuantParams& qp,
+                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
+                  std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -99,8 +100,8 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     if (!d_ac_hist || !d_dc_hist || !d_am_hist) {
         return false;
     }
-    if (!ac_build_histogram(q_device, width, height, d_ac_hist) ||
-        !dc_build_histograms(q_device, width, height, d_dc_hist) ||
+    if (!ac_build_histogram(ac_device, width, height, d_ac_hist) ||
+        !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, width, height, d_am_hist)) {
         return false;
     }
@@ -176,11 +177,11 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    if (!ac_encode_groups(q_device, width, height, d_ac_depth, d_ac_bits, ac_global.depth.size(),
+    if (!ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits, ac_global.depth.size(),
                           d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total)) {
         return false;
     }
-    if (!dc_encode_groups(q_device, width, height, quant_field, d_dc_depth, d_dc_bits, d_am_depth,
+    if (!dc_encode_groups(dc_device, width, height, quant_field, d_dc_depth, d_dc_bits, d_am_depth,
                           d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off, d_mid_bits,
                           d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;
@@ -195,7 +196,9 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
         return false;
     }
     entropy.gpu_us += us_since(entropy_encode_start);
-    entropy.bytes_moved = 2 * 3 * bw * bh * 64 * sizeof(std::int32_t) + ac_total + dc_total;
+    const std::size_t coeff_bytes{3 * bw * bh * AC_COEFFS_PER_BLOCK * sizeof(std::int16_t) +
+                                  3 * bw * bh * sizeof(std::int32_t)};
+    entropy.bytes_moved = 2 * coeff_bytes + ac_total + dc_total;
 
     // Section sizes in codestream order: DcGlobal, DcGroups, AcGlobal, AcGroups.
     const Clock::time_point assembly_head_start{Clock::now()};
@@ -276,11 +279,11 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     retain_default_mempool(device_ordinal);
 
     DeviceScope scope{};
-    const std::size_t plane{width * height};
     const std::size_t blocks{(width / 8) * (height / 8)};
-    std::int32_t* d_q{scope.alloc<std::int32_t>(3 * plane)};
+    std::int16_t* d_ac{scope.alloc<std::int16_t>(3 * blocks * AC_COEFFS_PER_BLOCK)};
+    std::int32_t* d_dc{scope.alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
-    if (!d_q || !d_qf) {
+    if (!d_ac || !d_dc || !d_qf) {
         return false;
     }
 
@@ -307,18 +310,20 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
 
     const Clock::time_point frontend_start{Clock::now()};
     if (!encode_frontend(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
-                         d_q, d_qf)) {
+                         d_ac, d_dc, d_qf)) {
         return false;
     }
     if (stats != nullptr) {
         StageTiming frontend{"frontend", 0, us_since(frontend_start), 0.0};
-        // Fused front-end DRAM traffic: NV12 read + quantized coefficient write +
-        // quant field write. The XYB and DCT intermediates stay tile-resident.
+        // Fused front-end DRAM traffic: NV12 read + quantized coefficient write
+        // (int16 AC + int32 DC) + quant field write. The XYB and DCT intermediates
+        // stay tile-resident.
         frontend.bytes_moved = width * height + width * height / 2 +
-                               3 * plane * sizeof(std::int32_t) + blocks * sizeof(std::int32_t);
+                               3 * blocks * AC_COEFFS_PER_BLOCK * sizeof(std::int16_t) +
+                               3 * blocks * sizeof(std::int32_t) + blocks * sizeof(std::int32_t);
         stats->push_back(frontend);
     }
-    return encode_frame(d_q, width, height, qp, d_qf, out_file, stats);
+    return encode_frame(d_ac, d_dc, width, height, qp, d_qf, out_file, stats);
 }
 
 }  // namespace cujpegxl

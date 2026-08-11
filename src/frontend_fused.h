@@ -21,14 +21,18 @@ namespace cujpegxl {
 // `luma`/`chroma` are device NV12 planes (see nv12_to_xyb): luma is width*height
 // bytes at `luma_pitch`; chroma is the interleaved Cb/Cr plane at `chroma_pitch`,
 // which must be 32-byte aligned (texture requirement). `distance` sets the
-// quantizer scales. `q` receives the three tightly packed width*height int32
-// coefficient planes (X, Y, B; blocks in raster order; DC in slot 0), and
-// `quant_field` the per-block quant integers ((width/8)*(height/8), block raster
-// order). width and height must be multiples of 8. All pointers are device
-// addresses. Deterministic. Returns false on a CUDA error.
+// quantizer scales. The quantized coefficients are split by bandwidth into two
+// device buffers: `dc` receives the int32 DC (three channel-major planes X, Y, B;
+// one DC per block; (width/8)*(height/8) each), and `ac` the packed int16 AC
+// (three channel-major planes X, Y, B; AC_COEFFS_PER_BLOCK coefficients per block
+// with the DC slot elided, so libjxl-raster coefficient index k in [1, 63] lands
+// at slot k-1). `quant_field` receives the per-block quant integers
+// ((width/8)*(height/8), block raster order). width and height must be multiples
+// of 8. All pointers are device addresses. Deterministic. Returns false on a CUDA
+// error.
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                     std::size_t chroma_pitch, std::size_t width, std::size_t height, float distance,
-                     std::int32_t* q, std::int32_t* quant_field);
+                     std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                     float distance, std::int16_t* ac, std::int32_t* dc, std::int32_t* quant_field);
 
 }  // namespace cujpegxl
 

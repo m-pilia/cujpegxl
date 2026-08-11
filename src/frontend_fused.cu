@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include "adaptive_quant_impl.cuh"
+#include "entropy.h"
 #include "quant_calibration.h"
 #include "quant_weights_dct8.h"
 #include "xyb_impl.cuh"
@@ -97,7 +98,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
                                       std::size_t height, std::size_t bw, std::size_t bh, float gsf,
                                       float dc_scale, float km0, float km1, float km2, float km3,
                                       float mul_pb, float add_pb, float inv_global_scale,
-                                      std::int32_t* __restrict__ q,
+                                      std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc,
                                       std::int32_t* __restrict__ quant_field) {
     __shared__ float sh_y[PAD * PAD];
     __shared__ float sh_x[TILE_PX * INT_STRIDE];
@@ -111,7 +112,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     const std::size_t px0{tbx0 * 8};
     const std::size_t py0{tby0 * 8};
     const int tid{static_cast<int>(threadIdx.y) * 8 + static_cast<int>(threadIdx.x)};
-    const std::size_t plane{width * height};
+    const std::size_t nblk{bw * bh};
 
     // Load the padded tile and compute XYB into shared memory.
     for (int i{tid}; i < PAD * PAD; i += 64) {
@@ -285,15 +286,27 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             acc_b += a * __shfl_sync(0xffffffffu, rb, base_lane + s, 32);
         }
 
+        const std::int32_t qx{
+            static_cast<std::int32_t>(rintf(acc_x * quant_factor(0, k, ac_scale, dc_scale)))};
         const std::int32_t qy{
             static_cast<std::int32_t>(rintf(acc_y * quant_factor(1, k, ac_scale, dc_scale)))};
-        q[plane + blk * 64 + k] = qy;
-        q[blk * 64 + k] =
-            static_cast<std::int32_t>(rintf(acc_x * quant_factor(0, k, ac_scale, dc_scale)));
         const float roundtrip_y{static_cast<float>(qy) / quant_factor(1, k, ac_scale, dc_scale)};
         const float residual{acc_b - Y_TO_B_RATIO_D * roundtrip_y};
-        q[2 * plane + blk * 64 + k] =
-            static_cast<std::int32_t>(rintf(residual * quant_factor(2, k, ac_scale, dc_scale)));
+        const std::int32_t qb{
+            static_cast<std::int32_t>(rintf(residual * quant_factor(2, k, ac_scale, dc_scale)))};
+
+        // Split storage: DC (k == 0) stays int32 in the compact DC buffer; the 63
+        // AC coefficients narrow to int16 in the packed AC buffer (slot k-1).
+        if (k == 0) {
+            dc[blk] = qx;
+            dc[nblk + blk] = qy;
+            dc[2 * nblk + blk] = qb;
+        } else {
+            const std::size_t ac_off{blk * AC_COEFFS_PER_BLOCK + (k - 1)};
+            ac[ac_off] = static_cast<std::int16_t>(qx);
+            ac[nblk * AC_COEFFS_PER_BLOCK + ac_off] = static_cast<std::int16_t>(qy);
+            ac[2 * nblk * AC_COEFFS_PER_BLOCK + ac_off] = static_cast<std::int16_t>(qb);
+        }
         __syncthreads();
     }
 }
@@ -301,8 +314,9 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 }  // namespace
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                     std::size_t chroma_pitch, std::size_t width, std::size_t height, float distance,
-                     std::int32_t* q, std::int32_t* quant_field) {
+                     std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                     float distance, std::int16_t* ac, std::int32_t* dc,
+                     std::int32_t* quant_field) {
     ensure_constants();
 
     const std::size_t bw{width / 8};
@@ -362,7 +376,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
     frontend_fused_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, bw, bh, gsf,
                                            dc_scale, km0, km1, km2, km3, mul_pb, add_pb,
-                                           cal.inv_global_scale, q, quant_field);
+                                           cal.inv_global_scale, ac, dc, quant_field);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};

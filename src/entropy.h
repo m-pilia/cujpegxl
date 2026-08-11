@@ -13,27 +13,34 @@ namespace cujpegxl {
 // below this, so a fixed histogram of this size covers every symbol.
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
 
+// AC coefficients stored per block (the 63 non-DC libjxl-raster slots). The DC
+// slot lives in the separate int32 DC buffer, so it is elided from AC storage.
+constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
+
 // Number of 256x256 AC groups (32x32 blocks each) tiling a width x height image,
 // including partial edge groups. width/height must be multiples of 8.
 std::size_t ac_num_groups(std::size_t width, std::size_t height);
 
 // Phase 1 of the device entropy coder: accumulate the pooled AC symbol histogram
-// over every group. `q` is the quantized DCT8 coefficient buffer (device; three
-// planes X, Y, B; blocks in raster order; 64 libjxl-raster coefficients per
-// block). `histogram` is a device buffer of AC_HISTOGRAM_SIZE uint32 (zeroed by
-// the call). Deterministic (integer atomics). Returns false on a CUDA error.
-bool ac_build_histogram(const std::int32_t* q, std::size_t width, std::size_t height,
+// over every group. `ac` is the packed int16 AC coefficient buffer (device;
+// three channel-major planes X, Y, B; blocks in raster order; AC_COEFFS_PER_BLOCK
+// libjxl-raster coefficients per block, DC slot elided so coefficient index k in
+// [1, 63] lives at slot k-1). `histogram` is a device buffer of AC_HISTOGRAM_SIZE
+// uint32 (zeroed by the call). Deterministic (integer atomics). Returns false on
+// a CUDA error.
+bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t height,
                         std::uint32_t* histogram);
 
 // Phase 2: emit each AC group's token bitstream (byte-aligned, one AcGroup TOC
 // section per group) concatenated into `out`, mirroring the host bitstream
-// writer byte-for-byte. `depth`/`bits` are the shared prefix code (device,
+// writer byte-for-byte. `ac` is the packed int16 AC buffer (see
+// ac_build_histogram). `depth`/`bits` are the shared prefix code (device,
 // alphabet_size entries) built from the phase-1 histogram. A CUB exclusive scan
 // of the per-group byte sizes fixes each group's offset; `group_sizes`,
 // `group_offsets` (num_groups entries, device) and `total_bytes` (host) receive
 // the layout. Fails if `out_capacity` is exceeded. Deterministic. All device
 // pointers except `total_bytes`.
-bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
+bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits,
                       std::size_t alphabet_size, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
@@ -44,11 +51,12 @@ bool ac_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
 std::size_t dc_num_groups(std::size_t width, std::size_t height);
 
 // Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
-// Y, X, B; DC is slot 0 of each block in `q`) of that group at block resolution.
-// `histograms` is a device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32
-// (zeroed by the call). Deterministic (integer atomics). Returns false on a CUDA
-// error.
-bool dc_build_histograms(const std::int32_t* q, std::size_t width, std::size_t height,
+// Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer
+// (device; three channel-major planes X, Y, B; one DC per block; blocks in raster
+// order). `histograms` is a device buffer of dc_num_groups * AC_HISTOGRAM_SIZE
+// uint32 (zeroed by the call). Deterministic (integer atomics). Returns false on
+// a CUDA error.
+bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
                          std::uint32_t* histograms);
 
 // Per-DcGroup AcMetadata token histogram, pooled over the metadata samples of
@@ -64,7 +72,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width,
 // AcMetadata count + AcMetadata modular) concatenated into `out`, mirroring the
 // host DcGroup reference byte-for-byte. Per group the host supplies the two
 // header bit blobs bracketing the token runs and the two shared prefix codes;
-// the device emits the DC tokens (from `q`) and the AcMetadata tokens (from the
+// the device emits the DC tokens (from `dc`) and the AcMetadata tokens (from the
 // group geometry and the per-block `quant_field`). A CUB exclusive scan of the
 // per-group byte sizes fixes each group's offset. Fails if `out_capacity` is
 // exceeded. Deterministic. All device pointers except `total_bytes`.
@@ -76,7 +84,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width,
 // `acmeta_bits` likewise uint16. `blob_pre` / `blob_mid` are concatenated bytes
 // indexed by `blob_pre_off` / `blob_mid_off` (byte offsets) with bit lengths
 // `blob_pre_bits` / `blob_mid_bits`.
-bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
+bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
                       const std::int32_t* quant_field, const std::uint8_t* dc_depth,
                       const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
                       const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,

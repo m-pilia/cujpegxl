@@ -115,6 +115,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        ":entropy",
         ":quant_consts",
         ":xyb_impl",
     ],
@@ -193,6 +194,7 @@ cc_test(
         "manual",
     ],
     deps = [
+        ":entropy",
         ":frame_encoder",
         "//src/bitstream",
         "//tools/bitstream:vardct_frame",

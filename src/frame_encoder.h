@@ -24,15 +24,18 @@ struct StageTiming {
     double cpu_us{0.0};
 };
 
-// Encodes a device-resident quantized DCT8 coefficient buffer into a complete
-// ISOBMFF `.jxl` file, returned in `out_file` (host bytes).
+// Encodes device-resident quantized DCT8 coefficients into a complete ISOBMFF
+// `.jxl` file, returned in `out_file` (host bytes).
 //
-// `q_device` is the quantizer output: three tightly packed planes (X, Y, B) of
-// `width/8 * height/8` blocks in raster order, 64 coefficients each, DC in slot
-// 0. width/height are multiples of 8 and must span more than one AC group (the
-// M1 ladder; single 256x256 frames use the combined-section layout and are not
-// yet handled here). `quant_field` is the per-block quant integer buffer (device;
-// width/8 * height/8, block raster order) written as the AcMetadata quant field.
+// The coefficients are split by bandwidth: `dc_device` holds the int32 DC (three
+// channel-major planes X, Y, B; one DC per block; width/8 * height/8 each), and
+// `ac_device` the packed int16 AC (three channel-major planes X, Y, B;
+// AC_COEFFS_PER_BLOCK coefficients per block with the DC slot elided, so
+// libjxl-raster coefficient index k in [1, 63] lands at slot k-1). width/height
+// are multiples of 8 and must span more than one AC group (the M1 ladder; single
+// 256x256 frames use the combined-section layout and are not yet handled here).
+// `quant_field` is the per-block quant integer buffer (device; width/8 * height/8,
+// block raster order) written as the AcMetadata quant field.
 //
 // The AC groups and DcGroups are entropy-coded on the device; the codestream
 // headers, FrameHeader, DcGlobal, AcGlobal, TOC and ISOBMFF boxes are assembled
@@ -42,9 +45,10 @@ struct StageTiming {
 // its worst-case buffer, or if the frame has a single AC group.
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
 // timings for the budget model; passing null (the default) emits no records.
-bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                  std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
+bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, std::size_t width,
+                  std::size_t height, const bitstream::QuantParams& qp,
+                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
+                  std::vector<StageTiming>* stats = nullptr);
 
 // Maps a Butteraugli `distance` to the serialized Quantizer state written into
 // the codestream. Placeholder linear mapping; calibrating it against cjxl's

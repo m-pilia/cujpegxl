@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include "entropy.h"
 #include "frame_encoder.h"
 #include "src/bitstream/container.h"
 #include "tools/bitstream/vardct_frame.h"
@@ -25,19 +26,33 @@ namespace {
 using bitstream::FrameCoefficients;
 using bitstream::QuantParams;
 
-std::vector<std::int32_t> flatten_coeffs(const FrameCoefficients& fc) {
-    const std::size_t plane{fc.width * fc.height};
-    std::vector<std::int32_t> q(3 * plane, 0);
+// Packs fc's AC (slots 1..63 of each block) into the device int16 AC layout
+// (channel-major planes X, Y, B; AC_COEFFS_PER_BLOCK per block; slot k-1).
+std::vector<std::int16_t> flatten_ac(const FrameCoefficients& fc) {
     const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
-    for (int c{0}; c < 3; ++c) {
+    std::vector<std::int16_t> ac(3 * blocks * AC_COEFFS_PER_BLOCK, 0);
+    for (std::size_t c{0}; c < 3; ++c) {
         for (std::size_t b{0}; b < blocks; ++b) {
-            q[static_cast<std::size_t>(c) * plane + b * 64] = fc.dc[c][b];
             for (std::size_t k{1}; k < 64; ++k) {
-                q[static_cast<std::size_t>(c) * plane + b * 64 + k] = fc.ac[c][b * 64 + k];
+                ac[c * blocks * AC_COEFFS_PER_BLOCK + b * AC_COEFFS_PER_BLOCK + (k - 1)] =
+                    static_cast<std::int16_t>(fc.ac[c][b * 64 + k]);
             }
         }
     }
-    return q;
+    return ac;
+}
+
+// Packs fc's DC (slot 0 of each block) into the device int32 DC layout
+// (channel-major planes X, Y, B; one DC per block).
+std::vector<std::int32_t> flatten_dc(const FrameCoefficients& fc) {
+    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
+    std::vector<std::int32_t> dc(3 * blocks, 0);
+    for (std::size_t c{0}; c < 3; ++c) {
+        for (std::size_t b{0}; b < blocks; ++b) {
+            dc[c * blocks + b] = fc.dc[c][b];
+        }
+    }
+    return dc;
 }
 
 FrameCoefficients make_frame(std::size_t w, std::size_t h) {
@@ -69,22 +84,28 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 }
 
 bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out) {
-    const std::vector<std::int32_t> q{flatten_coeffs(fc)};
+    const std::vector<std::int16_t> ac{flatten_ac(fc)};
+    const std::vector<std::int32_t> dc{flatten_dc(fc)};
     const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
                                        static_cast<std::int32_t>(fc.raw_quant_field));
-    std::int32_t* d_q{nullptr};
+    std::int16_t* d_ac{nullptr};
+    std::int32_t* d_dc{nullptr};
     std::int32_t* d_qf{nullptr};
-    if (cudaMalloc(&d_q, q.size() * sizeof(std::int32_t)) != cudaSuccess ||
+    if (cudaMalloc(&d_ac, ac.size() * sizeof(std::int16_t)) != cudaSuccess ||
+        cudaMalloc(&d_dc, dc.size() * sizeof(std::int32_t)) != cudaSuccess ||
         cudaMalloc(&d_qf, qf.size() * sizeof(std::int32_t)) != cudaSuccess) {
         return false;
     }
-    bool ok{cudaMemcpy(d_q, q.data(), q.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
+    bool ok{cudaMemcpy(d_ac, ac.data(), ac.size() * sizeof(std::int16_t), cudaMemcpyHostToDevice) ==
+                cudaSuccess &&
+            cudaMemcpy(d_dc, dc.data(), dc.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
                 cudaSuccess &&
             cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
                 cudaSuccess};
-    ok = ok && encode_frame(d_q, fc.width, fc.height,
+    ok = ok && encode_frame(d_ac, d_dc, fc.width, fc.height,
                             QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out);
-    cudaFree(d_q);
+    cudaFree(d_ac);
+    cudaFree(d_dc);
     cudaFree(d_qf);
     return ok;
 }

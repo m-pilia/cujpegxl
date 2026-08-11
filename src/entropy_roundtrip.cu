@@ -25,9 +25,24 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
                       const std::vector<std::uint8_t>& depth,
                       const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    const std::size_t plane{width * height};
     const std::size_t capacity{q.size() * 8 + 4096};
 
-    std::int32_t* d_q{nullptr};
+    // Adapt the combined int32 coefficient layout into the packed int16 AC buffer
+    // the device kernels now consume (DC slot elided; coefficient index k in
+    // [1, 63] at slot k-1).
+    std::vector<std::int16_t> ac(3 * blocks * AC_COEFFS_PER_BLOCK, 0);
+    for (std::size_t c{0}; c < 3; ++c) {
+        for (std::size_t b{0}; b < blocks; ++b) {
+            for (std::size_t kk{1}; kk < 64; ++kk) {
+                ac[c * blocks * AC_COEFFS_PER_BLOCK + b * AC_COEFFS_PER_BLOCK + (kk - 1)] =
+                    static_cast<std::int16_t>(q[c * plane + b * 64 + kk]);
+            }
+        }
+    }
+
+    std::int16_t* d_ac{nullptr};
     std::uint8_t* d_depth{nullptr};
     std::uint16_t* d_bits{nullptr};
     std::uint32_t* d_hist{nullptr};
@@ -35,15 +50,15 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::uint32_t* d_offsets{nullptr};
     std::uint8_t* d_out{nullptr};
 
-    bool ok{upload(q, &d_q) && upload(depth, &d_depth) && upload(bits, &d_bits) &&
+    bool ok{upload(ac, &d_ac) && upload(depth, &d_depth) && upload(bits, &d_bits) &&
             cudaMalloc(&d_hist, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
 
     std::size_t total_bytes{0};
-    ok = ok && ac_build_histogram(d_q, width, height, d_hist);
-    ok = ok && ac_encode_groups(d_q, width, height, d_depth, d_bits, depth.size(), d_out, capacity,
+    ok = ok && ac_build_histogram(d_ac, width, height, d_hist);
+    ok = ok && ac_encode_groups(d_ac, width, height, d_depth, d_bits, depth.size(), d_out, capacity,
                                 d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
@@ -61,7 +76,7 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
                  cudaSuccess;
     }
 
-    cudaFree(d_q);
+    cudaFree(d_ac);
     cudaFree(d_depth);
     cudaFree(d_bits);
     cudaFree(d_hist);
