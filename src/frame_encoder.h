@@ -31,7 +31,8 @@ struct StageTiming {
 // `width/8 * height/8` blocks in raster order, 64 coefficients each, DC in slot
 // 0. width/height are multiples of 8 and must span more than one AC group (the
 // M1 ladder; single 256x256 frames use the combined-section layout and are not
-// yet handled here).
+// yet handled here). `quant_field` is the per-block quant integer buffer (device;
+// width/8 * height/8, block raster order) written as the AcMetadata quant field.
 //
 // The AC groups and DcGroups are entropy-coded on the device; the codestream
 // headers, FrameHeader, DcGlobal, AcGlobal, TOC and ISOBMFF boxes are assembled
@@ -42,8 +43,8 @@ struct StageTiming {
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
 // timings for the budget model; passing null (the default) emits no records.
 bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats = nullptr);
+                  const bitstream::QuantParams& qp, const std::int32_t* quant_field,
+                  std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
 
 // Maps a Butteraugli `distance` to the serialized Quantizer state written into
 // the codestream. Placeholder linear mapping; calibrating it against cjxl's

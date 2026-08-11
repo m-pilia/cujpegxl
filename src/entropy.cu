@@ -191,7 +191,8 @@ constexpr int DC_CHUNKS = 128;
 // runs that share a byte compose without a race. DcCtx caches the per-group
 // geometry and the AcMetadata channel-sample structure (pre_zeros leading zero
 // samples = YtoX + YtoB + ACS+QF row 0, then qf_count quant-field samples = row
-// 1, then post_zeros zero samples = EPF), matching the host reference.
+// 1, then post_zeros zero samples = EPF), matching the host reference. `qf` is
+// the per-block quant field (bw*bh, block raster) read for each row-1 sample.
 struct DcCtx {
     const std::int32_t* q;
     std::size_t bw;
@@ -205,14 +206,22 @@ struct DcCtx {
     std::uint32_t pre_bits;
     const std::uint8_t* mid;
     std::uint32_t mid_bits;
-    std::uint32_t qsym, qrn, qraw;
+    const std::int32_t* qf;
     std::size_t n;  // DC samples per channel = gbw * gbh
     std::size_t pre_zeros, qf_count, post_zeros;
     std::size_t m;  // total items
 };
 
+// Hybrid-encodes the quant-field token of the group's `qi`-th ACS+QF row-1
+// sample (block raster order within the group).
+__device__ void dc_qf_token(const DcCtx& c, std::size_t qi, std::uint32_t& sym, std::uint32_t& rn,
+                            std::uint32_t& rw) {
+    const std::size_t block{(c.by0 + qi / c.gbw) * c.bw + (c.bx0 + qi % c.gbw)};
+    hybrid_encode(pack_signed(c.qf[block] - 1), sym, rn, rw);
+}
+
 __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* q, std::size_t bw, std::size_t bh,
-                              std::size_t plane, std::size_t xdg, std::uint32_t raw_quant_field,
+                              std::size_t plane, std::size_t xdg, const std::int32_t* quant_field,
                               const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
                               const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
                               const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
@@ -236,8 +245,7 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* q, std::size_t 
     c.pre_bits = blob_pre_bits[g];
     c.mid = blob_mid + blob_mid_off[g];
     c.mid_bits = blob_mid_bits[g];
-    hybrid_encode(pack_signed(static_cast<std::int32_t>(raw_quant_field) - 1), c.qsym, c.qrn,
-                  c.qraw);
+    c.qf = quant_field;
     c.n = e.gbw * e.gbh;
     const std::size_t cw{(e.gbw + 7) / 8};
     const std::size_t ch{(e.gbh + 7) / 8};
@@ -270,7 +278,9 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
     if (j < c.pre_zeros || j >= c.pre_zeros + c.qf_count) {
         return c.amd[0];
     }
-    return c.amd[c.qsym] + c.qrn;
+    std::uint32_t sym{}, rn{}, rw{};
+    dc_qf_token(c, j - c.pre_zeros, sym, rn, rw);
+    return c.amd[sym] + rn;
 }
 
 // LSB-first write of `n_bits` of `value` at absolute bit position `pos` into the
@@ -340,9 +350,11 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) 
     if (j < c.pre_zeros || j >= c.pre_zeros + c.qf_count) {
         w.put(c.amd[0], c.amb[0]);
     } else {
-        w.put(c.amd[c.qsym], c.amb[c.qsym]);
-        if (c.qrn) {
-            w.put(c.qrn, c.qraw);
+        std::uint32_t sym{}, rn{}, rw{};
+        dc_qf_token(c, j - c.pre_zeros, sym, rn, rw);
+        w.put(c.amd[sym], c.amb[sym]);
+        if (rn) {
+            w.put(rn, rw);
         }
     }
 }
@@ -505,6 +517,38 @@ __global__ void dc_histogram_kernel(const std::int32_t* q, std::size_t bw, std::
     atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
 }
 
+// Accumulates each block's ACS+QF row-1 token (per-block quant field) into its
+// DcGroup's AcMetadata histogram.
+__global__ void acmeta_qf_histogram_kernel(const std::int32_t* quant_field, std::size_t bw,
+                                           std::size_t bh, std::size_t xdg,
+                                           std::uint32_t* histograms) {
+    const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
+    if (block >= bw * bh) {
+        return;
+    }
+    const std::size_t bx{block % bw};
+    const std::size_t by{block / bw};
+    const std::size_t g{(by / DC_GROUP_BLOCKS) * xdg + (bx / DC_GROUP_BLOCKS)};
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(pack_signed(quant_field[block] - 1), symbol, nbits, bits);
+    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
+}
+
+// Adds each DcGroup's structural zero samples (YtoX + YtoB + ACS row 0 + EPF, all
+// zero-valued) to symbol 0 of its AcMetadata histogram.
+__global__ void acmeta_zeros_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
+                                    std::size_t num_groups, std::uint32_t* histograms) {
+    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
+    const std::size_t count{e.gbw * e.gbh};
+    const std::size_t cw{(e.gbw + 7) / 8};
+    const std::size_t ch{(e.gbh + 7) / 8};
+    histograms[g * AC_HISTOGRAM_SIZE] += static_cast<std::uint32_t>(2 * cw * ch + 2 * count);
+}
+
 // Item range [k_lo, k_hi) of group `c` owned by chunk `cb`.
 __device__ void dc_chunk_range(const DcCtx& c, std::size_t cb, std::size_t& k_lo,
                                std::size_t& k_hi) {
@@ -524,7 +568,7 @@ __device__ void dc_thread_range(std::size_t k_lo, std::size_t k_hi, std::size_t&
 
 __global__ void dc_chunk_size_kernel(
     const std::int32_t* q, std::size_t bw, std::size_t bh, std::size_t plane, std::size_t xdg,
-    std::size_t num_groups, std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+    std::size_t num_groups, const std::int32_t* quant_field, const std::uint8_t* dc_depth,
     const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
@@ -534,7 +578,7 @@ __global__ void dc_chunk_size_kernel(
     if (g >= num_groups) {
         return;
     }
-    const DcCtx c{build_dc_ctx(g, q, bw, bh, plane, xdg, raw_quant_field, dc_depth, dc_bits,
+    const DcCtx c{build_dc_ctx(g, q, bw, bh, plane, xdg, quant_field, dc_depth, dc_bits,
                                acmeta_depth, acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits,
                                blob_mid, blob_mid_off, blob_mid_bits)};
     std::size_t k_lo{0};
@@ -576,7 +620,7 @@ __global__ void dc_group_scan_kernel(std::size_t num_groups, const unsigned long
 
 __global__ void dc_chunk_emit_kernel(
     const std::int32_t* q, std::size_t bw, std::size_t bh, std::size_t plane, std::size_t xdg,
-    std::size_t num_groups, std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+    std::size_t num_groups, const std::int32_t* quant_field, const std::uint8_t* dc_depth,
     const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
@@ -587,7 +631,7 @@ __global__ void dc_chunk_emit_kernel(
     if (g >= num_groups) {
         return;
     }
-    const DcCtx c{build_dc_ctx(g, q, bw, bh, plane, xdg, raw_quant_field, dc_depth, dc_bits,
+    const DcCtx c{build_dc_ctx(g, q, bw, bh, plane, xdg, quant_field, dc_depth, dc_bits,
                                acmeta_depth, acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits,
                                blob_mid, blob_mid_off, blob_mid_bits)};
     std::size_t k_lo{0};
@@ -743,8 +787,27 @@ bool dc_build_histograms(const std::int32_t* q, std::size_t width, std::size_t h
     return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
+bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width, std::size_t height,
+                             std::uint32_t* histograms) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
+    const std::size_t num_groups{dc_num_groups(width, height)};
+    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+        cudaSuccess) {
+        return false;
+    }
+    const unsigned int threads{256};
+    const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
+    acmeta_qf_histogram_kernel<<<blocks, threads>>>(quant_field, bw, bh, xdg, histograms);
+    const unsigned int zero_blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
+    acmeta_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+}
+
 bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
-                      std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+                      const std::int32_t* quant_field, const std::uint8_t* dc_depth,
                       const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
                       const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
                       const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
@@ -774,7 +837,7 @@ bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        q, bw, bh, plane, xdg, num_groups, raw_quant_field, dc_depth, dc_bits, acmeta_depth,
+        q, bw, bh, plane, xdg, num_groups, quant_field, dc_depth, dc_bits, acmeta_depth,
         acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
         chunk_bits);
     dc_group_scan_kernel<<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
@@ -827,7 +890,7 @@ bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t heig
     }
 
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        q, bw, bh, plane, xdg, num_groups, raw_quant_field, dc_depth, dc_bits, acmeta_depth,
+        q, bw, bh, plane, xdg, num_groups, quant_field, dc_depth, dc_bits, acmeta_depth,
         acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
         chunk_base, out, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};

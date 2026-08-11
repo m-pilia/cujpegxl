@@ -378,6 +378,7 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
         g.blob_mid_bits = mid.bits_written();
         g.acmeta_depth = meta_data.code_depth();
         g.acmeta_bits = meta_data.code_bits();
+        g.acmeta_histogram = meta_data.histogram();
 
         BitWriter sec{};
         write_dc_group(sec, fc, bw, bx0, by0, dgw, dgh);

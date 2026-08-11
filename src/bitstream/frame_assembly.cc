@@ -132,8 +132,9 @@ std::vector<std::uint8_t> build_dc_global(const QuantParams& qp) {
     return w.bytes();
 }
 
-DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height, const QuantParams& qp,
-                                  const std::uint32_t* dc_histograms) {
+DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
+                                  const std::uint32_t* dc_histograms,
+                                  const std::uint32_t* acmeta_histograms) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
@@ -150,15 +151,12 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height, const Q
     out.blob_mid_off.assign(num_groups, 0);
     out.blob_mid_bits.assign(num_groups, 0);
 
-    const HybridUintConfig config{};
     for (std::size_t g{0}; g < num_groups; ++g) {
         const std::size_t gx{g % xdg};
         const std::size_t gy{g / xdg};
         const std::size_t dgw{std::min(DC_GROUP_BLOCKS, bw - gx * DC_GROUP_BLOCKS)};
         const std::size_t dgh{std::min(DC_GROUP_BLOCKS, bh - gy * DC_GROUP_BLOCKS)};
         const std::size_t count{dgw * dgh};
-        const std::size_t cw{ceil_div(dgw, 8)};
-        const std::size_t ch{ceil_div(dgh, 8)};
 
         // VarDCTDC: extra_precision + modular header over the 3 DC channels. The
         // DC histogram is the device's; the modular header emits its description.
@@ -175,21 +173,17 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height, const Q
         out.blob_pre.insert(out.blob_pre.end(), pre_bytes.begin(), pre_bytes.end());
         place_code(out.dc_depth, out.dc_bits, g, dc_depth, dc_bits);
 
-        // AcMetadata: content-independent. Samples are (2*cw*ch + count + count)
-        // zeros plus `count` copies of raw_quant_field - 1 (ACS+QF row 1); build
-        // its token histogram directly.
-        std::uint32_t sym{}, nbits{}, raw{};
-        config.encode(pack_signed(static_cast<std::int32_t>(qp.raw_quant_field) - 1), sym, nbits,
-                      raw);
-        std::vector<std::uint32_t> meta_hist(sym + 1, 0);
-        meta_hist[0] += static_cast<std::uint32_t>(2 * cw * ch + 2 * count);  // zero samples
-        meta_hist[sym] += static_cast<std::uint32_t>(count);                  // quant-field run
-        const std::size_t meta_alpha{alphabet_size(meta_hist.data(), meta_hist.size())};
+        // AcMetadata: content-derived from the per-block quant field (the ACS+QF
+        // row-1 samples). The full token histogram (structural zeros plus the
+        // per-block quant-field tokens) is supplied by the device kernel; build
+        // the prefix code from it directly.
+        const std::uint32_t* meta_hist{acmeta_histograms + g * HISTOGRAM_STRIDE};
+        const std::size_t meta_alpha{alphabet_size(meta_hist, HISTOGRAM_STRIDE)};
         std::vector<std::uint8_t> meta_depth{};
         std::vector<std::uint16_t> meta_bits{};
         BitWriter mid{};
         write_bits(mid, ceil_log2_nonzero(count), static_cast<std::uint32_t>(count - 1));
-        write_modular_header(mid, meta_hist.data(), meta_alpha, meta_depth, meta_bits);
+        write_modular_header(mid, meta_hist, meta_alpha, meta_depth, meta_bits);
         out.blob_mid_off[g] = static_cast<std::uint32_t>(out.blob_mid.size());
         out.blob_mid_bits[g] = static_cast<std::uint32_t>(mid.bits_written());
         const std::vector<std::uint8_t>& mid_bytes{mid.bytes()};

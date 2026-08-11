@@ -71,7 +71,11 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     const std::size_t capacity{16 * blocks + blob_pre.size() + blob_mid.size() + num_groups * 64 +
                                4096};
 
+    const std::vector<std::int32_t> quant_field((width / 8) * (height / 8),
+                                                static_cast<std::int32_t>(raw_quant_field));
+
     std::int32_t* d_q{nullptr};
+    std::int32_t* d_qf{nullptr};
     std::uint8_t* d_dc_depth{nullptr};
     std::uint16_t* d_dc_bits{nullptr};
     std::uint8_t* d_am_depth{nullptr};
@@ -87,7 +91,8 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::uint32_t* d_offsets{nullptr};
     std::uint8_t* d_out{nullptr};
 
-    bool ok{upload(q, &d_q) && upload(dc_depth, &d_dc_depth) && upload(dc_bits, &d_dc_bits) &&
+    bool ok{upload(q, &d_q) && upload(quant_field, &d_qf) && upload(dc_depth, &d_dc_depth) &&
+            upload(dc_bits, &d_dc_bits) &&
             upload(acmeta_depth, &d_am_depth) && upload(acmeta_bits, &d_am_bits) &&
             upload(blob_pre, &d_pre) && upload(blob_pre_off, &d_pre_off) &&
             upload(blob_pre_bits, &d_pre_bits) && upload(blob_mid, &d_mid) &&
@@ -100,7 +105,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::size_t total_bytes{0};
     ok = ok && dc_build_histograms(d_q, width, height, d_hist);
     ok = ok &&
-         dc_encode_groups(d_q, width, height, raw_quant_field, d_dc_depth, d_dc_bits, d_am_depth,
+         dc_encode_groups(d_q, width, height, d_qf, d_dc_depth, d_dc_bits, d_am_depth,
                           d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off, d_mid_bits,
                           d_out, capacity, d_sizes, d_offsets, &total_bytes);
 
@@ -127,6 +132,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     }
 
     cudaFree(d_q);
+    cudaFree(d_qf);
     cudaFree(d_dc_depth);
     cudaFree(d_dc_bits);
     cudaFree(d_am_depth);

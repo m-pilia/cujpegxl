@@ -70,15 +70,22 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 
 bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out) {
     const std::vector<std::int32_t> q{flatten_coeffs(fc)};
+    const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
+                                       static_cast<std::int32_t>(fc.raw_quant_field));
     std::int32_t* d_q{nullptr};
-    if (cudaMalloc(&d_q, q.size() * sizeof(std::int32_t)) != cudaSuccess) {
+    std::int32_t* d_qf{nullptr};
+    if (cudaMalloc(&d_q, q.size() * sizeof(std::int32_t)) != cudaSuccess ||
+        cudaMalloc(&d_qf, qf.size() * sizeof(std::int32_t)) != cudaSuccess) {
         return false;
     }
     bool ok{cudaMemcpy(d_q, q.data(), q.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
-            cudaSuccess};
+                cudaSuccess &&
+            cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
+                cudaSuccess};
     ok = ok && encode_frame(d_q, fc.width, fc.height,
-                            QuantParams{fc.global_scale, fc.quant_dc, fc.raw_quant_field}, out);
+                            QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out);
     cudaFree(d_q);
+    cudaFree(d_qf);
     return ok;
 }
 

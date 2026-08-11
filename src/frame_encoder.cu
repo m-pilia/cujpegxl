@@ -72,11 +72,18 @@ struct DeviceScope {
     }
 };
 
+__global__ void fill_i32_kernel(std::int32_t* buf, std::size_t n, std::int32_t value) {
+    const std::size_t i{blockIdx.x * blockDim.x + threadIdx.x};
+    if (i < n) {
+        buf[i] = value;
+    }
+}
+
 }  // namespace
 
 bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats) {
+                  const bitstream::QuantParams& qp, const std::int32_t* quant_field,
+                  std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -97,18 +104,23 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     // Device histograms -> host.
     std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-    if (!d_ac_hist || !d_dc_hist) {
+    std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
+    if (!d_ac_hist || !d_dc_hist || !d_am_hist) {
         return false;
     }
     if (!ac_build_histogram(q_device, width, height, d_ac_hist) ||
-        !dc_build_histograms(q_device, width, height, d_dc_hist)) {
+        !dc_build_histograms(q_device, width, height, d_dc_hist) ||
+        !acmeta_build_histograms(quant_field, width, height, d_am_hist)) {
         return false;
     }
     std::vector<std::uint32_t> ac_hist(AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
+    std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     if (cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
@@ -119,7 +131,7 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
     const bitstream::AcGlobalResult ac_global{bitstream::build_ac_global(ac_hist.data(), num_ac)};
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
     const bitstream::DcGroupBlobs blobs{
-        bitstream::build_dc_group_blobs(width, height, qp, dc_hist.data())};
+        bitstream::build_dc_group_blobs(width, height, dc_hist.data(), am_hist.data())};
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     // Upload the entropy-coder inputs.
@@ -177,10 +189,9 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
                           d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total)) {
         return false;
     }
-    if (!dc_encode_groups(q_device, width, height, qp.raw_quant_field, d_dc_depth, d_dc_bits,
-                          d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off,
-                          d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets,
-                          &dc_total)) {
+    if (!dc_encode_groups(q_device, width, height, quant_field, d_dc_depth, d_dc_bits, d_am_depth,
+                          d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off, d_mid_bits,
+                          d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;
     }
 
@@ -261,7 +272,7 @@ bool encode_frame(const std::int32_t* q_device, std::size_t width, std::size_t h
 
 bitstream::QuantParams quant_params_for_distance(float distance) {
     const QuantCalibration cal{calibrate_quant(distance)};
-    return bitstream::QuantParams{cal.global_scale, cal.quant_dc, cal.raw_quant_field};
+    return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
 }
 
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
@@ -314,7 +325,23 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         frontend.bytes_moved = width * height + width * height / 2 + 5 * 3 * plane * sizeof(float);
         stats->push_back(frontend);
     }
-    return encode_frame(d_q, width, height, qp, out_file, stats);
+
+    // Uniform per-block quant field (adaptive quantization not yet applied).
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
+    if (!d_qf) {
+        return false;
+    }
+    const QuantCalibration cal{calibrate_quant(distance)};
+    const unsigned int fill_threads{256};
+    const unsigned int fill_blocks{static_cast<unsigned int>((blocks + fill_threads - 1) /
+                                                             fill_threads)};
+    fill_i32_kernel<<<fill_blocks, fill_threads>>>(d_qf, blocks,
+                                                   static_cast<std::int32_t>(cal.raw_quant_field));
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        return false;
+    }
+    return encode_frame(d_q, width, height, qp, d_qf, out_file, stats);
 }
 
 }  // namespace cujpegxl

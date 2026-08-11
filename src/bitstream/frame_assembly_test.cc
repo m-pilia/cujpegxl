@@ -46,7 +46,7 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 }
 
 QuantParams params_of(const FrameCoefficients& fc) {
-    return QuantParams{fc.global_scale, fc.quant_dc, fc.raw_quant_field};
+    return QuantParams{fc.global_scale, fc.quant_dc};
 }
 
 // Pads a trimmed histogram to the device HISTOGRAM_STRIDE width.
@@ -63,13 +63,16 @@ TEST(FrameAssembly, DcGroupBlobsMatchOracle) {
     const DcReference ref{reference_dc_encode(fc)};
 
     std::vector<std::uint32_t> dc_hists{};
+    std::vector<std::uint32_t> am_hists{};
     for (const DcGroupReference& r : ref.groups) {
-        const std::vector<std::uint32_t> padded{pad(r.dc_histogram)};
-        dc_hists.insert(dc_hists.end(), padded.begin(), padded.end());
+        const std::vector<std::uint32_t> dc_padded{pad(r.dc_histogram)};
+        dc_hists.insert(dc_hists.end(), dc_padded.begin(), dc_padded.end());
+        const std::vector<std::uint32_t> am_padded{pad(r.acmeta_histogram)};
+        am_hists.insert(am_hists.end(), am_padded.begin(), am_padded.end());
     }
 
     const DcGroupBlobs blobs{
-        build_dc_group_blobs(fc.width, fc.height, params_of(fc), dc_hists.data())};
+        build_dc_group_blobs(fc.width, fc.height, dc_hists.data(), am_hists.data())};
     ASSERT_EQ(ref.groups.size(), dc_group_count(fc.width, fc.height));
 
     for (std::size_t g{0}; g < ref.groups.size(); ++g) {

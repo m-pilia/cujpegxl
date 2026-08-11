@@ -10,11 +10,12 @@
 
 namespace cujpegxl::bitstream {
 
-// Serialized quantizer state for a VarDCT frame (see libjxl Quantizer).
+// Serialized quantizer state for a VarDCT frame (see libjxl Quantizer). The
+// per-block quant field is carried separately (a device buffer through the
+// entropy path), not here: only these two values are written into DcGlobal.
 struct QuantParams {
     std::uint32_t global_scale{1};
     std::uint32_t quant_dc{1};
-    std::uint32_t raw_quant_field{1};
 };
 
 // Width of one device histogram (AC_HISTOGRAM_SIZE in the device coder): the
@@ -40,10 +41,11 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t nu
 std::vector<std::uint8_t> build_dc_global(const QuantParams& qp);
 
 // Per-DcGroup header blobs and prefix codes for the device DcGroup emitter,
-// flattened to match dc_encode_groups' inputs. `dc_histograms` is the device
-// per-DcGroup DC histogram buffer (num_dc_groups * HISTOGRAM_STRIDE). The
-// AcMetadata histograms are content-independent and computed here from the
-// geometry and quant field.
+// flattened to match dc_encode_groups' inputs. `dc_histograms` and
+// `acmeta_histograms` are the device per-DcGroup token histograms (each
+// num_dc_groups * HISTOGRAM_STRIDE). The AcMetadata histogram is content-derived
+// (per-block quant field), so its prefix code is built from the passed-in
+// histogram rather than assumed uniform.
 struct DcGroupBlobs {
     std::vector<std::uint8_t> dc_depth{};  // num_groups * HISTOGRAM_STRIDE
     std::vector<std::uint16_t> dc_bits{};
@@ -56,8 +58,9 @@ struct DcGroupBlobs {
     std::vector<std::uint32_t> blob_mid_off{};
     std::vector<std::uint32_t> blob_mid_bits{};
 };
-DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height, const QuantParams& qp,
-                                  const std::uint32_t* dc_histograms);
+DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
+                                  const std::uint32_t* dc_histograms,
+                                  const std::uint32_t* acmeta_histograms);
 
 // The codestream head: signature + SizeHeader + ImageMetadata + FrameHeader +
 // multi-entry TOC for `section_sizes` (in codestream order: DcGlobal, DcGroups,

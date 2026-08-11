@@ -85,6 +85,7 @@ struct DcGroupReference {
     std::vector<std::uint8_t> acmeta_depth{};
     std::vector<std::uint16_t> acmeta_bits{};
     std::vector<std::uint32_t> dc_histogram{};
+    std::vector<std::uint32_t> acmeta_histogram{};
 
     std::size_t bx0{0};
     std::size_t by0{0};

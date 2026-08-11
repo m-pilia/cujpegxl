@@ -51,22 +51,33 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height);
 bool dc_build_histograms(const std::int32_t* q, std::size_t width, std::size_t height,
                          std::uint32_t* histograms);
 
+// Per-DcGroup AcMetadata token histogram, pooled over the metadata samples of
+// that group: the structural zero samples (YtoX, YtoB, ACS row 0, EPF) plus the
+// per-block quant-field tokens (ACS+QF row 1). `quant_field` is the per-block
+// quant integer buffer (device; bw*bh, block raster order). `histograms` is a
+// device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32 (zeroed by the call).
+// Deterministic (integer atomics). Returns false on a CUDA error.
+bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width, std::size_t height,
+                             std::uint32_t* histograms);
+
 // Emit each DcGroup's byte-aligned section (extra_precision + VarDCTDC modular +
 // AcMetadata count + AcMetadata modular) concatenated into `out`, mirroring the
 // host DcGroup reference byte-for-byte. Per group the host supplies the two
 // header bit blobs bracketing the token runs and the two shared prefix codes;
 // the device emits the DC tokens (from `q`) and the AcMetadata tokens (from the
-// group geometry and `raw_quant_field`). A CUB exclusive scan of the per-group
-// byte sizes fixes each group's offset. Fails if `out_capacity` is exceeded.
-// Deterministic. All device pointers except `total_bytes`.
+// group geometry and the per-block `quant_field`). A CUB exclusive scan of the
+// per-group byte sizes fixes each group's offset. Fails if `out_capacity` is
+// exceeded. Deterministic. All device pointers except `total_bytes`.
 //
-// Flattened per-group inputs (num_groups == dc_num_groups): `dc_depth` /
+// `quant_field` is the per-block quant integer buffer (device; bw*bh, block
+// raster order); its value at each block is written as the block's ACS+QF row-1
+// sample. Flattened per-group inputs (num_groups == dc_num_groups): `dc_depth` /
 // `acmeta_depth` are num_groups * AC_HISTOGRAM_SIZE uint8, `dc_bits` /
 // `acmeta_bits` likewise uint16. `blob_pre` / `blob_mid` are concatenated bytes
 // indexed by `blob_pre_off` / `blob_mid_off` (byte offsets) with bit lengths
 // `blob_pre_bits` / `blob_mid_bits`.
 bool dc_encode_groups(const std::int32_t* q, std::size_t width, std::size_t height,
-                      std::uint32_t raw_quant_field, const std::uint8_t* dc_depth,
+                      const std::int32_t* quant_field, const std::uint8_t* dc_depth,
                       const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
                       const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
                       const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
