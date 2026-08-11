@@ -105,6 +105,12 @@ __device__ std::uint32_t pack_signed(std::int32_t value) {
     return (static_cast<std::uint32_t>(value) << 1) ^ static_cast<std::uint32_t>(value >> 31);
 }
 
+// libjxl AcStrategyType raw value for a square block side (DCT=0, DCT16X16=4,
+// DCT32X32=5).
+__device__ std::int32_t raw_strategy_dev(int side) {
+    return side == 16 ? 4 : (side == 32 ? 5 : 0);
+}
+
 struct GroupExtent {
     std::size_t bx0;
     std::size_t by0;
@@ -193,6 +199,34 @@ __device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_
     return e;
 }
 
+// Fills, per DcGroup, the global block indices of its first-blocks in group
+// raster order (fb_pos[g*stride + i]) and their count (fb_count[g]). One thread
+// per group; a null acs means every block is a DCT8 first-block. The AcMetadata
+// emitter reads these to map an ACS/QF channel column (a first-block ordinal)
+// back to its block.
+__global__ void build_first_blocks_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                          std::size_t xdg, std::size_t num_groups,
+                                          std::size_t stride, std::size_t* fb_pos,
+                                          std::size_t* fb_count) {
+    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
+    std::size_t cnt{0};
+    for (std::size_t by{0}; by < e.gbh; ++by) {
+        for (std::size_t bx{0}; bx < e.gbw; ++bx) {
+            const std::size_t block{(e.by0 + by) * bw + (e.bx0 + bx)};
+            const int side{acs == nullptr ? 8 : acs[block]};
+            if (side != ACS_COVERED) {
+                fb_pos[g * stride + cnt] = block;
+                ++cnt;
+            }
+        }
+    }
+    fb_count[g] = cnt;
+}
+
 constexpr int DC_EMIT_THREADS = 512;
 
 // A DcGroup holds up to 256x256 blocks, so a single thread block per group leaves
@@ -208,10 +242,11 @@ constexpr int DC_CHUNKS = 128;
 // own contiguous runs of items, a block-wide scan of per-run bit counts gives
 // each run's bit offset, and each item is written at its offset via atomicOr so
 // runs that share a byte compose without a race. DcCtx caches the per-group
-// geometry and the AcMetadata channel-sample structure (pre_zeros leading zero
-// samples = YtoX + YtoB + ACS+QF row 0, then qf_count quant-field samples = row
-// 1, then post_zeros zero samples = EPF), matching the host reference. `qf` is
-// the per-block quant field (bw*bh, block raster) read for each row-1 sample.
+// geometry and the AcMetadata channel-sample structure: YtoX (cw*ch), YtoB
+// (cw*ch), ACS+QF row 0 (count strategy samples), row 1 (count quant-field
+// samples), then EPF (n zeros), matching the host reference. `acs`/`ytox_map`/
+// `ytob_map` are null for an all-DCT8 base-correlation frame; `fb_pos` lists this
+// group's first-block block indices in raster order.
 struct DcCtx {
     const std::int32_t* dc;
     std::size_t bw;
@@ -226,26 +261,51 @@ struct DcCtx {
     const std::uint8_t* mid;
     std::uint32_t mid_bits;
     const std::int32_t* qf;
-    std::size_t n;  // DC samples per channel = gbw * gbh
-    std::size_t pre_zeros, qf_count, post_zeros;
-    std::size_t m;  // total items
+    const std::int8_t* acs;
+    const std::int8_t* ytox_map;
+    const std::int8_t* ytob_map;
+    std::size_t cmw;
+    const std::size_t* fb_pos;  // this group's first-block block indices
+    std::size_t n;              // DC samples per channel = gbw*gbh (and EPF count)
+    std::size_t cw, ch;         // CfL color-tile grid within the group
+    std::size_t count;          // first-blocks (ACS+QF columns)
+    std::size_t m;              // total items
 };
 
-// Hybrid-encodes the quant-field token of the group's `qi`-th ACS+QF row-1
-// sample (block raster order within the group).
-__device__ void dc_qf_token(const DcCtx& c, std::size_t qi, std::uint32_t& sym, std::uint32_t& rn,
-                            std::uint32_t& rw) {
-    const std::size_t block{(c.by0 + qi / c.gbw) * c.bw + (c.bx0 + qi % c.gbw)};
-    hybrid_encode(pack_signed(c.qf[block] - 1), sym, rn, rw);
+// (symbol, extra bits) of the group's `j`-th AcMetadata sample, in channel/row
+// order: YtoX, YtoB, ACS row 0, QF row 1, EPF. Predictor::Zero, so each sample is
+// pack_signed of its raw value.
+__device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sym, std::uint32_t& rn,
+                                std::uint32_t& rw) {
+    const std::size_t cwch{c.cw * c.ch};
+    std::int32_t v{0};
+    if (j < cwch) {
+        const std::size_t gt{(c.by0 / 8 + j / c.cw) * c.cmw + (c.bx0 / 8 + j % c.cw)};
+        v = c.ytox_map == nullptr ? 0 : c.ytox_map[gt];
+    } else if (j < 2 * cwch) {
+        const std::size_t jj{j - cwch};
+        const std::size_t gt{(c.by0 / 8 + jj / c.cw) * c.cmw + (c.bx0 / 8 + jj % c.cw)};
+        v = c.ytob_map == nullptr ? 0 : c.ytob_map[gt];
+    } else if (j < 2 * cwch + c.count) {
+        const std::size_t block{c.fb_pos[j - 2 * cwch]};
+        v = raw_strategy_dev(c.acs == nullptr ? 8 : c.acs[block]);
+    } else if (j < 2 * cwch + 2 * c.count) {
+        const std::size_t block{c.fb_pos[j - (2 * cwch + c.count)]};
+        v = c.qf[block] - 1;
+    }
+    hybrid_encode(pack_signed(v), sym, rn, rw);
 }
 
 __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t bw, std::size_t bh,
                               std::size_t nblocks, std::size_t xdg, const std::int32_t* quant_field,
-                              const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
-                              const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
-                              const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
-                              const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
-                              const std::uint32_t* blob_mid_off,
+                              const std::int8_t* acs, const std::int8_t* ytox_map,
+                              const std::int8_t* ytob_map, std::size_t cmw,
+                              const std::size_t* fb_pos, const std::size_t* fb_count,
+                              std::size_t fb_stride, const std::uint8_t* dc_depth,
+                              const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+                              const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
+                              const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
+                              const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
                               const std::uint32_t* blob_mid_bits) {
     const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
     DcCtx c{};
@@ -265,13 +325,16 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t
     c.mid = blob_mid + blob_mid_off[g];
     c.mid_bits = blob_mid_bits[g];
     c.qf = quant_field;
+    c.acs = acs;
+    c.ytox_map = ytox_map;
+    c.ytob_map = ytob_map;
+    c.cmw = cmw;
+    c.fb_pos = fb_pos + g * fb_stride;
     c.n = e.gbw * e.gbh;
-    const std::size_t cw{(e.gbw + 7) / 8};
-    const std::size_t ch{(e.gbh + 7) / 8};
-    c.pre_zeros = 2 * cw * ch + c.n;
-    c.qf_count = c.n;
-    c.post_zeros = c.n;
-    c.m = 3 * c.n + 2 + c.pre_zeros + c.qf_count + c.post_zeros;
+    c.cw = (e.gbw + 7) / 8;
+    c.ch = (e.gbh + 7) / 8;
+    c.count = fb_count[g];
+    c.m = 3 * c.n + 2 + 2 * c.cw * c.ch + 2 * c.count + c.n;
     return c;
 }
 
@@ -293,12 +356,8 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
     if (k == 1 + 3 * c.n) {
         return c.mid_bits;
     }
-    const std::size_t j{k - (3 * c.n + 2)};
-    if (j < c.pre_zeros || j >= c.pre_zeros + c.qf_count) {
-        return c.amd[0];
-    }
     std::uint32_t sym{}, rn{}, rw{};
-    dc_qf_token(c, j - c.pre_zeros, sym, rn, rw);
+    dc_acmeta_token(c, k - (3 * c.n + 2), sym, rn, rw);
     return c.amd[sym] + rn;
 }
 
@@ -365,16 +424,11 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) 
         w.put_blob(c.mid, c.mid_bits);
         return;
     }
-    const std::size_t j{k - (3 * c.n + 2)};
-    if (j < c.pre_zeros || j >= c.pre_zeros + c.qf_count) {
-        w.put(c.amd[0], c.amb[0]);
-    } else {
-        std::uint32_t sym{}, rn{}, rw{};
-        dc_qf_token(c, j - c.pre_zeros, sym, rn, rw);
-        w.put(c.amd[sym], c.amb[sym]);
-        if (rn) {
-            w.put(rn, rw);
-        }
+    std::uint32_t sym{}, rn{}, rw{};
+    dc_acmeta_token(c, k - (3 * c.n + 2), sym, rn, rw);
+    w.put(c.amd[sym], c.amb[sym]);
+    if (rn) {
+        w.put(rn, rw);
     }
 }
 
@@ -538,36 +592,58 @@ __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, 
     atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
 }
 
-// Accumulates each block's ACS+QF row-1 token (per-block quant field) into its
-// DcGroup's AcMetadata histogram.
-__global__ void acmeta_qf_histogram_kernel(const std::int32_t* quant_field, std::size_t bw,
-                                           std::size_t bh, std::size_t xdg,
-                                           std::uint32_t* histograms) {
+// Accumulates each first-block's ACS strategy token (row 0) and quant-field token
+// (row 1) into its DcGroup's AcMetadata histogram.
+__global__ void acmeta_acsqf_histogram_kernel(const std::int32_t* quant_field,
+                                              const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                              std::size_t xdg, std::uint32_t* histograms) {
     const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
     if (block >= bw * bh) {
+        return;
+    }
+    const int side{acs == nullptr ? 8 : acs[block]};
+    if (side == ACS_COVERED) {
         return;
     }
     const std::size_t bx{block % bw};
     const std::size_t by{block / bw};
     const std::size_t g{(by / DC_GROUP_BLOCKS) * xdg + (bx / DC_GROUP_BLOCKS)};
     std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(pack_signed(raw_strategy_dev(side)), symbol, nbits, bits);
+    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
     hybrid_encode(pack_signed(quant_field[block] - 1), symbol, nbits, bits);
     atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
 }
 
-// Adds each DcGroup's structural zero samples (YtoX + YtoB + ACS row 0 + EPF, all
-// zero-valued) to symbol 0 of its AcMetadata histogram.
-__global__ void acmeta_zeros_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
-                                    std::size_t num_groups, std::uint32_t* histograms) {
+// Accumulates each 64x64 color tile's YtoX and YtoB CfL tokens into its DcGroup's
+// AcMetadata histogram (null maps are the base correlation, symbol 0).
+__global__ void acmeta_cfl_histogram_kernel(const std::int8_t* ytox_map,
+                                            const std::int8_t* ytob_map, std::size_t cmw,
+                                            std::size_t cmh, std::size_t xdg,
+                                            std::uint32_t* histograms) {
+    const std::size_t tile{blockIdx.x * blockDim.x + threadIdx.x};
+    if (tile >= cmw * cmh) {
+        return;
+    }
+    const std::size_t ctx{tile % cmw};
+    const std::size_t cty{tile / cmw};
+    const std::size_t g{(cty / 32) * xdg + (ctx / 32)};  // 32 color tiles per DC group
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(pack_signed(ytox_map == nullptr ? 0 : ytox_map[tile]), symbol, nbits, bits);
+    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
+    hybrid_encode(pack_signed(ytob_map == nullptr ? 0 : ytob_map[tile]), symbol, nbits, bits);
+    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
+}
+
+// Adds each DcGroup's EPF structural zeros (n samples) to symbol 0.
+__global__ void acmeta_epf_zeros_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
+                                       std::size_t num_groups, std::uint32_t* histograms) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= num_groups) {
         return;
     }
     const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
-    const std::size_t count{e.gbw * e.gbh};
-    const std::size_t cw{(e.gbw + 7) / 8};
-    const std::size_t ch{(e.gbh + 7) / 8};
-    histograms[g * AC_HISTOGRAM_SIZE] += static_cast<std::uint32_t>(2 * cw * ch + 2 * count);
+    histograms[g * AC_HISTOGRAM_SIZE] += static_cast<std::uint32_t>(e.gbw * e.gbh);
 }
 
 // Item range [k_lo, k_hi) of group `c` owned by chunk `cb`.
@@ -589,8 +665,10 @@ __device__ void dc_thread_range(std::size_t k_lo, std::size_t k_hi, std::size_t&
 
 __global__ void dc_chunk_size_kernel(
     const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
-    std::size_t num_groups, const std::int32_t* quant_field, const std::uint8_t* dc_depth,
-    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
+    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
+    const std::size_t* fb_pos, const std::size_t* fb_count, std::size_t fb_stride,
+    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -599,9 +677,10 @@ __global__ void dc_chunk_size_kernel(
     if (g >= num_groups) {
         return;
     }
-    const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, dc_depth, dc_bits,
-                               acmeta_depth, acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits,
-                               blob_mid, blob_mid_off, blob_mid_bits)};
+    const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, acs, ytox_map, ytob_map,
+                               cmw, fb_pos, fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth,
+                               acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid,
+                               blob_mid_off, blob_mid_bits)};
     std::size_t k_lo{0};
     std::size_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
@@ -641,8 +720,10 @@ __global__ void dc_group_scan_kernel(std::size_t num_groups, const unsigned long
 
 __global__ void dc_chunk_emit_kernel(
     const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
-    std::size_t num_groups, const std::int32_t* quant_field, const std::uint8_t* dc_depth,
-    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
+    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
+    const std::size_t* fb_pos, const std::size_t* fb_count, std::size_t fb_stride,
+    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -652,9 +733,10 @@ __global__ void dc_chunk_emit_kernel(
     if (g >= num_groups) {
         return;
     }
-    const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, dc_depth, dc_bits,
-                               acmeta_depth, acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits,
-                               blob_mid, blob_mid_off, blob_mid_bits)};
+    const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, acs, ytox_map, ytob_map,
+                               cmw, fb_pos, fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth,
+                               acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid,
+                               blob_mid_off, blob_mid_bits)};
     std::size_t k_lo{0};
     std::size_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
@@ -1085,12 +1167,15 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
     return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
-bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width, std::size_t height,
-                             std::uint32_t* histograms) {
+bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
+                             const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                             std::size_t width, std::size_t height, std::uint32_t* histograms) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
+    const std::size_t cmw{(bw + 7) / 8};
+    const std::size_t cmh{(bh + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
     if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
         cudaSuccess) {
@@ -1098,51 +1183,69 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width,
     }
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    acmeta_qf_histogram_kernel<<<blocks, threads>>>(quant_field, bw, bh, xdg, histograms);
+    acmeta_acsqf_histogram_kernel<<<blocks, threads>>>(quant_field, acs, bw, bh, xdg, histograms);
+    const unsigned int cfl_blocks{static_cast<unsigned int>((cmw * cmh + threads - 1) / threads)};
+    acmeta_cfl_histogram_kernel<<<cfl_blocks, threads>>>(ytox_map, ytob_map, cmw, cmh, xdg,
+                                                        histograms);
     const unsigned int zero_blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
-    acmeta_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
+    acmeta_epf_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
     return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
-                      const std::int32_t* quant_field, const std::uint8_t* dc_depth,
-                      const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
-                      const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
-                      const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
-                      const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
-                      const std::uint32_t* blob_mid_bits, std::uint8_t* out,
-                      std::size_t out_capacity, std::uint32_t* group_sizes,
+                      const std::int32_t* quant_field, const std::int8_t* acs,
+                      const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                      const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
+                      const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
+                      const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
+                      const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
+                      const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
+                      std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
                       std::uint32_t* group_offsets, std::size_t* total_bytes) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
+    const std::size_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
 
+    // Per-group first-block position lists for the AcMetadata ACS/QF columns.
+    const std::size_t fb_stride{DC_GROUP_BLOCKS * DC_GROUP_BLOCKS};
+    std::size_t* fb_pos{nullptr};
+    std::size_t* fb_count{nullptr};
     unsigned long long* chunk_bits{nullptr};
     unsigned long long* chunk_base{nullptr};
-    if (cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
+    if (cudaMallocAsync(&fb_pos, num_groups * fb_stride * sizeof(std::size_t), 0) != cudaSuccess ||
+        cudaMallocAsync(&fb_count, num_groups * sizeof(std::size_t), 0) != cudaSuccess ||
+        cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
             cudaSuccess ||
         cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
             cudaSuccess) {
         return false;
     }
     const auto free_chunks = [&] {
+        cudaFreeAsync(fb_pos, 0);
+        cudaFreeAsync(fb_count, 0);
         cudaFreeAsync(chunk_bits, 0);
         cudaFreeAsync(chunk_base, 0);
     };
 
+    const unsigned int fb_threads{64};
+    const unsigned int fb_blocks{static_cast<unsigned int>((num_groups + fb_threads - 1) /
+                                                           fb_threads)};
+    build_first_blocks_kernel<<<fb_blocks, fb_threads>>>(acs, bw, bh, xdg, num_groups, fb_stride,
+                                                        fb_pos, fb_count);
+
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        dc, bw, bh, nblocks, xdg, num_groups, quant_field, dc_depth, dc_bits, acmeta_depth,
-        acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
-        chunk_bits);
+        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
+        fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
+        blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
     dc_group_scan_kernel<<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
         num_groups, chunk_bits, chunk_base, group_sizes);
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
-        cudaFreeAsync(chunk_bits, 0);
-        cudaFreeAsync(chunk_base, 0);
+        free_chunks();
         return false;
     }
 
@@ -1188,9 +1291,9 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     }
 
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        dc, bw, bh, nblocks, xdg, num_groups, quant_field, dc_depth, dc_bits, acmeta_depth,
-        acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits,
-        chunk_base, out, group_offsets);
+        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
+        fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
+        blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_chunks();
     return ok;

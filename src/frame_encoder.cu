@@ -102,7 +102,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     }
     if (!ac_build_histogram(ac_device, width, height, d_ac_hist) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
-        !acmeta_build_histograms(quant_field, width, height, d_am_hist)) {
+        !acmeta_build_histograms(quant_field, nullptr, nullptr, nullptr, width, height, d_am_hist)) {
         return false;
     }
     std::vector<std::uint32_t> ac_hist(AC_HISTOGRAM_SIZE, 0);
@@ -181,9 +181,10 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
                           d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total)) {
         return false;
     }
-    if (!dc_encode_groups(dc_device, width, height, quant_field, d_dc_depth, d_dc_bits, d_am_depth,
-                          d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off, d_mid_bits,
-                          d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total)) {
+    if (!dc_encode_groups(dc_device, width, height, quant_field, nullptr, nullptr, nullptr,
+                          d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
+                          d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes,
+                          d_dc_offsets, &dc_total)) {
         return false;
     }
 

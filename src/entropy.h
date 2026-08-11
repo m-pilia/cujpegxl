@@ -83,8 +83,13 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
 // quant integer buffer (device; bw*bh, block raster order). `histograms` is a
 // device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32 (zeroed by the call).
 // Deterministic (integer atomics). Returns false on a CUDA error.
-bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width, std::size_t height,
-                             std::uint32_t* histograms);
+// `acs` (per-8x8 transform signal, nullptr = all DCT8) and `ytox_map`/`ytob_map`
+// (per-64x64-tile CfL factors, nullptr = base) extend the AcMetadata histogram to
+// mixed blocks: the per-first-block ACS strategy tokens, the per-tile CfL tokens,
+// and the per-first-block quant-field tokens (plus the structural EPF zeros).
+bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
+                             const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                             std::size_t width, std::size_t height, std::uint32_t* histograms);
 
 // Emit each DcGroup's byte-aligned section (extra_precision + VarDCTDC modular +
 // AcMetadata count + AcMetadata modular) concatenated into `out`, mirroring the
@@ -103,7 +108,9 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, std::size_t width,
 // indexed by `blob_pre_off` / `blob_mid_off` (byte offsets) with bit lengths
 // `blob_pre_bits` / `blob_mid_bits`.
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
-                      const std::int32_t* quant_field, const std::uint8_t* dc_depth,
+                      const std::int32_t* quant_field, const std::int8_t* acs,
+                      const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                      const std::uint8_t* dc_depth,
                       const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
                       const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
                       const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,

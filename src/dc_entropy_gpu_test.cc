@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "dc_entropy_roundtrip.h"
+#include "src/vardct_layout.h"
 #include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl {
@@ -129,6 +130,95 @@ TEST(DcEntropyGpu, GroupGridPartialEdges) {
     FrameCoefficients fc{make_frame(2560, 2304, 48)};
     fill_dc_pattern(fc);
     check_matches_reference(fc);
+}
+
+std::vector<std::int32_t> compact_dc(const FrameCoefficients& fc) {
+    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
+    std::vector<std::int32_t> dc(3 * blocks, 0);
+    for (int c{0}; c < 3; ++c) {
+        for (std::size_t b{0}; b < blocks; ++b) {
+            dc[static_cast<std::size_t>(c) * blocks + b] = fc.dc[c][b];
+        }
+    }
+    return dc;
+}
+
+void set_first_block(FrameCoefficients& fc, std::size_t bw, int side, std::size_t bx,
+                     std::size_t by) {
+    const std::size_t s{static_cast<std::size_t>(side) / 8};
+    for (std::size_t dy{0}; dy < s; ++dy) {
+        for (std::size_t dx{0}; dx < s; ++dx) {
+            fc.acs[(by + dy) * bw + (bx + dx)] =
+                (dy == 0 && dx == 0) ? static_cast<std::int8_t>(side) : ACS_COVERED;
+        }
+    }
+}
+
+FrameCoefficients make_mixed_dc_frame(std::size_t w, std::size_t h) {
+    FrameCoefficients fc{make_frame(w, h, 32)};
+    const std::size_t bw{w / 8};
+    const std::size_t bh{h / 8};
+    fc.acs.assign(bw * bh, 8);
+    set_first_block(fc, bw, 32, 0, 0);
+    set_first_block(fc, bw, 16, 4, 0);
+    set_first_block(fc, bw, 16, 0, 4);
+    fill_dc_pattern(fc);
+    const std::size_t cmw{(bw + 7) / 8};
+    const std::size_t cmh{(bh + 7) / 8};
+    fc.ytox_map.assign(cmw * cmh, 0);
+    fc.ytob_map.assign(cmw * cmh, 0);
+    for (std::size_t i{0}; i < cmw * cmh; ++i) {
+        fc.ytox_map[i] = static_cast<std::int8_t>((i % 13) - 6);
+        fc.ytob_map[i] = static_cast<std::int8_t>((i % 9) - 4);
+    }
+    return fc;
+}
+
+void check_matches_reference_m3(const FrameCoefficients& fc) {
+    const DcReference ref{reference_dc_encode(fc)};
+    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
+    const std::vector<std::int32_t> quant_field(blocks,
+                                                static_cast<std::int32_t>(fc.raw_quant_field));
+    DcDeviceResult dev{};
+    ASSERT_TRUE(dc_encode_device_m3(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
+                                    fc.width, fc.height, ref, dev));
+    ASSERT_EQ(dev.group_sizes.size(), ref.groups.size());
+
+    std::uint32_t offset{0};
+    for (std::size_t g{0}; g < ref.groups.size(); ++g) {
+        const bitstream::DcGroupReference& r{ref.groups[g]};
+        for (std::size_t s{0}; s < r.dc_histogram.size(); ++s) {
+            EXPECT_EQ(dev.histograms[g][s], r.dc_histogram[s]) << "group " << g << " dc symbol " << s;
+        }
+        for (std::size_t s{0}; s < r.acmeta_histogram.size(); ++s) {
+            EXPECT_EQ(dev.acmeta_histograms[g][s], r.acmeta_histogram[s])
+                << "group " << g << " acmeta symbol " << s;
+        }
+        EXPECT_EQ(dev.group_sizes[g], r.section.size()) << "group " << g << " size";
+        EXPECT_EQ(dev.group_offsets[g], offset) << "group " << g << " offset";
+        offset += dev.group_sizes[g];
+        ASSERT_LE(dev.group_offsets[g] + r.section.size(), dev.stream.size());
+        for (std::size_t i{0}; i < r.section.size(); ++i) {
+            EXPECT_EQ(dev.stream[dev.group_offsets[g] + i], r.section[i])
+                << "group " << g << " byte " << i;
+        }
+    }
+    EXPECT_EQ(dev.stream.size(), offset);
+}
+
+TEST(DcEntropyGpuM3, Dct8OnlyMatchesReference) {
+    FrameCoefficients fc{make_frame(256, 256, 32)};
+    fill_dc_pattern(fc);
+    fc.acs.assign((256 / 8) * (256 / 8), 8);
+    check_matches_reference_m3(fc);
+}
+
+TEST(DcEntropyGpuM3, MixedSingleGroupMatchesReference) {
+    check_matches_reference_m3(make_mixed_dc_frame(256, 256));
+}
+
+TEST(DcEntropyGpuM3, MixedMultiGroupMatchesReference) {
+    check_matches_reference_m3(make_mixed_dc_frame(2560, 256));
 }
 
 TEST(DcEntropyGpu, Deterministic) {

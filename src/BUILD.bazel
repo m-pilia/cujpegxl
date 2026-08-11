@@ -407,6 +407,7 @@ cc_test(
     ],
     deps = [
         ":dc_entropy_roundtrip",
+        ":vardct_layout",
         "//tools/bitstream:vardct_frame",
         "@googletest//:gtest_main",
     ],
