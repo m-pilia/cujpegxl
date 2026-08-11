@@ -22,6 +22,10 @@ namespace {
 constexpr int TB = 4;
 constexpr int TILE_PX = TB * 8;
 constexpr int PAD = TILE_PX + 2;
+// X and B never need the Laplacian halo (only Y does), so they are stored
+// interior-only to cut shared-memory footprint and raise occupancy. The +1
+// column padding dodges shared-bank conflicts on the strided column reads.
+constexpr int INT_STRIDE = TILE_PX + 1;
 constexpr int CELLS = 2 * TB;
 
 __constant__ float DCT_A[64];
@@ -61,6 +65,12 @@ __device__ inline float warp_reduce_sum(float v) {
     return v;
 }
 
+// Interior (halo-stripped) index for the X/B planes from a PAD-space coordinate
+// (px, py); valid for 1 <= px, py <= TILE_PX.
+__device__ inline int interior_idx(int px, int py) {
+    return (py - 1) * INT_STRIDE + (px - 1);
+}
+
 // FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
 // values in its 3x3 neighbourhood, clamped to the tile (the seam approximation).
 __device__ float erosion_cell(const float* __restrict__ pre, int cx, int cy, float km0, float km1,
@@ -89,9 +99,9 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
                                       float mul_pb, float add_pb, float inv_global_scale,
                                       std::int32_t* __restrict__ q,
                                       std::int32_t* __restrict__ quant_field) {
-    __shared__ float sh_x[PAD * PAD];
     __shared__ float sh_y[PAD * PAD];
-    __shared__ float sh_b[PAD * PAD];
+    __shared__ float sh_x[TILE_PX * INT_STRIDE];
+    __shared__ float sh_b[TILE_PX * INT_STRIDE];
     __shared__ float sh_pre[CELLS * CELLS];
     __shared__ float sh_red[2][4];
     __shared__ int sh_q;
@@ -113,7 +123,16 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         gy = gy < 0 ? 0 : (gy >= static_cast<long>(height) ? static_cast<long>(height) - 1 : gy);
         const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
         const float2 c{tex2D<float2>(chroma_tex, (gx + 0.5f) * 0.5f, (gy + 0.5f) * 0.5f)};
-        nv12_pixel_to_xyb(yv, c.x, c.y, sh_x[i], sh_y[i], sh_b[i]);
+        float xo{};
+        float yo{};
+        float bo{};
+        nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
+        sh_y[i] = yo;
+        if (lx >= 1 && lx <= TILE_PX && ly >= 1 && ly <= TILE_PX) {
+            const int ii{interior_idx(lx, ly)};
+            sh_x[ii] = xo;
+            sh_b[ii] = bo;
+        }
     }
     __syncthreads();
 
@@ -161,9 +180,10 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         // so the per-pixel partials can be summed in parallel.
         {
             const int idx{(y0 + fy) * PAD + x0 + fx};
+            const int iidx{interior_idx(x0 + fx, y0 + fy)};
             const float yv{sh_y[idx]};
-            const float xv{sh_x[idx]};
-            const float bv{sh_b[idx]};
+            const float xv{sh_x[iidx]};
+            const float bv{sh_b[iidx]};
 
             constexpr float valmin{0.0206f};
             float hf_part{0.0f};
@@ -244,9 +264,10 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             for (int x{0}; x < 8; ++x) {
                 const float axy{ay * DCT_A[fx * 8 + x]};
                 const int s{(y0 + y) * PAD + x0 + x};
+                const int si{interior_idx(x0 + x, y0 + y)};
                 acc_y += axy * sh_y[s];
-                acc_x += axy * sh_x[s];
-                acc_b += axy * sh_b[s];
+                acc_x += axy * sh_x[si];
+                acc_b += axy * sh_b[si];
             }
         }
 
