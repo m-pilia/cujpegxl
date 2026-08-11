@@ -52,65 +52,13 @@ __device__ inline float quant_factor(int c, int k, float ac_scale, float dc_scal
     return k == 0 ? DC_INV_QUANT_D[c] * dc_scale : ac_scale / QUANT_WEIGHTS[c][k];
 }
 
-// HF/gamma/blue modulations over one 8x8 block, reading the shared XYB planes
-// (PAD-strided, `x0`/`y0` the block's top-left interior coordinate).
-__device__ float hf_modulation(const float* __restrict__ y, int x0, int y0, float out_val) {
-    constexpr float valmin{0.0206f};
-    float sum{0.0f};
-    for (int dy{0}; dy < 8; ++dy) {
-        const int row{y0 + dy};
-        const int row_next{dy == 7 ? row : row + 1};
-        for (int dx{0}; dx < 8; ++dx) {
-            const float p{y[row * PAD + x0 + dx]};
-            if (dx < 7) {
-                sum += fminf(valmin, fabsf(p - y[row * PAD + x0 + dx + 1]));
-            }
-            sum += fminf(valmin, fabsf(p - y[row_next * PAD + x0 + dx]));
-        }
+// Full-mask warp sum reduction. Both warps of the 64-thread block are fully
+// populated here, so every lane participates.
+__device__ inline float warp_reduce_sum(float v) {
+    for (int off{16}; off > 0; off >>= 1) {
+        v += __shfl_down_sync(0xffffffffu, v, off);
     }
-    return out_val + sum * -0.38f + 0.42f;
-}
-
-__device__ float gamma_modulation(const float* __restrict__ xp, const float* __restrict__ yp,
-                                  int x0, int y0, float out_val) {
-    constexpr float kBias{0.16f};
-    float overall{0.0f};
-    for (int dy{0}; dy < 8; ++dy) {
-        for (int dx{0}; dx < 8; ++dx) {
-            const int idx{(y0 + dy) * PAD + x0 + dx};
-            const float iny{yp[idx] + kBias};
-            const float inx{xp[idx]};
-            overall += ratio_cbrt_gamma<true>(iny - inx);
-            overall += ratio_cbrt_gamma<true>(iny + inx);
-        }
-    }
-    overall *= 0.5f / 64.0f;
-    return out_val + 0.1005613337192697f * log2f(overall);
-}
-
-__device__ float blue_modulation(const float* __restrict__ xp, const float* __restrict__ yp,
-                                 const float* __restrict__ bp, int x0, int y0, float out_val) {
-    constexpr float kLimit{0.027121074570634722f};
-    constexpr float kOffset{0.084381641171960495f};
-    float sum{0.0f};
-    for (int dy{0}; dy < 8; ++dy) {
-        for (int dx{0}; dx < 8; ++dx) {
-            const int idx{(y0 + dy) * PAD + x0 + dx};
-            const float px{xp[idx]};
-            const float pye{yp[idx] + kOffset + fabsf(px)};
-            if (bp[idx] > pye) {
-                sum += fminf(bp[idx] - pye, kLimit);
-            }
-        }
-    }
-    if (sum >= 32.0f * kLimit) {
-        sum = 64.0f * kLimit - sum;
-    }
-    constexpr float kMaxLimit{15.398788439047934f};
-    if (sum >= kMaxLimit * kLimit) {
-        sum = kMaxLimit * kLimit;
-    }
-    return out_val + sum * 0.14207000358439159f;
+    return v;
 }
 
 // FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
@@ -145,6 +93,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     __shared__ float sh_y[PAD * PAD];
     __shared__ float sh_b[PAD * PAD];
     __shared__ float sh_pre[CELLS * CELLS];
+    __shared__ float sh_red[2][4];
     __shared__ int sh_q;
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
@@ -205,18 +154,75 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         const int x0{lbx * 8 + 1};  // shared interior origin (+halo)
         const int y0{lby * 8 + 1};
 
-        // Adaptive quant integer (thread 0 computes, broadcasts via shared).
-        if (tid == 0) {
-            float aq{0.0f};
-            for (int sy{0}; sy < 2; ++sy) {
-                for (int sx{0}; sx < 2; ++sx) {
-                    aq += erosion_cell(sh_pre, 2 * lbx + sx, 2 * lby + sy, km0, km1, km2, km3);
-                }
+        // Adaptive quant integer: each thread reduces its own pixel's modulation
+        // contributions across the 64-thread block; thread 0 combines the
+        // reduced sums and broadcasts the quant integer via shared memory. Every
+        // modulation term is an additive reduction over the block's 64 pixels,
+        // so the per-pixel partials can be summed in parallel.
+        {
+            const int idx{(y0 + fy) * PAD + x0 + fx};
+            const float yv{sh_y[idx]};
+            const float xv{sh_x[idx]};
+            const float bv{sh_b[idx]};
+
+            constexpr float valmin{0.0206f};
+            float hf_part{0.0f};
+            if (fx < 7) {
+                hf_part += fminf(valmin, fabsf(yv - sh_y[idx + 1]));
             }
+            if (fy < 7) {
+                hf_part += fminf(valmin, fabsf(yv - sh_y[idx + PAD]));
+            }
+
+            constexpr float kBias{0.16f};
+            const float iny{yv + kBias};
+            const float gamma_part{ratio_cbrt_gamma<true>(iny - xv) +
+                                   ratio_cbrt_gamma<true>(iny + xv)};
+
+            constexpr float kLimit{0.027121074570634722f};
+            constexpr float kOffset{0.084381641171960495f};
+            const float pye{yv + kOffset + fabsf(xv)};
+            const float blue_part{bv > pye ? fminf(bv - pye, kLimit) : 0.0f};
+
+            float er_part{0.0f};
+            if (tid < 4) {
+                er_part = erosion_cell(sh_pre, 2 * lbx + (tid & 1), 2 * lby + (tid >> 1), km0, km1,
+                                       km2, km3);
+            }
+
+            const float hf_red{warp_reduce_sum(hf_part)};
+            const float gamma_red{warp_reduce_sum(gamma_part)};
+            const float blue_red{warp_reduce_sum(blue_part)};
+            const float er_red{warp_reduce_sum(er_part)};
+            if ((tid & 31) == 0) {
+                const int w{tid >> 5};
+                sh_red[w][0] = hf_red;
+                sh_red[w][1] = gamma_red;
+                sh_red[w][2] = blue_red;
+                sh_red[w][3] = er_red;
+            }
+        }
+        __syncthreads();
+        if (tid == 0) {
+            const float hf_sum{sh_red[0][0] + sh_red[1][0]};
+            const float gamma_overall{(sh_red[0][1] + sh_red[1][1]) * (0.5f / 64.0f)};
+            float blue_sum{sh_red[0][2] + sh_red[1][2]};
+            const float aq{sh_red[0][3] + sh_red[1][3]};
+
+            constexpr float kLimit{0.027121074570634722f};
+            if (blue_sum >= 32.0f * kLimit) {
+                blue_sum = 64.0f * kLimit - blue_sum;
+            }
+            constexpr float kMaxLimit{15.398788439047934f};
+            if (blue_sum >= kMaxLimit * kLimit) {
+                blue_sum = kMaxLimit * kLimit;
+            }
+
             float ov{compute_mask(aq)};
-            ov = hf_modulation(sh_y, x0, y0, ov);
-            ov = gamma_modulation(sh_x, sh_y, x0, y0, ov);
-            ov = blue_modulation(sh_x, sh_y, sh_b, x0, y0, ov);
+            ov += hf_sum * -0.38f + 0.42f;
+            ov += 0.1005613337192697f * log2f(gamma_overall);
+            ov += blue_sum * 0.14207000358439159f;
+
             const float qval{expf(ov) * mul_pb + add_pb};
             int qi{static_cast<int>(qval * inv_global_scale + 0.5f)};
             qi = qi < 1 ? 1 : (qi > K_QUANT_MAX ? K_QUANT_MAX : qi);
