@@ -160,7 +160,11 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 
     const int fx{static_cast<int>(threadIdx.x)};
     const int fy{static_cast<int>(threadIdx.y)};
-    const int k{fx * 8 + fy};
+    // Separable DCT ownership: thread (fx, fy) produces coefficient with
+    // x-frequency fy and y-frequency fx, i.e. k = fy*8 + fx (x-frequency major,
+    // libjxl raster). This transpose keeps each coefficient's row-pass inputs
+    // (the 8 threads sharing fy) within a single warp for the shuffle gather.
+    const int k{fy * 8 + fx};
 
     for (int lb{0}; lb < TB * TB; ++lb) {
         const int lbx{lb % TB};
@@ -254,21 +258,31 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         const float ac_scale{static_cast<float>(sh_q) * gsf};
         const std::size_t blk{gby * bw + gbx};
 
-        // Forward DCT8 + quantize, per channel. Thread (fx, fy) owns coefficient
-        // k = fx*8 + fy (libjxl raster layout).
+        // Separable forward DCT8 + quantize, per channel (see the k definition
+        // above). Row pass: thread (fx, fy) reduces spatial row fx against
+        // x-frequency fy, producing R[fy][fx]. Column pass: warp shuffles gather
+        // R[fy][0..7] (the 8 lanes sharing fy) and reduce against y-frequency fx.
+        // This replaces the 64-MAC dense transform with 16 MACs + 8 shuffles.
+        float ry{0.0f};
+        float rx{0.0f};
+        float rb{0.0f};
+        for (int x{0}; x < 8; ++x) {
+            const float a{DCT_A[fy * 8 + x]};
+            const int s{(y0 + fx) * PAD + x0 + x};
+            const int si{interior_idx(x0 + x, y0 + fx)};
+            ry += a * sh_y[s];
+            rx += a * sh_x[si];
+            rb += a * sh_b[si];
+        }
         float acc_y{0.0f};
         float acc_x{0.0f};
         float acc_b{0.0f};
-        for (int y{0}; y < 8; ++y) {
-            const float ay{DCT_A[fy * 8 + y]};
-            for (int x{0}; x < 8; ++x) {
-                const float axy{ay * DCT_A[fx * 8 + x]};
-                const int s{(y0 + y) * PAD + x0 + x};
-                const int si{interior_idx(x0 + x, y0 + y)};
-                acc_y += axy * sh_y[s];
-                acc_x += axy * sh_x[si];
-                acc_b += axy * sh_b[si];
-            }
+        const int base_lane{(fy & 3) * 8};
+        for (int s{0}; s < 8; ++s) {
+            const float a{DCT_A[fx * 8 + s]};
+            acc_y += a * __shfl_sync(0xffffffffu, ry, base_lane + s, 32);
+            acc_x += a * __shfl_sync(0xffffffffu, rx, base_lane + s, 32);
+            acc_b += a * __shfl_sync(0xffffffffu, rb, base_lane + s, 32);
         }
 
         const std::int32_t qy{
