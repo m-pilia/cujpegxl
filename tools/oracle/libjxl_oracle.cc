@@ -215,21 +215,26 @@ int run_coefforder(std::size_t block_dim, const char* out_path) {
     return put == order.size() ? 0 : 1;
 }
 
-// Writes libjxl's default DCT8 dequant matrix (3 channels x 64 coefficients, in
-// libjxl raster order) as float32, for the encoder to reuse as its quant
-// weights.
-int run_quantmatrix(const char* out_path) {
+// Writes libjxl's default dequant matrix for the square DCTNxN strategy
+// (3 channels x block_dim*block_dim coefficients, in libjxl transposed-raster
+// order) as float32, for the encoder to reuse as its quant weights.
+int run_quantmatrix(std::size_t block_dim, const char* out_path) {
+    if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
+        std::fprintf(stderr, "oracle: quantmatrix block dim must be 8, 16, or 32\n");
+        return 2;
+    }
     JxlMemoryManager memory_manager{nullptr, &oracle_alloc, &oracle_free};
     jxl::DequantMatrices dm{};
     if (!dm.EnsureComputed(&memory_manager, ~0u)) {
         std::fprintf(stderr, "oracle: EnsureComputed failed\n");
         return 1;
     }
-    std::vector<float> weights(3 * 64);
+    const std::size_t coeffs_per_block{block_dim * block_dim};
+    std::vector<float> weights(3 * coeffs_per_block);
     for (std::size_t c{0}; c < 3; ++c) {
-        const float* matrix{dm.Matrix(static_cast<jxl::AcStrategyType>(0), c)};
-        for (std::size_t k{0}; k < 64; ++k) {
-            weights[c * 64 + k] = matrix[k];
+        const float* matrix{dm.Matrix(square_strategy(block_dim), c)};
+        for (std::size_t k{0}; k < coeffs_per_block; ++k) {
+            weights[c * coeffs_per_block + k] = matrix[k];
         }
     }
     return write_planar(out_path, weights) ? 0 : 1;
@@ -303,7 +308,10 @@ int main(int argc, char** argv) {
         return run_cfl(argv[2]);
     }
     if (argc == 3 && std::strcmp(argv[1], "quantmatrix") == 0) {
-        return run_quantmatrix(argv[2]);
+        return run_quantmatrix(8, argv[2]);
+    }
+    if (argc == 4 && std::strcmp(argv[1], "quantmatrix") == 0) {
+        return run_quantmatrix(parse_dim(argv[2]), argv[3]);
     }
 
     std::fprintf(stderr,
@@ -313,7 +321,7 @@ int main(int argc, char** argv) {
                  "       %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n"
                  "       %s coefforder <block_dim> <out_order_u32>\n"
                  "       %s cfl <out_ratios_f32>\n"
-                 "       %s quantmatrix <out_weights_f32>\n",
+                 "       %s quantmatrix [block_dim] <out_weights_f32>\n",
                  argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }

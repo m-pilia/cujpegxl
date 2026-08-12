@@ -191,7 +191,28 @@ cc_library(
     name = "quant_consts",
     hdrs = [
         "quant_calibration.h",
+        "quant_weights_dct16.h",
+        "quant_weights_dct32.h",
         "quant_weights_dct8.h",
+    ],
+)
+
+cc_binary(
+    name = "quant_weights_dump",
+    testonly = True,
+    srcs = ["quant_weights_dump.cc"],
+    deps = [":quant_consts"],
+)
+
+cc_test(
+    name = "vardct_quant_test",
+    srcs = ["vardct_quant_test.cc"],
+    deps = [
+        ":cfl",
+        ":coeff_order",
+        ":quant_consts",
+        ":vardct_layout",
+        "@googletest//:gtest_main",
     ],
 )
 
