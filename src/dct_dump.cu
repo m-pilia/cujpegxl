@@ -30,18 +30,33 @@ bool read_floats(const char* path, std::size_t count, std::vector<float>* out) {
 }  // namespace
 
 int run_dct_dump(int argc, char** argv) {
-    if (argc != 6 || std::strcmp(argv[1], "dct") != 0) {
-        std::fprintf(stderr, "usage: %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n",
-                     argv[0]);
+    // `dct <w> <h> ...` runs DCT8; `dctn <block_dim> <w> <h> ...` selects the
+    // square transform size, mirroring the libjxl oracle's subcommands.
+    std::size_t block_dim{8};
+    int arg{1};
+    if (argc == 7 && std::strcmp(argv[1], "dctn") == 0) {
+        block_dim = std::strtoull(argv[2], nullptr, 10);
+        arg = 3;
+    } else if (argc == 6 && std::strcmp(argv[1], "dct") == 0) {
+        arg = 2;
+    } else {
+        std::fprintf(stderr,
+                     "usage: %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
+                     "       %s dctn <block_dim> <width> <height> <in_xyb_f32> <out_coeff_f32>\n",
+                     argv[0], argv[0]);
         return 2;
     }
-    const std::size_t width{std::strtoull(argv[2], nullptr, 10)};
-    const std::size_t height{std::strtoull(argv[3], nullptr, 10)};
+    if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
+        std::fprintf(stderr, "dct_dump: block dim must be 8, 16, or 32\n");
+        return 2;
+    }
+    const std::size_t width{std::strtoull(argv[arg], nullptr, 10)};
+    const std::size_t height{std::strtoull(argv[arg + 1], nullptr, 10)};
     const std::size_t count{3 * width * height};
 
     std::vector<float> xyb{};
-    if (!read_floats(argv[4], count, &xyb)) {
-        std::fprintf(stderr, "dct_dump: %s is not %zu floats\n", argv[4], count);
+    if (!read_floats(argv[arg + 2], count, &xyb)) {
+        std::fprintf(stderr, "dct_dump: %s is not %zu floats\n", argv[arg + 2], count);
         return 1;
     }
 
@@ -54,8 +69,11 @@ int run_dct_dump(int argc, char** argv) {
     }
     cudaMemcpy(d_xyb, xyb.data(), count * sizeof(float), cudaMemcpyHostToDevice);
 
-    if (!cujpegxl::forward_dct8(d_xyb, width, height, d_coeffs)) {
-        std::fprintf(stderr, "dct_dump: forward_dct8 failed\n");
+    const bool ok{block_dim == 16   ? cujpegxl::forward_dct16(d_xyb, width, height, d_coeffs)
+                  : block_dim == 32 ? cujpegxl::forward_dct32(d_xyb, width, height, d_coeffs)
+                                    : cujpegxl::forward_dct8(d_xyb, width, height, d_coeffs)};
+    if (!ok) {
+        std::fprintf(stderr, "dct_dump: forward_dct%zu failed\n", block_dim);
         return 1;
     }
 
@@ -64,9 +82,10 @@ int run_dct_dump(int argc, char** argv) {
     cudaFree(d_xyb);
     cudaFree(d_coeffs);
 
-    std::FILE* out{std::fopen(argv[5], "wb")};
+    const char* out_path{argv[arg + 3]};
+    std::FILE* out{std::fopen(out_path, "wb")};
     if (out == nullptr) {
-        std::fprintf(stderr, "dct_dump: cannot open %s for writing\n", argv[5]);
+        std::fprintf(stderr, "dct_dump: cannot open %s for writing\n", out_path);
         return 1;
     }
     const std::size_t put{std::fwrite(coeffs.data(), sizeof(float), coeffs.size(), out)};

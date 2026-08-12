@@ -24,6 +24,8 @@
 #include <jxl/cms.h>
 #include <jxl/memory_manager.h>
 
+#include "lib/jxl/ac_strategy.h"
+#include "lib/jxl/coeff_order_fwd.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/enc_transforms.h"
 #include "lib/jxl/enc_xyb.h"
@@ -113,12 +115,29 @@ int run_xyb(std::size_t width, std::size_t height, const char* in_path, const ch
     return write_planar(out_path, xyb) ? 0 : 1;
 }
 
-// Forward 8x8 DCT of every plane, block by block, via libjxl's own transform.
-// Output layout per plane: blocks in raster order, 64 coefficients each in
-// libjxl's natural (raster) coefficient order.
-int run_dct(std::size_t width, std::size_t height, const char* in_path, const char* out_path) {
-    if (width % 8 != 0 || height % 8 != 0) {
-        std::fprintf(stderr, "oracle: dct requires width and height multiples of 8\n");
+// The square-DCT AcStrategyType for a block side (8/16/32).
+jxl::AcStrategyType square_strategy(std::size_t block_dim) {
+    switch (block_dim) {
+        case 16:
+            return jxl::AcStrategyType::DCT16X16;
+        case 32:
+            return jxl::AcStrategyType::DCT32X32;
+        default:
+            return jxl::AcStrategyType::DCT;
+    }
+}
+
+// Forward NxN DCT of every plane, block by block, via libjxl's own transform.
+// Output layout per plane: NxN blocks in raster order, N*N coefficients each in
+// libjxl's transposed raster coefficient order.
+int run_dct(std::size_t block_dim, std::size_t width, std::size_t height, const char* in_path,
+            const char* out_path) {
+    if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
+        std::fprintf(stderr, "oracle: dct block dim must be 8, 16, or 32\n");
+        return 2;
+    }
+    if (width % block_dim != 0 || height % block_dim != 0) {
+        std::fprintf(stderr, "oracle: dct requires width and height multiples of %zu\n", block_dim);
         return 2;
     }
     std::vector<float> planes{};
@@ -127,28 +146,51 @@ int run_dct(std::size_t width, std::size_t height, const char* in_path, const ch
     }
 
     const std::size_t plane_stride{width * height};
-    const std::size_t blocks_x{width / 8};
-    const std::size_t blocks_y{height / 8};
+    const std::size_t blocks_x{width / block_dim};
+    const std::size_t blocks_y{height / block_dim};
+    const std::size_t coeffs_per_block{block_dim * block_dim};
+    const jxl::AcStrategyType strategy{square_strategy(block_dim)};
     std::vector<float> coeffs(3 * plane_stride);
     // libjxl's transforms expect 64-byte-aligned outputs and a scratch buffer
     // sized for the largest supported transform (3 * lanes * kMaxBlockDim).
-    alignas(64) float block[64];
+    alignas(64) float block[32 * 32];
     alignas(64) float scratch[3 * 16 * 256];
     for (std::size_t c{0}; c < 3; ++c) {
         const float* plane{planes.data() + c * plane_stride};
         for (std::size_t by{0}; by < blocks_y; ++by) {
             for (std::size_t bx{0}; bx < blocks_x; ++bx) {
-                const float* pixels{plane + (by * 8) * width + bx * 8};
-                jxl::TransformFromPixels(static_cast<jxl::AcStrategyType>(0), pixels, width, block,
-                                         scratch);
-                const std::size_t base{c * plane_stride + (by * blocks_x + bx) * 64};
-                for (std::size_t k{0}; k < 64; ++k) {
+                const float* pixels{plane + (by * block_dim) * width + bx * block_dim};
+                jxl::TransformFromPixels(strategy, pixels, width, block, scratch);
+                const std::size_t base{c * plane_stride + (by * blocks_x + bx) * coeffs_per_block};
+                for (std::size_t k{0}; k < coeffs_per_block; ++k) {
                     coeffs[base + k] = block[k];
                 }
             }
         }
     }
     return write_planar(out_path, coeffs) ? 0 : 1;
+}
+
+// Writes libjxl's natural coefficient order for the square DCTNxN strategy as
+// N*N raw uint32 (scan index -> transposed-raster index), for the encoder's
+// natural_coeff_order LUT to diff against.
+int run_coefforder(std::size_t block_dim, const char* out_path) {
+    if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
+        std::fprintf(stderr, "oracle: coefforder block dim must be 8, 16, or 32\n");
+        return 2;
+    }
+    const jxl::AcStrategy acs{jxl::AcStrategy::FromRawStrategy(square_strategy(block_dim))};
+    std::vector<jxl::coeff_order_t> order(block_dim * block_dim);
+    acs.ComputeNaturalCoeffOrder(order.data());
+
+    std::FILE* file{std::fopen(out_path, "wb")};
+    if (file == nullptr) {
+        std::fprintf(stderr, "oracle: cannot open %s for writing\n", out_path);
+        return 1;
+    }
+    const std::size_t put{std::fwrite(order.data(), sizeof(jxl::coeff_order_t), order.size(), file)};
+    std::fclose(file);
+    return put == order.size() ? 0 : 1;
 }
 
 // Writes libjxl's default DCT8 dequant matrix (3 channels x 64 coefficients, in
@@ -192,7 +234,24 @@ int main(int argc, char** argv) {
                          argv[0]);
             return 2;
         }
-        return run_dct(parse_dim(argv[2]), parse_dim(argv[3]), argv[4], argv[5]);
+        return run_dct(8, parse_dim(argv[2]), parse_dim(argv[3]), argv[4], argv[5]);
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "dctn") == 0) {
+        if (argc != 7) {
+            std::fprintf(stderr,
+                         "usage: %s dctn <block_dim> <width> <height> <in_xyb_f32> "
+                         "<out_coeff_f32>\n",
+                         argv[0]);
+            return 2;
+        }
+        return run_dct(parse_dim(argv[2]), parse_dim(argv[3]), parse_dim(argv[4]), argv[5], argv[6]);
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "coefforder") == 0) {
+        if (argc != 4) {
+            std::fprintf(stderr, "usage: %s coefforder <block_dim> <out_order_u32>\n", argv[0]);
+            return 2;
+        }
+        return run_coefforder(parse_dim(argv[2]), argv[3]);
     }
     if (argc == 3 && std::strcmp(argv[1], "quantmatrix") == 0) {
         return run_quantmatrix(argv[2]);
@@ -201,7 +260,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: %s xyb <width> <height> <in_srgb_f32> <out_xyb_f32>\n"
                  "       %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
+                 "       %s dctn <block_dim> <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
+                 "       %s coefforder <block_dim> <out_order_u32>\n"
                  "       %s quantmatrix <out_weights_f32>\n",
-                 argv[0], argv[0], argv[0]);
+                 argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }

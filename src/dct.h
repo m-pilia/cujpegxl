@@ -8,16 +8,20 @@
 
 namespace cujpegxl {
 
-// Forward 8x8 DCT of a planar XYB float image, matching libjxl's VarDCT DCT8:
-// the orthonormal 2D DCT-II divided by 8, laid out per block in libjxl's raster
-// order (coefficient index = horizontal_freq * 8 + vertical_freq).
+// Forward NxN DCT of a planar XYB float image, matching libjxl's VarDCT square
+// transforms: the orthonormal 2D DCT-II divided by N, laid out per block in
+// libjxl's transposed raster order (coefficient index = horizontal_freq * N +
+// vertical_freq), the same convention libjxl's TransformFromPixels emits and the
+// DCT8 path already uses.
 //
 // `xyb` is three tightly packed width*height float planes. `coeffs` receives, per
-// plane, blocks in raster order with 64 coefficients each:
-// coeffs[c*width*height + (by*(width/8)+bx)*64 + k]. width and height must be
-// multiples of 8. Both pointers are device addresses. Returns false on a CUDA
+// plane, NxN blocks in raster order with N*N coefficients each:
+// coeffs[c*width*height + (by*(width/N)+bx)*N*N + k]. width and height must be
+// multiples of N. Both pointers are device addresses. Returns false on a CUDA
 // error.
 bool forward_dct8(const float* xyb, std::size_t width, std::size_t height, float* coeffs);
+bool forward_dct16(const float* xyb, std::size_t width, std::size_t height, float* coeffs);
+bool forward_dct32(const float* xyb, std::size_t width, std::size_t height, float* coeffs);
 
 }  // namespace cujpegxl
 

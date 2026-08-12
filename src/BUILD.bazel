@@ -51,6 +51,20 @@ cuda_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "coeff_order",
+    srcs = ["coeff_order.cc"],
+    hdrs = ["coeff_order.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cc_binary(
+    name = "coeff_order_dump",
+    testonly = True,
+    srcs = ["coeff_order_dump.cc"],
+    deps = [":coeff_order"],
+)
+
 cuda_library(
     name = "nv12_to_xyb_dump_lib",
     testonly = True,
