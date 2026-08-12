@@ -109,6 +109,41 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "cfl",
+    hdrs = ["cfl.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cuda_library(
+    name = "cfl_cuda",
+    srcs = ["cfl.cu"],
+    copts = RUNTIME_COPTS,
+    deps = [":cfl"],
+)
+
+cc_binary(
+    name = "cfl_dump",
+    testonly = True,
+    srcs = ["cfl_dump.cc"],
+    deps = [":cfl"],
+)
+
+cc_test(
+    name = "cfl_gpu_test",
+    srcs = ["cfl_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":cfl",
+        ":cfl_cuda",
+        ":quant_consts",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "coeff_order_dump",
     testonly = True,

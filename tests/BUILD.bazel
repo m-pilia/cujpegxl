@@ -83,6 +83,20 @@ py_test(
 )
 
 py_test(
+    name = "cfl_conformance_test",
+    srcs = ["cfl_conformance_test.py"],
+    args = [
+        "$(rootpath //src:cfl_dump)",
+        "$(rootpath //tools/oracle:libjxl_oracle)",
+    ],
+    data = [
+        "//src:cfl_dump",
+        "//tools/oracle:libjxl_oracle",
+    ],
+    deps = [requirement("numpy")],
+)
+
+py_test(
     name = "quant_selfconsistency_test",
     srcs = ["quant_selfconsistency_test.py"],
     args = [

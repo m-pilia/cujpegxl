@@ -25,6 +25,7 @@
 #include <jxl/memory_manager.h>
 
 #include "lib/jxl/ac_strategy.h"
+#include "lib/jxl/chroma_from_luma.h"
 #include "lib/jxl/coeff_order_fwd.h"
 #include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/enc_transforms.h"
@@ -234,6 +235,22 @@ int run_quantmatrix(const char* out_path) {
     return write_planar(out_path, weights) ? 0 : 1;
 }
 
+// Writes libjxl's ColorCorrelation YtoX/YtoB ratios for every signed-int8 map
+// value as float32: 256 YtoX ratios (map -128..127) followed by 256 YtoB, for
+// the encoder's cfl_ytox_ratio / cfl_ytob_ratio to diff against.
+int run_cfl(const char* out_path) {
+    jxl::ColorCorrelation cc{};
+    std::vector<float> ratios{};
+    ratios.reserve(512);
+    for (int m{-128}; m <= 127; ++m) {
+        ratios.push_back(cc.YtoXRatio(m));
+    }
+    for (int m{-128}; m <= 127; ++m) {
+        ratios.push_back(cc.YtoBRatio(m));
+    }
+    return write_planar(out_path, ratios) ? 0 : 1;
+}
+
 std::size_t parse_dim(const char* text) {
     return static_cast<std::size_t>(std::strtoull(text, nullptr, 10));
 }
@@ -282,6 +299,9 @@ int main(int argc, char** argv) {
         }
         return run_coefforder(parse_dim(argv[2]), argv[3]);
     }
+    if (argc == 3 && std::strcmp(argv[1], "cfl") == 0) {
+        return run_cfl(argv[2]);
+    }
     if (argc == 3 && std::strcmp(argv[1], "quantmatrix") == 0) {
         return run_quantmatrix(argv[2]);
     }
@@ -292,7 +312,8 @@ int main(int argc, char** argv) {
                  "       %s dctn <block_dim> <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
                  "       %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n"
                  "       %s coefforder <block_dim> <out_order_u32>\n"
+                 "       %s cfl <out_ratios_f32>\n"
                  "       %s quantmatrix <out_weights_f32>\n",
-                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }
