@@ -14,8 +14,16 @@ namespace cujpegxl {
 // derivation. Host reference used to validate the device kernels (T3/T4) and
 // exercised against the libjxl oracle.
 
+#if defined(__CUDACC__)
+#define CUJPEGXL_VL_HD __host__ __device__
+#else
+#define CUJPEGXL_VL_HD
+#endif
+
 // Covered 8x8 blocks per side of a square DCT of side `block_dim` (8/16/32).
-inline std::size_t covered_blocks_side(std::size_t block_dim) { return block_dim / 8; }
+CUJPEGXL_VL_HD inline std::size_t covered_blocks_side(std::size_t block_dim) {
+    return block_dim / 8;
+}
 
 // Per-8x8-block transform-type signal. A block that is the top-left of a
 // transform holds the transform side (8, 16, or 32); every other 8x8 block the
@@ -37,8 +45,15 @@ constexpr std::size_t COEFFS_PER_BLOCK = 64;
 // raster order (bw blocks per row). The N*N coefficients fill the covered blocks
 // row-major: covered ordinal q = raw / COEFFS_PER_BLOCK selects covered block
 // (by + q/side, bx + q%side); the low bits raw % COEFFS_PER_BLOCK are the slot.
-std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx, std::size_t by,
-                               std::size_t bw, std::size_t raw_index);
+CUJPEGXL_VL_HD inline std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx,
+                                                    std::size_t by, std::size_t bw,
+                                                    std::size_t raw_index) {
+    const std::size_t side{covered_blocks_side(block_dim)};
+    const std::size_t q{raw_index / COEFFS_PER_BLOCK};
+    const std::size_t slot{raw_index % COEFFS_PER_BLOCK};
+    const std::size_t block{(by + q / side) * bw + (bx + q % side)};
+    return block * COEFFS_PER_BLOCK + slot;
+}
 
 // Scatters a first-block's `block_dim*block_dim` coefficients (raw layout) into
 // `plane` (a full channel plane, bw*bh*COEFFS_PER_BLOCK slots) at block (bx, by).

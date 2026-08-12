@@ -109,6 +109,36 @@ cc_test(
     ],
 )
 
+cuda_library(
+    name = "frontend_transform",
+    # testonly until wired into the runtime (T6 step 5); it composes the
+    # standalone (testonly) nv12_to_xyb kernel of the correctness-first path.
+    testonly = True,
+    srcs = ["frontend_transform.cu"],
+    hdrs = ["frontend_transform.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":transform_select",
+        ":vardct_layout",
+        ":xyb",
+    ],
+)
+
+cc_test(
+    name = "frontend_transform_gpu_test",
+    srcs = ["frontend_transform_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":frontend_transform",
+        ":transform_select",
+        ":vardct_layout",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "cfl",
     hdrs = ["cfl.h"],

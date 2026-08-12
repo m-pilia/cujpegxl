@@ -27,15 +27,6 @@ double ortho_basis(std::size_t m, std::size_t k, std::size_t n) {
 
 }  // namespace
 
-std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx, std::size_t by,
-                               std::size_t bw, std::size_t raw_index) {
-    const std::size_t side{covered_blocks_side(block_dim)};
-    const std::size_t q{raw_index / COEFFS_PER_BLOCK};
-    const std::size_t slot{raw_index % COEFFS_PER_BLOCK};
-    const std::size_t block{(by + q / side) * bw + (bx + q % side)};
-    return block * COEFFS_PER_BLOCK + slot;
-}
-
 void scatter_covered_block(std::size_t block_dim, std::size_t bx, std::size_t by, std::size_t bw,
                            const float* coeffs, float* plane) {
     const std::size_t count{block_dim * block_dim};
