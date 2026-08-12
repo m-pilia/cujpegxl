@@ -11,6 +11,8 @@
 #include "src/bitstream/codestream.h"
 #include "src/bitstream/field_coder.h"
 #include "src/bitstream/hybrid_uint.h"
+#include "src/coeff_order.h"
+#include "src/vardct_layout.h"
 
 #include "entropy_encoder.h"
 #include "modular.h"
@@ -104,53 +106,102 @@ std::vector<ModularChannel> make_vardct_dc_channels(const FrameCoefficients& fc,
     return channels;
 }
 
-// AcMetadata channels for a DC group covering dgw x dgh blocks: YtoX, YtoB (at
-// color-tile resolution, all zero), ACS+QF (all DCT8, quant field constant), EPF
-// (all zero).
-std::vector<ModularChannel> make_ac_metadata_channels(const FrameCoefficients& fc,
+// libjxl AcStrategyType raw value for a square block side (DCT=0, DCT16X16=4,
+// DCT32X32=5).
+std::int32_t raw_strategy(int side) { return side == 16 ? 4 : (side == 32 ? 5 : 0); }
+
+// The block's transform side; an empty acs signals an all-DCT8 frame.
+int block_side(const FrameCoefficients& fc, std::size_t blk) {
+    return fc.acs.empty() ? 8 : fc.acs[blk];
+}
+
+const std::vector<std::uint32_t>& natural_order_for(int side) {
+    static const std::vector<std::uint32_t> o8{natural_coeff_order(8)};
+    static const std::vector<std::uint32_t> o16{natural_coeff_order(16)};
+    static const std::vector<std::uint32_t> o32{natural_coeff_order(32)};
+    return side == 16 ? o16 : (side == 32 ? o32 : o8);
+}
+
+// AcMetadata channels for a DC group covering dgw x dgh blocks at block origin
+// (bx0, by0): YtoX/YtoB (per 64x64 color tile, from the CfL maps), ACS+QF (one
+// column per first-block in DC-group raster order: row 0 = raw strategy, row 1 =
+// quant field - 1), EPF (all zero). The ACS+QF width equals the number of
+// first-blocks, which the decoder reads as the AcMetadata `count`.
+std::vector<ModularChannel> make_ac_metadata_channels(const FrameCoefficients& fc, std::size_t bw,
+                                                      std::size_t bx0, std::size_t by0,
                                                       std::size_t dgw, std::size_t dgh) {
     const std::size_t cw{ceil_div(dgw, 8)};
     const std::size_t ch{ceil_div(dgh, 8)};
-    const std::size_t count{dgw * dgh};
 
     ModularChannel ytox{cw, ch, std::vector<std::int32_t>(cw * ch, 0)};
     ModularChannel ytob{cw, ch, std::vector<std::int32_t>(cw * ch, 0)};
-
-    // ACS + QF: width `count`, height 2. Row 0 = raw AC strategy (0 = DCT8),
-    // row 1 = quant field encoded as raw_quant_field - 1.
-    ModularChannel acs_qf{count, 2, std::vector<std::int32_t>(count * 2, 0)};
-    for (std::size_t i{0}; i < count; ++i) {
-        acs_qf.pixels[count + i] = static_cast<std::int32_t>(fc.raw_quant_field) - 1;
+    if (!fc.ytox_map.empty()) {
+        const std::size_t cmw{ceil_div(bw, 8)};
+        for (std::size_t y{0}; y < ch; ++y) {
+            for (std::size_t x{0}; x < cw; ++x) {
+                const std::size_t src{(by0 / 8 + y) * cmw + (bx0 / 8 + x)};
+                ytox.pixels[y * cw + x] = fc.ytox_map[src];
+                ytob.pixels[y * cw + x] = fc.ytob_map[src];
+            }
+        }
     }
 
+    std::vector<std::int32_t> acs_row{};
+    std::vector<std::int32_t> qf_row{};
+    for (std::size_t by{0}; by < dgh; ++by) {
+        for (std::size_t bx{0}; bx < dgw; ++bx) {
+            const std::size_t blk{(by0 + by) * bw + (bx0 + bx)};
+            const int side{block_side(fc, blk)};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            acs_row.push_back(raw_strategy(side));
+            qf_row.push_back(static_cast<std::int32_t>(fc.raw_quant_field) - 1);
+        }
+    }
+    const std::size_t count{acs_row.size()};
+    std::vector<std::int32_t> acs_qf(count * 2);
+    for (std::size_t i{0}; i < count; ++i) {
+        acs_qf[i] = acs_row[i];
+        acs_qf[count + i] = qf_row[i];
+    }
+    ModularChannel acs_qf_ch{count, 2, std::move(acs_qf)};
+
     ModularChannel epf{dgw, dgh, std::vector<std::int32_t>(dgw * dgh, 0)};
-    return {std::move(ytox), std::move(ytob), std::move(acs_qf), std::move(epf)};
+    return {std::move(ytox), std::move(ytob), std::move(acs_qf_ch), std::move(epf)};
 }
 
-// Tokenizes the AC coefficients of the blocks in one AC group (raster order
-// within the group, channels Y, X, B, natural scan order) into `ac`. Returns the
-// number of tokens the group contributed.
-std::size_t tokenize_ac_group(const FrameCoefficients& fc, std::size_t bw,
-                              std::size_t bx0, std::size_t by0, std::size_t gbw,
-                              std::size_t gbh, EntropyEncoder& ac) {
-    const std::array<std::uint32_t, 64>& order{dct8_natural_order()};
+// Tokenizes the AC coefficients of one AC group into `ac`: for each first-block
+// in group raster order (covered blocks skipped), channels Y, X, B, the nonzero
+// count over the block's AC coefficients (its size - covered_blocks scan
+// positions, starting past the LLF) followed by those coefficients in the
+// block's natural scan order up to the last nonzero. Returns the token count.
+std::size_t tokenize_ac_group(const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
+                              std::size_t by0, std::size_t gbw, std::size_t gbh, EntropyEncoder& ac) {
     const int channel_order[3]{1, 0, 2};  // Y, X, B (decoder LoadBlock order)
     const std::size_t before{ac.num_tokens()};
     for (std::size_t by{0}; by < gbh; ++by) {
         for (std::size_t bx{0}; bx < gbw; ++bx) {
-            const std::size_t block{(by0 + by) * bw + (bx0 + bx)};
+            const std::size_t gbx{bx0 + bx};
+            const std::size_t gby{by0 + by};
+            const int side{block_side(fc, gby * bw + gbx)};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            const std::size_t covered{covered_blocks_side(side) * covered_blocks_side(side)};
+            const std::size_t size{static_cast<std::size_t>(side) * side};
+            const std::vector<std::uint32_t>& order{natural_order_for(side)};
             for (int c : channel_order) {
-                const std::int32_t* blk{&fc.ac[c][block * 64]};
                 std::uint32_t nzeros{0};
-                for (std::size_t k{1}; k < 64; ++k) {
-                    if (blk[order[k]] != 0) {
+                for (std::size_t k{covered}; k < size; ++k) {
+                    if (fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])] != 0) {
                         ++nzeros;
                     }
                 }
                 ac.add_token(0, nzeros);
                 std::uint32_t remaining{nzeros};
-                for (std::size_t k{1}; k < 64 && remaining > 0; ++k) {
-                    const std::int32_t v{blk[order[k]]};
+                for (std::size_t k{covered}; k < size && remaining > 0; ++k) {
+                    const std::int32_t v{fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])]};
                     ac.add_token(0, pack_signed(v));
                     if (v != 0) {
                         --remaining;
@@ -199,9 +250,12 @@ void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw,
     write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
     write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh));
     // DecodeGroup(ModularDC): VarDCT full image has no channels -> nothing.
+    const std::vector<ModularChannel> meta{make_ac_metadata_channels(fc, bw, bx0, by0, dgw, dgh)};
+    const std::size_t count{meta[2].w};  // ACS+QF width = number of first-blocks
+    // AcMetadata count - 1, width fixed by the block-count upper bound.
     write_bits(w, static_cast<std::size_t>(ceil_log2_nonzero(dgw * dgh)),
-               static_cast<std::uint32_t>(dgw * dgh - 1));  // AcMetadata count - 1
-    write_modular_image(w, make_ac_metadata_channels(fc, dgw, dgh));
+               static_cast<std::uint32_t>(count - 1));
+    write_modular_image(w, meta);
 }
 
 std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients& fc,
@@ -357,7 +411,8 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
 
         const std::vector<ModularChannel> dc_ch{
             make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh)};
-        const std::vector<ModularChannel> meta_ch{make_ac_metadata_channels(fc, dgw, dgh)};
+        const std::vector<ModularChannel> meta_ch{
+            make_ac_metadata_channels(fc, bw, bx0, by0, dgw, dgh)};
 
         BitWriter pre{};
         write_bits(pre, 2, 0);  // DecodeVarDCTDC extra_precision = 0
@@ -371,7 +426,7 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
 
         BitWriter mid{};
         write_bits(mid, static_cast<std::size_t>(ceil_log2_nonzero(dgw * dgh)),
-                   static_cast<std::uint32_t>(dgw * dgh - 1));  // AcMetadata count - 1
+                   static_cast<std::uint32_t>(meta_ch[2].w - 1));  // AcMetadata count - 1
         EntropyEncoder meta_data{1};
         write_modular_header(mid, meta_ch, meta_data);
         g.blob_mid = mid.bytes();

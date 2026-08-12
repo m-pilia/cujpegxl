@@ -32,6 +32,8 @@ cc_library(
     deps = [
         ":entropy_encoder",
         ":modular",
+        "//src:coeff_order",
+        "//src:vardct_layout",
         "//src/bitstream",
     ],
 )
@@ -61,6 +63,7 @@ cc_test(
     srcs = ["vardct_frame_test.cc"],
     deps = [
         ":vardct_frame",
+        "//src:vardct_layout",
         "@libjxl//:jxl",
         "@googletest//:gtest_main",
     ],

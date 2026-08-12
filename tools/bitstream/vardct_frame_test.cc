@@ -16,6 +16,8 @@
 #include "lib/jxl/ac_strategy.h"
 #include "lib/jxl/coeff_order.h"
 
+#include "src/vardct_layout.h"
+
 #include "vardct_frame.h"
 
 namespace cujpegxl::bitstream {
@@ -194,6 +196,80 @@ TEST(VarDctFrame, MultiGroupSingleRowOfGroupsDecodes) {
     ASSERT_TRUE(decode(write_vardct_codestream(fc), out));
     EXPECT_EQ(out.xsize, 1024u);
     EXPECT_EQ(out.ysize, 256u);
+}
+
+// Marks the block at (bx, by) as a first-block of `side` and its interior as
+// covered, in the fc.acs field (block raster, bw blocks per row).
+void set_first_block(FrameCoefficients& fc, std::size_t bw, int side, std::size_t bx,
+                     std::size_t by) {
+    const std::size_t s{static_cast<std::size_t>(side) / 8};
+    for (std::size_t dy{0}; dy < s; ++dy) {
+        for (std::size_t dx{0}; dx < s; ++dx) {
+            fc.acs[(by + dy) * bw + (bx + dx)] =
+                (dy == 0 && dx == 0) ? static_cast<std::int8_t>(side) : ACS_COVERED;
+        }
+    }
+}
+
+// Sets one AC coefficient (raw scan index `raw`) of a first-block across all
+// three channels, in the covered-block layout.
+void set_ac(FrameCoefficients& fc, std::size_t bw, int side, std::size_t bx, std::size_t by,
+            std::size_t raw, std::int32_t v) {
+    const std::size_t slot{covered_plane_slot(side, bx, by, bw, raw)};
+    for (int c{0}; c < 3; ++c) {
+        fc.ac[c][slot] = v;
+    }
+}
+
+// A frame mixing DCT32/DCT16/DCT8 with non-trivial CfL maps must decode with the
+// unmodified libjxl decoder (the conformance bar for the ACS + CfL signaling).
+FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
+    FrameCoefficients fc{make_frame(w, h)};
+    const std::size_t bw{w / 8};
+    const std::size_t bh{h / 8};
+    fc.acs.assign(bw * bh, 8);
+
+    // One DCT32 and two DCT16 near the origin (well inside the first AC group),
+    // rest DCT8. All footprints fit the image and their 256px AC group.
+    set_first_block(fc, bw, 32, 0, 0);
+    set_first_block(fc, bw, 16, 4, 0);
+    set_first_block(fc, bw, 16, 0, 4);
+    set_ac(fc, bw, 32, 0, 0, 16, 4);   // first AC coefficient past the 4x4 LLF
+    set_ac(fc, bw, 32, 0, 0, 40, -2);
+    set_ac(fc, bw, 16, 4, 0, 4, 3);    // first AC coefficient past the 2x2 LLF
+    set_ac(fc, bw, 16, 0, 4, 5, -1);
+    set_ac(fc, bw, 8, 10, 10, 1, 2);   // an ordinary DCT8 block
+
+    const std::size_t cmw{(bw + 7) / 8};
+    const std::size_t cmh{(bh + 7) / 8};
+    fc.ytox_map.assign(cmw * cmh, 0);
+    fc.ytob_map.assign(cmw * cmh, 0);
+    fc.ytox_map[0] = -20;
+    fc.ytob_map[0] = 15;
+    if (cmw * cmh > 1) {
+        fc.ytox_map[cmw * cmh - 1] = 7;
+        fc.ytob_map[cmw * cmh - 1] = -9;
+    }
+    for (int c{0}; c < 3; ++c) {
+        for (std::size_t i{0}; i < fc.dc[c].size(); ++i) {
+            fc.dc[c][i] = static_cast<std::int32_t>((i % 7) - 3);
+        }
+    }
+    return fc;
+}
+
+TEST(VarDctFrame, MixedBlocksAndCflSingleGroupDecodes) {
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(make_mixed_frame(256, 256)), out));
+    EXPECT_EQ(out.xsize, 256u);
+    EXPECT_EQ(out.ysize, 256u);
+}
+
+TEST(VarDctFrame, MixedBlocksAndCflMultiGroupDecodes) {
+    Decoded out{};
+    ASSERT_TRUE(decode(write_vardct_codestream(make_mixed_frame(512, 384)), out));
+    EXPECT_EQ(out.xsize, 512u);
+    EXPECT_EQ(out.ysize, 384u);
 }
 
 }  // namespace

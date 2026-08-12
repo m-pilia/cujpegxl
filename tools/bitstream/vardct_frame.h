@@ -11,10 +11,10 @@
 
 namespace cujpegxl::bitstream {
 
-// Quantized coefficients and quantizer parameters for a single-group, all-DCT8
-// VarDCT frame. XYB channel order is 0=X, 1=Y, 2=B (the encoder pipeline's
-// layout). `width`/`height` are pixel dimensions, multiples of 8 and (for M1's
-// single-group path) at most 256 each.
+// Quantized coefficients and quantizer parameters for a VarDCT frame with mixed
+// square {8,16,32} blocks and chroma-from-luma. XYB channel order is 0=X, 1=Y,
+// 2=B (the encoder pipeline's layout). `width`/`height` are pixel dimensions,
+// multiples of 8.
 struct FrameCoefficients {
     std::size_t width{0};
     std::size_t height{0};
@@ -27,12 +27,27 @@ struct FrameCoefficients {
     std::uint32_t raw_quant_field{1};
 
     // DC per XYB channel at block resolution (width/8 * height/8), row-major.
+    // For a block covered by a larger transform, the entry holds that block's
+    // low-frequency (LLF) DC contribution (see src/vardct_layout dc_from_llf).
     std::array<std::vector<std::int32_t>, 3> dc{};
 
-    // AC per XYB channel: one 8x8 block per image block in raster order, 64
-    // coefficients each in libjxl-raster (fx*8+fy) layout. Slot 0 (DC) is
-    // ignored here; DC is carried by `dc`.
+    // AC per XYB channel in the covered-block layout (src/vardct_layout): 64
+    // coefficient slots per 8x8 block position (width/8 * height/8 positions), a
+    // block of side N packing its N*N coefficients across its covered positions'
+    // slots (covered_plane_slot). Slots below a block's LLF are ignored (DC is in
+    // `dc`). The coefficients are the CfL residuals the decoder re-correlates.
     std::array<std::vector<std::int32_t>, 3> ac{};
+
+    // Per-8x8-block transform signal (width/8 * height/8, block raster): a
+    // first-block holds its side 8/16/32, a covered block holds ACS_COVERED (0).
+    // Empty means an all-DCT8 frame (every block is a first-block).
+    std::vector<std::int8_t> acs{};
+
+    // Per-64x64-color-tile CfL factors (ceil(width/64) * ceil(height/64), row-
+    // major) written into the AcMetadata YtoX/YtoB channels. Empty means the base
+    // correlation everywhere (factor 0).
+    std::vector<std::int8_t> ytox_map{};
+    std::vector<std::int8_t> ytob_map{};
 };
 
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
