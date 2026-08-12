@@ -58,6 +58,29 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "vardct_layout",
+    srcs = ["vardct_layout.cc"],
+    hdrs = ["vardct_layout.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cc_binary(
+    name = "vardct_layout_dump",
+    testonly = True,
+    srcs = ["vardct_layout_dump.cc"],
+    deps = [":vardct_layout"],
+)
+
+cc_test(
+    name = "vardct_layout_test",
+    srcs = ["vardct_layout_test.cc"],
+    deps = [
+        ":vardct_layout",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "coeff_order_dump",
     testonly = True,

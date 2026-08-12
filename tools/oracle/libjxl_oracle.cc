@@ -171,6 +171,27 @@ int run_dct(std::size_t block_dim, std::size_t width, std::size_t height, const 
     return write_planar(out_path, coeffs) ? 0 : 1;
 }
 
+// Runs libjxl's DCFromLowestFrequencies for the square DCTNxN strategy on one
+// block: reads block_dim*block_dim coefficients (TransformFromPixels layout) and
+// writes the (block_dim/8)^2 DC values (row-major), for the encoder's dc_from_llf
+// host reference to diff against.
+int run_dcfromllf(std::size_t block_dim, const char* in_path, const char* out_path) {
+    if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
+        std::fprintf(stderr, "oracle: dcfromllf block dim must be 8, 16, or 32\n");
+        return 2;
+    }
+    const std::size_t coeffs_per_block{block_dim * block_dim};
+    std::vector<float> coeffs{};
+    if (!read_planar(in_path, 1, coeffs_per_block, 1, &coeffs)) {
+        return 1;
+    }
+
+    const std::size_t side{block_dim / 8};
+    std::vector<float> dc(side * side, 0.0f);
+    jxl::DCFromLowestFrequencies(square_strategy(block_dim), coeffs.data(), dc.data(), side);
+    return write_planar(out_path, dc) ? 0 : 1;
+}
+
 // Writes libjxl's natural coefficient order for the square DCTNxN strategy as
 // N*N raw uint32 (scan index -> transposed-raster index), for the encoder's
 // natural_coeff_order LUT to diff against.
@@ -246,6 +267,14 @@ int main(int argc, char** argv) {
         }
         return run_dct(parse_dim(argv[2]), parse_dim(argv[3]), parse_dim(argv[4]), argv[5], argv[6]);
     }
+    if (argc >= 2 && std::strcmp(argv[1], "dcfromllf") == 0) {
+        if (argc != 5) {
+            std::fprintf(stderr,
+                         "usage: %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n", argv[0]);
+            return 2;
+        }
+        return run_dcfromllf(parse_dim(argv[2]), argv[3], argv[4]);
+    }
     if (argc >= 2 && std::strcmp(argv[1], "coefforder") == 0) {
         if (argc != 4) {
             std::fprintf(stderr, "usage: %s coefforder <block_dim> <out_order_u32>\n", argv[0]);
@@ -261,8 +290,9 @@ int main(int argc, char** argv) {
                  "usage: %s xyb <width> <height> <in_srgb_f32> <out_xyb_f32>\n"
                  "       %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
                  "       %s dctn <block_dim> <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
+                 "       %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n"
                  "       %s coefforder <block_dim> <out_order_u32>\n"
                  "       %s quantmatrix <out_weights_f32>\n",
-                 argv[0], argv[0], argv[0], argv[0], argv[0]);
+                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }
