@@ -52,11 +52,22 @@ CUJPEGXL_CFL_HD inline int cfl_quantize_factor(float delta_over_base) {
     return cfl_clamp_map(static_cast<int>(lrintf(delta_over_base * CFL_COLOR_FACTOR)));
 }
 
+// Converts the least-squares regression sums of a tile to color-map values:
+// Y-to-X from the slope Sxy/Syy, Y-to-B from the residual-over-base slope
+// Sby/Syy. A degenerate (zero-energy) tile maps to the base.
+CUJPEGXL_CFL_HD inline void cfl_maps_from_sums(double sxy, double syy, double sby, int* ytox_map,
+                                               int* ytob_map) {
+    const float fx{syy > 0.0 ? static_cast<float>(sxy / syy) : 0.0f};
+    const float db{syy > 0.0 ? static_cast<float>(sby / syy) : 0.0f};
+    *ytox_map = cfl_quantize_factor(fx);
+    *ytob_map = cfl_quantize_factor(db);
+}
+
 // Closed-form per-tile estimation over `count` AC coefficients (X, Y, B, matched
 // order): the least-squares slopes minimizing the X and B residual energy,
 // quantized to the color map. Y-to-X regresses X on Y; Y-to-B regresses the
 // residual over the base correlation (B - base_b*Y) on Y. Sums accumulate in
-// double for determinism. A degenerate (zero-energy) tile maps to the base.
+// double for determinism.
 CUJPEGXL_CFL_HD inline void cfl_estimate(const float* x, const float* y, const float* b,
                                          std::size_t count, int* ytox_map, int* ytob_map) {
     double sxy{0.0};
@@ -68,10 +79,7 @@ CUJPEGXL_CFL_HD inline void cfl_estimate(const float* x, const float* y, const f
         syy += yy * yy;
         sby += (static_cast<double>(b[i]) - CFL_BASE_B * yy) * yy;
     }
-    const float fx{syy > 0.0 ? static_cast<float>(sxy / syy) : 0.0f};
-    const float db{syy > 0.0 ? static_cast<float>(sby / syy) : 0.0f};
-    *ytox_map = cfl_quantize_factor(fx);
-    *ytob_map = cfl_quantize_factor(db);
+    cfl_maps_from_sums(sxy, syy, sby, ytox_map, ytob_map);
 }
 
 // Per-tile CfL estimation (K2). `x`/`y`/`b` hold `num_tiles * coeffs_per_tile`

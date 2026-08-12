@@ -159,6 +159,34 @@ cc_binary(
     deps = [":cfl"],
 )
 
+cuda_library(
+    name = "frontend_quantize",
+    srcs = ["frontend_quantize.cu"],
+    hdrs = ["frontend_quantize.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":cfl",
+        ":quant_consts",
+        ":vardct_layout",
+    ],
+)
+
+cc_test(
+    name = "frontend_quantize_gpu_test",
+    srcs = ["frontend_quantize_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":cfl",
+        ":frontend_quantize",
+        ":quant_consts",
+        ":vardct_layout",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "cfl_gpu_test",
     srcs = ["cfl_gpu_test.cc"],

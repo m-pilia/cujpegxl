@@ -4,10 +4,14 @@
 #ifndef CUJPEGXL_SRC_VARDCT_LAYOUT_H_
 #define CUJPEGXL_SRC_VARDCT_LAYOUT_H_
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
 namespace cujpegxl {
+
+using std::cos;
+using std::sqrt;
 
 // Data model for the M3 variable-block front-end: transform-type signaling, the
 // covered-block coefficient storage, and the low-frequency -> DC-image
@@ -65,12 +69,43 @@ void scatter_covered_block(std::size_t block_dim, std::size_t bx, std::size_t by
 void gather_covered_block(std::size_t block_dim, std::size_t bx, std::size_t by, std::size_t bw,
                           const float* plane, float* coeffs);
 
+// Orthonormal 1D DCT-II basis entry O[k][n] for an M-point transform.
+CUJPEGXL_VL_HD inline double vl_ortho_basis(std::size_t m, std::size_t k, std::size_t n) {
+    const double md{static_cast<double>(m)};
+    const double norm{k == 0 ? sqrt(1.0 / md) : sqrt(2.0 / md)};
+    return norm * cos(3.14159265358979323846 * (static_cast<double>(n) + 0.5) *
+                      static_cast<double>(k) / md);
+}
+
 // Low-frequency -> DC derivation: given the `block_dim*block_dim` transposed-
 // raster DCT coefficients of one square block (forward_dctN layout), writes the
 // covered_blocks_side^2 DC values (row-major, dc[Y*side + X] for covered block
 // row Y, column X), matching libjxl's DCFromLowestFrequencies for the square
 // DCTNxN strategy. These are the DC-image entries the covered 8x8 positions take.
-void dc_from_llf(std::size_t block_dim, const float* coeffs, float* dc);
+CUJPEGXL_VL_HD inline void dc_from_llf(std::size_t block_dim, const float* coeffs, float* dc) {
+    const std::size_t m{covered_blocks_side(block_dim)};
+    if (m == 1) {
+        dc[0] = coeffs[0];
+        return;
+    }
+    // libjxl DCTResampleScales<N, N/8> for the covered-side ReinterpretingIDCT.
+    const double scale16[2]{1.0, 0.901764195028874394};
+    const double scale32[4]{1.0, 0.974886821136879522, 0.901764195028874394, 0.787054918159101335};
+    const double* scale{m == 2 ? scale16 : scale32};
+    for (std::size_t out_y{0}; out_y < m; ++out_y) {
+        for (std::size_t out_x{0}; out_x < m; ++out_x) {
+            double sum{0.0};
+            for (std::size_t fx{0}; fx < m; ++fx) {
+                for (std::size_t fy{0}; fy < m; ++fy) {
+                    const double c{coeffs[fx * block_dim + fy]};
+                    sum += vl_ortho_basis(m, fx, out_x) * vl_ortho_basis(m, fy, out_y) * c *
+                           scale[fx] * scale[fy];
+                }
+            }
+            dc[out_y * m + out_x] = static_cast<float>(static_cast<double>(m) * sum);
+        }
+    }
+}
 
 }  // namespace cujpegxl
 
