@@ -339,6 +339,7 @@ cuda_library(
     hdrs = ["entropy.h"],
     copts = RUNTIME_COPTS,
     deps = [
+        ":ac_context",
         ":coeff_order",
         ":dc_predict",
         ":vardct_layout",
@@ -350,7 +351,10 @@ cuda_library(
     testonly = True,
     srcs = ["entropy_roundtrip.cu"],
     hdrs = ["entropy_roundtrip.h"],
-    deps = [":entropy"],
+    deps = [
+        ":ac_context",
+        ":entropy",
+    ],
 )
 
 cc_test(
@@ -374,6 +378,7 @@ cuda_library(
     hdrs = ["frame_encoder.h"],
     copts = RUNTIME_COPTS,
     deps = [
+        ":ac_context",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

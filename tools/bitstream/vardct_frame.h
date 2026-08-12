@@ -57,10 +57,12 @@ struct FrameCoefficients {
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc,
                                                   bool clustered_ac = false);
 
-// The host reference for the device AC entropy encoder: the pooled symbol
-// histogram, the shared prefix code (depth/bits), and each AC group's
-// byte-aligned token stream (one AcGroup TOC section per group, raster order).
-// This is exactly what write_vardct_codestream emits for the AC groups; the
+// The host reference for the device AC entropy encoder, using the real per-token
+// contexts clustered into AC_NUM_CLUSTERS (8) histograms. `histogram` and
+// `depth`/`bits` are laid out per cluster (cluster * 256 + symbol); each AC
+// group's byte-aligned token stream (one AcGroup TOC section per group, raster
+// order) codes each token with its cluster's prefix code. This is exactly what
+// write_vardct_codestream(fc, /*clustered_ac=*/true) emits for the AC groups; the
 // device port must reproduce `histogram` and `group_streams` byte-for-byte.
 struct AcReference {
     std::vector<std::uint32_t> histogram{};

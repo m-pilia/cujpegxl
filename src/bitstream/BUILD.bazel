@@ -38,6 +38,7 @@ cc_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":bitstream",
+        "//src:ac_context",
         "//src:dc_predict",
     ],
 )

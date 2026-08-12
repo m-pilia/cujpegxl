@@ -545,23 +545,38 @@ AcReference reference_ac_encode(const FrameCoefficients& fc) {
     assert(fc.width % 8 == 0 && fc.height % 8 == 0);
     const std::size_t bw{fc.width / 8};
     const std::size_t bh{fc.height / 8};
+    const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
+    const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
+    const std::size_t num_groups{xg * yg};
 
-    EntropyEncoder ac{NUM_AC_CONTEXTS};
-    const std::vector<std::pair<std::size_t, std::size_t>> ranges{
-        tokenize_all_ac_groups(fc, bw, bh, ac)};
+    std::vector<std::uint32_t> cluster_hist(AC_NUM_CLUSTERS * AC_STRIDE, 0);
+    std::vector<AcTok> toks{};
+    std::vector<std::pair<std::size_t, std::size_t>> ranges(num_groups);
+    for (std::size_t g{0}; g < num_groups; ++g) {
+        const std::size_t bx0{(g % xg) * AC_GROUP_BLOCKS};
+        const std::size_t by0{(g / xg) * AC_GROUP_BLOCKS};
+        const std::size_t gbw{std::min(AC_GROUP_BLOCKS, bw - bx0)};
+        const std::size_t gbh{std::min(AC_GROUP_BLOCKS, bh - by0)};
+        const std::size_t begin{toks.size()};
+        tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, cluster_hist, toks);
+        ranges[g] = {begin, toks.size()};
+    }
 
     AcReference ref{};
-    ref.histogram = ac.histogram();
+    ref.histogram = cluster_hist;
 
+    const std::vector<std::uint8_t> cmap{ac_context_map()};
+    ref.depth.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
+    ref.bits.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
     BitWriter histograms{};
-    ac.write_histograms(histograms);  // builds the shared prefix code
-    ref.depth = ac.code_depth();
-    ref.bits = ac.code_bits();
+    write_clustered_prefix_histograms(histograms, cmap.data(), AC_NUM_CONTEXTS, AC_NUM_CLUSTERS,
+                                      cluster_hist.data(), AC_STRIDE, HybridUintConfig{},
+                                      ref.depth.data(), ref.bits.data());
 
-    ref.group_streams.reserve(ranges.size());
+    ref.group_streams.reserve(num_groups);
     for (const auto& r : ranges) {
         BitWriter group{};
-        ac.write_tokens_range(group, r.first, r.second);
+        emit_ac_tokens(group, toks, r.first, r.second, ref.depth, ref.bits);
         group.zero_pad_to_byte();
         ref.group_streams.push_back(group.bytes());
     }

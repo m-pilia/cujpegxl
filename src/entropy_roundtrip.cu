@@ -5,10 +5,14 @@
 
 #include <cuda_runtime.h>
 
+#include "ac_context.h"
 #include "entropy.h"
 
 namespace cujpegxl {
 namespace {
+
+// The device AC histogram and prefix code span all clusters (cluster*256+symbol).
+constexpr std::size_t AC_HIST_SPAN = AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE;
 
 template <typename T>
 bool upload(const std::vector<T>& host, T** device) {
@@ -51,7 +55,7 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::uint8_t* d_out{nullptr};
 
     bool ok{upload(ac, &d_ac) && upload(depth, &d_depth) && upload(bits, &d_bits) &&
-            cudaMalloc(&d_hist, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
@@ -62,11 +66,11 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
                                 d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
-        out.histogram.assign(AC_HISTOGRAM_SIZE, 0);
+        out.histogram.assign(AC_HIST_SPAN, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
         out.stream.assign(total_bytes, 0);
-        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
+        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HIST_SPAN * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
@@ -112,7 +116,7 @@ bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<s
 
     bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) && upload(depth, &d_depth) &&
             upload(bits, &d_bits) &&
-            cudaMalloc(&d_hist, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
@@ -124,11 +128,11 @@ bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<s
                                    d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
-        out.histogram.assign(AC_HISTOGRAM_SIZE, 0);
+        out.histogram.assign(AC_HIST_SPAN, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
         out.stream.assign(total_bytes, 0);
-        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
+        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HIST_SPAN * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&

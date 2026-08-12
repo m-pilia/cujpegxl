@@ -149,7 +149,7 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
 
 void check(const FrameCoefficients& fc) {
     const std::vector<std::uint8_t> expected{
-        bitstream::write_container(write_vardct_codestream(fc))};
+        bitstream::write_container(write_vardct_codestream(fc, /*clustered_ac=*/true))};
 
     std::vector<std::uint8_t> got{};
     ASSERT_TRUE(encode_on_device(fc, got));

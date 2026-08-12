@@ -10,6 +10,7 @@
 
 #include <cuda_fp16.h>
 
+#include "ac_context.h"
 #include "entropy.h"
 #include "frontend_fused.h"
 #include "frontend_quantize.h"
@@ -99,7 +100,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
     // Device histograms -> host.
-    std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_HISTOGRAM_SIZE)};
+    std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     if (!d_ac_hist || !d_dc_hist || !d_am_hist) {
@@ -110,7 +111,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
         !acmeta_build_histograms(quant_field, nullptr, nullptr, nullptr, width, height, d_am_hist)) {
         return false;
     }
-    std::vector<std::uint32_t> ac_hist(AC_HISTOGRAM_SIZE, 0);
+    std::vector<std::uint32_t> ac_hist(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     if (cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
@@ -291,7 +292,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
-    std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_HISTOGRAM_SIZE)};
+    std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     if (!d_ac_hist || !d_dc_hist || !d_am_hist) {
@@ -302,7 +303,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist)) {
         return false;
     }
-    std::vector<std::uint32_t> ac_hist(AC_HISTOGRAM_SIZE, 0);
+    std::vector<std::uint32_t> ac_hist(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::int8_t> acs_host(bw * bh, 8);

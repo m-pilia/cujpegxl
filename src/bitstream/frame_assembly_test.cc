@@ -107,7 +107,7 @@ TEST(FrameAssembly, AcPrefixCodeMatchesOracle) {
     const FrameCoefficients fc{make_frame(512, 512)};
     const AcReference ref{reference_ac_encode(fc)};
     const AcGlobalResult ac{
-        build_ac_global(pad(ref.histogram).data(), ac_group_count(fc.width, fc.height))};
+        build_ac_global(ref.histogram.data(), ac_group_count(fc.width, fc.height))};
     EXPECT_EQ(ac.depth, ref.depth);
     EXPECT_EQ(ac.bits, ref.bits);
 }
@@ -115,14 +115,14 @@ TEST(FrameAssembly, AcPrefixCodeMatchesOracle) {
 // Reassembles a codestream from frame_assembly's globals and head plus the
 // oracle's group bodies, and checks it equals the oracle's full codestream.
 void check_reassembly(const FrameCoefficients& fc) {
-    const std::vector<std::uint8_t> expected{write_vardct_codestream(fc)};
+    const std::vector<std::uint8_t> expected{write_vardct_codestream(fc, /*clustered_ac=*/true)};
 
     const DcReference dc{reference_dc_encode(fc)};
     const AcReference ac{reference_ac_encode(fc)};
 
     const std::vector<std::uint8_t> dc_global{build_dc_global(params_of(fc))};
     const AcGlobalResult ac_global{
-        build_ac_global(pad(ac.histogram).data(), ac_group_count(fc.width, fc.height))};
+        build_ac_global(ac.histogram.data(), ac_group_count(fc.width, fc.height))};
 
     std::vector<std::uint32_t> sizes{};
     sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
