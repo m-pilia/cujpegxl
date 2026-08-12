@@ -81,6 +81,34 @@ cc_test(
     ],
 )
 
+cuda_library(
+    name = "transform_select",
+    srcs = ["transform_select.cu"],
+    hdrs = [
+        "transform_select.h",
+        "transform_select_impl.cuh",
+    ],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":quant_consts",
+        ":vardct_layout",
+    ],
+)
+
+cc_test(
+    name = "transform_select_gpu_test",
+    srcs = ["transform_select_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":transform_select",
+        ":vardct_layout",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "coeff_order_dump",
     testonly = True,
