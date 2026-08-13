@@ -33,6 +33,7 @@ cc_library(
     deps = [
         ":entropy_encoder",
         ":modular",
+        "//src:ac_context",
         "//src:coeff_order",
         "//src:vardct_layout",
         "//src/bitstream",

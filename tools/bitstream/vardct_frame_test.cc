@@ -272,5 +272,44 @@ TEST(VarDctFrame, MixedBlocksAndCflMultiGroupDecodes) {
     EXPECT_EQ(out.ysize, 384u);
 }
 
+// The clustered-AC path must reconstruct byte-identical pixels to the
+// single-histogram path: it changes only how the (unchanged) AC tokens are
+// entropy-coded, so a correct context model + context map decodes to the same
+// image through the unmodified libjxl decoder.
+void expect_clustered_equivalent(const FrameCoefficients& fc) {
+    Decoded single{};
+    Decoded clustered{};
+    ASSERT_TRUE(decode(write_vardct_codestream(fc, /*clustered_ac=*/false), single));
+    ASSERT_TRUE(decode(write_vardct_codestream(fc, /*clustered_ac=*/true), clustered));
+    ASSERT_EQ(single.xsize, clustered.xsize);
+    ASSERT_EQ(single.ysize, clustered.ysize);
+    ASSERT_EQ(single.pixels.size(), clustered.pixels.size());
+    EXPECT_EQ(single.pixels, clustered.pixels);
+}
+
+TEST(VarDctFrameClustered, SingleGroupRichAcEquivalent) {
+    FrameCoefficients fc{make_frame(256, 256)};
+    fill_ac_pattern(fc);
+    expect_clustered_equivalent(fc);
+}
+
+TEST(VarDctFrameClustered, MultiGroupRichAcEquivalent) {
+    FrameCoefficients fc{make_frame(512, 384)};
+    fill_ac_pattern(fc);
+    expect_clustered_equivalent(fc);
+}
+
+TEST(VarDctFrameClustered, MixedBlocksEquivalent) {
+    expect_clustered_equivalent(make_mixed_frame(512, 384));
+}
+
+TEST(VarDctFrameClustered, ReducesSizeOnRichAc) {
+    FrameCoefficients fc{make_frame(512, 512)};
+    fill_ac_pattern(fc);
+    const std::size_t single{write_vardct_codestream(fc, /*clustered_ac=*/false).size()};
+    const std::size_t clustered{write_vardct_codestream(fc, /*clustered_ac=*/true).size()};
+    EXPECT_LT(clustered, single) << "single=" << single << " clustered=" << clustered;
+}
+
 }  // namespace
 }  // namespace cujpegxl::bitstream

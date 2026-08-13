@@ -95,6 +95,28 @@ CUJPEGXL_ACC_HD inline std::uint32_t ac_zero_density_context(std::uint32_t nonze
     return (AC_COEFF_NUM_NONZERO_CONTEXT[nonzeros_left] + AC_COEFF_FREQ_CONTEXT[k]) * 2 + prev;
 }
 
+// Number of AC entropy clusters (histograms) and the fixed, deterministic map
+// from the 7425-context space to a cluster. Chosen to separate the dominant
+// distribution axes within the JXL simple context-map budget (<=8 clusters):
+// non-zero-count vs coefficient symbols, luma vs chroma block context, and a
+// coarse coefficient frequency/density band. Data-driven clustering is a later
+// refinement; this map is O(1) so it adds no per-frame clustering cost.
+inline constexpr int AC_NUM_CLUSTERS = 8;
+
+CUJPEGXL_ACC_HD inline int ac_cluster(std::uint32_t ctx) {
+    const std::uint32_t count_ctxs{AC_NUM_BLOCK_CTX * AC_NON_ZERO_BUCKETS};  // 555
+    if (ctx < count_ctxs) {
+        const int block_ctx{static_cast<int>(ctx % AC_NUM_BLOCK_CTX)};
+        return block_ctx < 7 ? 0 : 1;  // luma / chroma non-zero-count
+    }
+    const std::uint32_t rel{ctx - count_ctxs};
+    const int block_ctx{static_cast<int>(rel / AC_ZERO_DENSITY_COUNT)};
+    const std::uint32_t zdc{rel % AC_ZERO_DENSITY_COUNT};
+    const int base{block_ctx < 7 ? 2 : 5};  // luma coeff 2..4, chroma coeff 5..7
+    const int band{zdc < 64 ? 0 : (zdc < 200 ? 1 : 2)};
+    return base + band;
+}
+
 // libjxl PredictFromTopAndLeft over the group-local normalized non-zero grid.
 // `has_left`/`has_top` are false at the group's left column / top row, where the
 // default (32) or the single available neighbor is used.

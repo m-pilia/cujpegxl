@@ -150,6 +150,12 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "ac_context",
+    hdrs = ["ac_context.h"],
+    copts = RUNTIME_COPTS,
+)
+
 cuda_library(
     name = "cfl_cuda",
     srcs = ["cfl.cu"],

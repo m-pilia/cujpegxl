@@ -51,8 +51,11 @@ struct FrameCoefficients {
 };
 
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
-// freshly allocated byte buffer. The output is decodable by libjxl/djxl.
-std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
+// freshly allocated byte buffer. The output is decodable by libjxl/djxl. With
+// `clustered_ac`, the AC coefficients are coded with libjxl's real per-token
+// contexts split across 8 entropy clusters instead of a single shared histogram.
+std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc,
+                                                  bool clustered_ac = false);
 
 // The host reference for the device AC entropy encoder: the pooled symbol
 // histogram, the shared prefix code (depth/bits), and each AC group's
