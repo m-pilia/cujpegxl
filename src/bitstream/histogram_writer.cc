@@ -80,4 +80,55 @@ void write_prefix_histograms(BitWriter& w, const std::uint32_t* histogram, std::
     }
 }
 
+void write_clustered_prefix_histograms(BitWriter& w, const std::uint8_t* context_map,
+                                       std::size_t num_contexts, std::size_t num_clusters,
+                                       const std::uint32_t* cluster_histograms, std::size_t stride,
+                                       const HybridUintConfig& config, std::uint8_t* depth,
+                                       std::uint16_t* bits) {
+    assert(num_clusters >= 1 && num_clusters <= 8);
+
+    w.write(1, 0);  // lz77.enabled = false
+
+    if (num_contexts > 1) {
+        const std::size_t bits_per_entry{ceil_log2(num_clusters)};
+        w.write(1, 1);  // is_simple
+        w.write(2, bits_per_entry);
+        if (bits_per_entry != 0) {
+            for (std::size_t i{0}; i < num_contexts; ++i) {
+                assert(context_map[i] < num_clusters);
+                w.write(bits_per_entry, context_map[i]);
+            }
+        }
+    }
+
+    w.write(1, 1);  // use_prefix_code
+    for (std::size_t c{0}; c < num_clusters; ++c) {
+        encode_uint_config(w, config, PREFIX_MAX_BITS);
+    }
+
+    std::size_t alpha[8]{};
+    for (std::size_t c{0}; c < num_clusters; ++c) {
+        const std::uint32_t* h{cluster_histograms + c * stride};
+        std::size_t a{1};
+        for (std::size_t s{0}; s < stride; ++s) {
+            if (h[s]) {
+                a = s + 1;
+            }
+        }
+        alpha[c] = a;
+        store_var_len_uint16(w, a - 1);
+    }
+
+    for (std::size_t i{0}; i < num_clusters * stride; ++i) {
+        depth[i] = 0;
+        bits[i] = 0;
+    }
+    for (std::size_t c{0}; c < num_clusters; ++c) {
+        if (alpha[c] > 1) {
+            build_and_store_huffman_tree(cluster_histograms + c * stride, alpha[c],
+                                         depth + c * stride, bits + c * stride, w);
+        }
+    }
+}
+
 }  // namespace cujpegxl::bitstream

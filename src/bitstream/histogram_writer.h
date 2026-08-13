@@ -23,6 +23,20 @@ void write_prefix_histograms(BitWriter& w, const std::uint32_t* histogram, std::
                              std::size_t num_contexts, const HybridUintConfig& config,
                              std::uint8_t* depth, std::uint16_t* bits);
 
+// Clustered variant: emits the histogram description for `num_clusters`
+// prefix-coded histograms selected per context by `context_map` (`num_contexts`
+// entries, each a cluster id in [0, num_clusters)), using the JXL simple
+// context-map form (so `num_clusters` must be <= 8). `cluster_histograms` and the
+// output `depth`/`bits` are laid out as `num_clusters * stride` (row c is cluster
+// c); each cluster's alphabet is trailing-trimmed independently. Every cluster id
+// in [0, num_clusters) must appear in `context_map`. Mirrors libjxl
+// DecodeHistograms (prefix path, LZ77 disabled). Not byte-aligned on exit.
+void write_clustered_prefix_histograms(BitWriter& w, const std::uint8_t* context_map,
+                                       std::size_t num_contexts, std::size_t num_clusters,
+                                       const std::uint32_t* cluster_histograms, std::size_t stride,
+                                       const HybridUintConfig& config, std::uint8_t* depth,
+                                       std::uint16_t* bits);
+
 }  // namespace cujpegxl::bitstream
 
 #endif  // CUJPEGXL_SRC_BITSTREAM_HISTOGRAM_WRITER_H_

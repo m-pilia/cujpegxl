@@ -63,6 +63,16 @@ cc_test(
 )
 
 cc_test(
+    name = "clustered_histogram_test",
+    srcs = ["clustered_histogram_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "container_test",
     srcs = ["container_test.cc"],
     deps = [
