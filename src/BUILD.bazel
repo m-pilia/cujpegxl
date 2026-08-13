@@ -144,6 +144,12 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "dc_predict",
+    hdrs = ["dc_predict.h"],
+    copts = RUNTIME_COPTS,
+)
+
 cuda_library(
     name = "cfl_cuda",
     srcs = ["cfl.cu"],
@@ -328,6 +334,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":coeff_order",
+        ":dc_predict",
         ":vardct_layout",
     ],
 )

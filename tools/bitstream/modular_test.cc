@@ -27,9 +27,10 @@ namespace {
 void* test_alloc(void*, size_t size) { return std::malloc(size); }
 void test_free(void*, void* p) { std::free(p); }
 
-void round_trip(const std::vector<ModularChannel>& channels) {
+void round_trip(const std::vector<ModularChannel>& channels,
+                int predictor = DC_PREDICTOR_ZERO) {
     BitWriter bw{};
-    write_modular_image(bw, channels);
+    write_modular_image(bw, channels, predictor);
     bw.zero_pad_to_byte();
 
     JxlMemoryManager mm{nullptr, &test_alloc, &test_free};
@@ -99,6 +100,32 @@ TEST(Modular, AllZeroChannels) {
         make_channel(32, 32, [](std::size_t, std::size_t) { return 0; }),
         make_channel(32, 32, [](std::size_t, std::size_t) { return 0; }),
     });
+}
+
+TEST(Modular, GradientSmoothChannel) {
+    round_trip({make_channel(16, 16, [](std::size_t x, std::size_t y) {
+                   return static_cast<std::int32_t>(3 * x + 5 * y);
+               })},
+               DC_PREDICTOR_GRADIENT);
+}
+
+TEST(Modular, GradientMixedSignChannels) {
+    round_trip(
+        {
+            make_channel(32, 32, [](std::size_t x, std::size_t y) { return (x * 7 + y * 3) % 41 - 20; }),
+            make_channel(32, 32, [](std::size_t x, std::size_t y) {
+                return -static_cast<std::int32_t>(x) + static_cast<std::int32_t>(y) * 2;
+            }),
+            make_channel(32, 32, [](std::size_t, std::size_t) { return 0; }),
+        },
+        DC_PREDICTOR_GRADIENT);
+}
+
+TEST(Modular, GradientLargeMagnitudeAndEdges) {
+    round_trip({make_channel(6, 5, [](std::size_t x, std::size_t y) {
+                   return 1000 * (static_cast<std::int32_t>(x) - 3) - 500 * static_cast<std::int32_t>(y);
+               })},
+               DC_PREDICTOR_GRADIENT);
 }
 
 }  // namespace

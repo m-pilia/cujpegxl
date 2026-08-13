@@ -11,6 +11,7 @@
 #include <cub/device/device_scan.cuh>
 
 #include "coeff_order.h"
+#include "dc_predict.h"
 #include "vardct_layout.h"
 
 namespace cujpegxl {
@@ -103,6 +104,22 @@ __device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token, std::ui
 
 __device__ std::uint32_t pack_signed(std::int32_t value) {
     return (static_cast<std::uint32_t>(value) << 1) ^ static_cast<std::uint32_t>(value >> 31);
+}
+
+// Gradient prediction for the DC sample of channel plane `ch` at block (bx, by),
+// with the neighbors taken within the block's DC group (origin bx0, by0). DC is
+// coded losslessly, so the original neighbor values reproduce the decoder's, and
+// every residual is independent (no reconstruction dependency).
+__device__ std::int32_t dc_group_gradient(const std::int32_t* dc, int ch, std::size_t nblocks,
+                                          std::size_t bw, std::size_t bx, std::size_t by,
+                                          std::size_t bx0, std::size_t by0) {
+    const std::size_t base{static_cast<std::size_t>(ch) * nblocks};
+    const bool has_left{bx > bx0};
+    const bool has_top{by > by0};
+    const std::int32_t w_val{has_left ? dc[base + by * bw + (bx - 1)] : 0};
+    const std::int32_t n_val{has_top ? dc[base + (by - 1) * bw + bx] : 0};
+    const std::int32_t nw_val{(has_left && has_top) ? dc[base + (by - 1) * bw + (bx - 1)] : 0};
+    return gradient_predict(has_left, has_top, w_val, n_val, nw_val);
 }
 
 // libjxl AcStrategyType raw value for a square block side (DCT=0, DCT16X16=4,
@@ -347,10 +364,13 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
         const std::size_t i{k - 1};
         const std::size_t bp{i % c.n};
         const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::size_t block{(c.by0 + bp / c.gbw) * c.bw + (c.bx0 + bp % c.gbw)};
-        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + block]};
+        const std::size_t bx{c.bx0 + bp % c.gbw};
+        const std::size_t by{c.by0 + bp / c.gbw};
+        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
+        const std::int32_t pred{
+            dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
-        hybrid_encode(pack_signed(dc), sym, rn, rw);
+        hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
         return c.dcd[sym] + rn;
     }
     if (k == 1 + 3 * c.n) {
@@ -410,10 +430,13 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) 
         const std::size_t i{k - 1};
         const std::size_t bp{i % c.n};
         const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::size_t block{(c.by0 + bp / c.gbw) * c.bw + (c.bx0 + bp % c.gbw)};
-        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + block]};
+        const std::size_t bx{c.bx0 + bp % c.gbw};
+        const std::size_t by{c.by0 + bp / c.gbw};
+        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
+        const std::int32_t pred{
+            dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
-        hybrid_encode(pack_signed(dc), sym, rn, rw);
+        hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
         w.put(c.dcd[sym], c.dcb[sym]);
         if (rn) {
             w.put(rn, rw);
@@ -583,12 +606,15 @@ __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, 
     const int c{CHANNEL_ORDER[p]};
     const std::size_t bx{block % bw};
     const std::size_t by{block / bw};
+    const std::size_t bx0{(bx / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS};
+    const std::size_t by0{(by / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS};
     const std::size_t g{(by / DC_GROUP_BLOCKS) * xdg + (bx / DC_GROUP_BLOCKS)};
     const std::int32_t dc{dc_buf[static_cast<std::size_t>(c) * nblocks + block]};
+    const std::int32_t pred{dc_group_gradient(dc_buf, c, nblocks, bw, bx, by, bx0, by0)};
     std::uint32_t symbol{};
     std::uint32_t nbits{};
     std::uint32_t bits{};
-    hybrid_encode(pack_signed(dc), symbol, nbits, bits);
+    hybrid_encode(pack_signed(dc - pred), symbol, nbits, bits);
     atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
 }
 

@@ -248,7 +248,8 @@ void write_dc_global(BitWriter& w, const FrameCoefficients& fc) {
 void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw,
                     std::size_t bx0, std::size_t by0, std::size_t dgw, std::size_t dgh) {
     write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-    write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh));
+    write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh),
+                        DC_PREDICTOR_GRADIENT);
     // DecodeGroup(ModularDC): VarDCT full image has no channels -> nothing.
     const std::vector<ModularChannel> meta{make_ac_metadata_channels(fc, bw, bx0, by0, dgw, dgh)};
     const std::size_t count{meta[2].w};  // ACS+QF width = number of first-blocks
@@ -417,7 +418,7 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
         BitWriter pre{};
         write_bits(pre, 2, 0);  // DecodeVarDCTDC extra_precision = 0
         EntropyEncoder dc_data{1};
-        write_modular_header(pre, dc_ch, dc_data);
+        write_modular_header(pre, dc_ch, dc_data, DC_PREDICTOR_GRADIENT);
         g.blob_pre = pre.bytes();
         g.blob_pre_bits = pre.bits_written();
         g.dc_depth = dc_data.code_depth();

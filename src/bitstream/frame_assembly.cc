@@ -10,6 +10,7 @@
 #include "field_coder.h"
 #include "histogram_writer.h"
 #include "hybrid_uint.h"
+#include "src/dc_predict.h"
 
 namespace cujpegxl::bitstream {
 namespace {
@@ -60,23 +61,37 @@ std::size_t alphabet_size(const std::uint32_t* histogram, std::size_t stride) {
     return last == 0 ? 1 : last;
 }
 
-// Writes GroupHeader + single-leaf MA tree + the channel data container's
-// histogram description for a raw sample histogram, filling depth/bits with the
-// data prefix code. Reproduces the oracle modular.cc write_modular_header for the
-// device (which emits the tokens). Not byte-aligned on exit.
+// Writes GroupHeader + single-leaf MA tree (with `predictor`) + the channel data
+// container's histogram description for a raw sample histogram, filling
+// depth/bits with the data prefix code. Reproduces the oracle modular.cc
+// write_modular_header for the device (which emits the data tokens). Not
+// byte-aligned on exit.
 void write_modular_header(BitWriter& w, const std::uint32_t* data_hist, std::size_t data_len,
-                          std::vector<std::uint8_t>& depth, std::vector<std::uint16_t>& bits) {
+                          int predictor, std::vector<std::uint8_t>& depth,
+                          std::vector<std::uint16_t>& bits) {
     w.write(1, 0);  // use_global_tree = false
     w.write(1, 1);  // weighted::Header all_default = true
     w.write(2, 0);  // num_transforms = 0
 
-    // Single-leaf tree: all five node tokens are value 0 -> a single-symbol
-    // (zero-bit) prefix code with no token bits.
-    const std::uint32_t tree_hist[1]{1};
-    std::uint8_t tree_depth[1]{};
-    std::uint16_t tree_bits[1]{};
-    write_prefix_histograms(w, tree_hist, 1, NUM_TREE_CONTEXTS, HybridUintConfig{}, tree_depth,
-                            tree_bits);
+    // Single leaf: property=-1 (token 0), predictor, offset 0, mul_log 0,
+    // mul_bits 0. Every token value is below the hybrid split, so symbol == value
+    // with no extra bits. For Predictor::Zero all tokens are 0 (a single-symbol
+    // zero-bit code, emitting nothing); Gradient adds the symbol 5.
+    const std::uint32_t tree_tokens[NUM_TREE_CONTEXTS - 1]{
+        0, static_cast<std::uint32_t>(predictor), 0, 0, 0};
+    std::uint32_t tree_hist[16]{};
+    std::size_t tree_len{1};
+    for (std::uint32_t t : tree_tokens) {
+        ++tree_hist[t];
+        tree_len = std::max(tree_len, static_cast<std::size_t>(t) + 1);
+    }
+    std::uint8_t tree_depth[16]{};
+    std::uint16_t tree_bits[16]{};
+    write_prefix_histograms(w, tree_hist, tree_len, NUM_TREE_CONTEXTS, HybridUintConfig{},
+                            tree_depth, tree_bits);
+    for (std::uint32_t t : tree_tokens) {
+        w.write(tree_depth[t], tree_bits[t]);
+    }
 
     depth.assign(data_len, 0);
     bits.assign(data_len, 0);
@@ -169,7 +184,7 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
         std::vector<std::uint16_t> dc_bits{};
         BitWriter pre{};
         write_bits(pre, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-        write_modular_header(pre, dc_hist, dc_alpha, dc_depth, dc_bits);
+        write_modular_header(pre, dc_hist, dc_alpha, DC_PREDICTOR_GRADIENT, dc_depth, dc_bits);
         out.blob_pre_off[g] = static_cast<std::uint32_t>(out.blob_pre.size());
         out.blob_pre_bits[g] = static_cast<std::uint32_t>(pre.bits_written());
         const std::vector<std::uint8_t>& pre_bytes{pre.bytes()};
@@ -186,7 +201,7 @@ DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
         std::vector<std::uint16_t> meta_bits{};
         BitWriter mid{};
         write_bits(mid, ceil_log2_nonzero(total_blocks), static_cast<std::uint32_t>(count - 1));
-        write_modular_header(mid, meta_hist, meta_alpha, meta_depth, meta_bits);
+        write_modular_header(mid, meta_hist, meta_alpha, DC_PREDICTOR_ZERO, meta_depth, meta_bits);
         out.blob_mid_off[g] = static_cast<std::uint32_t>(out.blob_mid.size());
         out.blob_mid_bits[g] = static_cast<std::uint32_t>(mid.bits_written());
         const std::vector<std::uint8_t>& mid_bytes{mid.bytes()};

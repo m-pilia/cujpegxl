@@ -36,7 +36,10 @@ cc_library(
     srcs = ["frame_assembly.cc"],
     hdrs = ["frame_assembly.h"],
     copts = RUNTIME_COPTS,
-    deps = [":bitstream"],
+    deps = [
+        ":bitstream",
+        "//src:dc_predict",
+    ],
 )
 
 cc_test(
