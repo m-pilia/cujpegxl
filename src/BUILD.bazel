@@ -156,6 +156,15 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_test(
+    name = "ac_context_test",
+    srcs = ["ac_context_test.cc"],
+    deps = [
+        ":ac_context",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cuda_library(
     name = "cfl_cuda",
     srcs = ["cfl.cu"],

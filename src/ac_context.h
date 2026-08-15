@@ -117,6 +117,41 @@ CUJPEGXL_ACC_HD inline int ac_cluster(std::uint32_t ctx) {
     return base + band;
 }
 
+inline constexpr int AC_FINE_NUM_CLUSTERS = 32;
+
+// The complex-map layout retains the luma/chroma split, then partitions
+// non-zero predictions into four bands and coefficient density into twelve.
+// This yields 2*4 + 2*12 clusters with direct O(1) lookup.
+CUJPEGXL_ACC_HD inline int ac_fine_cluster(std::uint32_t ctx) {
+    const std::uint32_t count_contexts{AC_NUM_BLOCK_CTX * AC_NON_ZERO_BUCKETS};
+    if (ctx < count_contexts) {
+        const std::uint32_t nonzero_bucket{ctx / AC_NUM_BLOCK_CTX};
+        const int block_ctx{static_cast<int>(ctx % AC_NUM_BLOCK_CTX)};
+        const int channel_group{block_ctx < 7 ? 0 : 1};
+        const int band{nonzero_bucket < 4 ? 0 : (nonzero_bucket < 12 ? 1 :
+                                                 (nonzero_bucket < 24 ? 2 : 3))};
+        return channel_group * 4 + band;
+    }
+
+    const std::uint32_t rel{ctx - count_contexts};
+    const int block_ctx{static_cast<int>(rel / AC_ZERO_DENSITY_COUNT)};
+    const std::uint32_t zdc{rel % AC_ZERO_DENSITY_COUNT};
+    const int channel_group{block_ctx < 7 ? 0 : 1};
+    const int band{zdc < 32    ? 0
+                   : zdc < 64  ? 1
+                   : zdc < 96  ? 2
+                   : zdc < 128 ? 3
+                   : zdc < 160 ? 4
+                   : zdc < 200 ? 5
+                   : zdc < 240 ? 6
+                   : zdc < 280 ? 7
+                   : zdc < 328 ? 8
+                   : zdc < 376 ? 9
+                   : zdc < 424 ? 10
+                               : 11};
+    return 8 + channel_group * 12 + band;
+}
+
 // libjxl PredictFromTopAndLeft over the group-local normalized non-zero grid.
 // `has_left`/`has_top` are false at the group's left column / top row, where the
 // default (32) or the single available neighbor is used.
