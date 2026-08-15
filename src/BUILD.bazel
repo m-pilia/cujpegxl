@@ -446,6 +446,9 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_context",
+        ":ac_histogram_cluster",
+        ":ac_histogram_exchange",
+        ":ac_precluster",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

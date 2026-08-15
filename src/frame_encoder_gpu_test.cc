@@ -83,7 +83,9 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
     return fc;
 }
 
-bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out) {
+bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out,
+                      AcClusteringMode clustering =
+                          AcClusteringMode::DATA_DRIVEN) {
     const std::vector<std::int16_t> ac{flatten_ac(fc)};
     const std::vector<std::int32_t> dc{flatten_dc(fc)};
     const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
@@ -103,7 +105,8 @@ bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& ou
             cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
                 cudaSuccess};
     ok = ok && encode_frame(d_ac, d_dc, fc.width, fc.height,
-                            QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out);
+                            QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out,
+                            nullptr, clustering);
     cudaFree(d_ac);
     cudaFree(d_dc);
     cudaFree(d_qf);
@@ -152,7 +155,7 @@ void check(const FrameCoefficients& fc) {
         bitstream::write_container(write_vardct_codestream(fc, /*clustered_ac=*/true))};
 
     std::vector<std::uint8_t> got{};
-    ASSERT_TRUE(encode_on_device(fc, got));
+    ASSERT_TRUE(encode_on_device(fc, got, AcClusteringMode::FIXED));
 
     ASSERT_EQ(got.size(), expected.size());
     for (std::size_t i{0}; i < expected.size(); ++i) {
@@ -176,6 +179,21 @@ TEST(FrameEncoderGpu, PartialEdgeGroups) {
 
 TEST(FrameEncoderGpu, MultiDcGroup) {
     check(make_frame(2560, 256));
+}
+
+TEST(FrameEncoderGpu, DataDrivenClusteringReducesSizeAndDecodes) {
+    const FrameCoefficients fc{make_frame(640, 384)};
+    std::vector<std::uint8_t> fixed{};
+    std::vector<std::uint8_t> data_driven{};
+    ASSERT_TRUE(encode_on_device(fc, fixed, AcClusteringMode::FIXED));
+    ASSERT_TRUE(encode_on_device(fc, data_driven));
+    EXPECT_LT(data_driven.size(), fixed.size());
+
+    std::uint32_t xs{0};
+    std::uint32_t ys{0};
+    ASSERT_TRUE(decode_dims(data_driven, xs, ys));
+    EXPECT_EQ(xs, fc.width);
+    EXPECT_EQ(ys, fc.height);
 }
 
 TEST(FrameEncoderGpu, Deterministic) {

@@ -120,22 +120,28 @@ std::size_t dc_group_count(std::size_t width, std::size_t height) {
 }
 
 AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t num_ac_groups) {
-    AcGlobalResult out{};
-    out.depth.assign(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE, 0);
-    out.bits.assign(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE, 0);
-
-    // Fixed context map: cluster id per AC context (shared with the device).
     std::vector<std::uint8_t> context_map(NUM_AC_CONTEXTS);
     for (std::size_t i{0}; i < NUM_AC_CONTEXTS; ++i) {
         context_map[i] = static_cast<std::uint8_t>(ac_cluster(static_cast<std::uint32_t>(i)));
     }
+    return build_ac_global(ac_histogram, context_map.data(), AC_NUM_CLUSTERS,
+                           num_ac_groups);
+}
+
+AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
+                               const std::uint8_t* context_map,
+                               std::size_t num_clusters,
+                               std::size_t num_ac_groups) {
+    AcGlobalResult out{};
+    out.depth.assign(num_clusters * HISTOGRAM_STRIDE, 0);
+    out.bits.assign(num_clusters * HISTOGRAM_STRIDE, 0);
 
     BitWriter w{};
     write_bool(w, true);                                 // DequantMatrices::Decode all_default
     write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);  // num_histograms - 1
     write_u32(w, ORDER_ENC, 0);                          // used_orders = 0 (natural)
-    write_clustered_prefix_histograms(w, context_map.data(), NUM_AC_CONTEXTS, AC_NUM_CLUSTERS,
-                                      ac_histogram, HISTOGRAM_STRIDE, HybridUintConfig{},
+    write_clustered_prefix_histograms(w, context_map, NUM_AC_CONTEXTS, num_clusters,
+                                      ac_histograms, HISTOGRAM_STRIDE, HybridUintConfig{},
                                       out.depth.data(), out.bits.data());
     w.zero_pad_to_byte();
     out.section = w.bytes();
