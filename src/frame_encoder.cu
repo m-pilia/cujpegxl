@@ -86,7 +86,22 @@ struct AcEntropyPlan {
     std::vector<std::uint8_t> context_map{};
     std::vector<std::uint32_t> histograms{};
     bitstream::AcGlobalResult global{};
+    bitstream::AcAnsGlobalResult ans_global{};
 };
+
+std::vector<AcAnsEncodingTable> device_ans_tables(
+    const std::vector<bitstream::AnsEncodingTable>& host) {
+    std::vector<AcAnsEncodingTable> out(host.size());
+    for (std::size_t cluster{0}; cluster < host.size(); ++cluster) {
+        std::copy(host[cluster].frequencies.begin(), host[cluster].frequencies.end(),
+                  out[cluster].frequencies);
+        std::copy(host[cluster].offsets.begin(), host[cluster].offsets.end(),
+                  out[cluster].offsets);
+        std::copy(host[cluster].reverse_map.begin(), host[cluster].reverse_map.end(),
+                  out[cluster].reverse_map);
+    }
+    return out;
+}
 
 std::uint64_t ac_prefix_cost(const AcEntropyPlan& plan) {
     std::uint64_t bits{plan.global.section.size() * 8};
@@ -165,6 +180,9 @@ bool build_data_driven_ac_plan(const std::int16_t* ac_device,
     dynamic.global = bitstream::build_ac_global(
         dynamic.histograms.data(), dynamic.context_map.data(),
         clusters.num_clusters, num_ac_groups);
+    dynamic.ans_global = bitstream::build_ac_global_ans(
+        dynamic.histograms.data(), dynamic.context_map.data(),
+        clusters.num_clusters, num_ac_groups);
 
     AcEntropyPlan fixed{};
     fixed.ready = true;
@@ -180,6 +198,8 @@ bool build_data_driven_ac_plan(const std::int16_t* ac_device,
     }
     fixed.global = bitstream::build_ac_global(fixed.histograms.data(),
                                               num_ac_groups);
+    fixed.ans_global = bitstream::build_ac_global_ans(fixed.histograms.data(),
+                                                      num_ac_groups);
     plan = ac_prefix_cost(dynamic) < ac_prefix_cost(fixed) ? std::move(dynamic)
                                                            : std::move(fixed);
     exchange.release_to_gpu();
@@ -257,6 +277,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
         ac_plan.histograms = std::move(ac_hist);
         ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(),
                                                     num_ac);
+        ac_plan.ans_global = bitstream::build_ac_global_ans(ac_plan.histograms.data(),
+                                                            num_ac);
         ac_plan.ready = true;
     }
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
@@ -266,6 +288,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
 
     // Upload the entropy-coder inputs.
     const Clock::time_point entropy_encode_start{Clock::now()};
+    const std::vector<AcAnsEncodingTable> ac_ans_tables{
+        device_ans_tables(ac_plan.ans_global.tables)};
     std::uint8_t* d_ac_depth{nullptr};
     std::uint16_t* d_ac_bits{nullptr};
     std::uint8_t* d_dc_depth{nullptr};
@@ -279,8 +303,10 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
     std::uint8_t* d_ac_context_map{nullptr};
+    AcAnsEncodingTable* d_ac_ans_tables{nullptr};
     if (!upload(ac_plan.global.depth, &d_ac_depth) ||
         !upload(ac_plan.global.bits, &d_ac_bits) ||
+        !upload(ac_ans_tables, &d_ac_ans_tables) ||
         !upload(ac_plan.context_map, &d_ac_context_map) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
@@ -300,6 +326,9 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
             scope.track(p);
         }
     }
+    if (d_ac_ans_tables) {
+        scope.track(d_ac_ans_tables);
+    }
 
     // Entropy-code the AC groups and DcGroups into their own device bodies.
     // Worst-case bounds: an AC block-channel emits <= 64 tokens of <= 6 bytes; a
@@ -308,16 +337,22 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     const std::size_t dc_capacity{48 * bw * bh + blobs.blob_pre.size() + blobs.blob_mid.size() +
                                   num_dc * 64 + 4096};
     std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
+    std::uint8_t* d_ac_ans_body{scope.alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
     std::uint32_t* d_ac_sizes{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_ac_ans_sizes{scope.alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_ac_ans_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets || !d_dc_sizes || !d_dc_offsets) {
+    if (!d_ac_body || !d_ac_ans_body || !d_dc_body || !d_ac_sizes ||
+        !d_ac_offsets || !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes ||
+        !d_dc_offsets) {
         return false;
     }
 
     std::size_t ac_total{0};
+    std::size_t ac_ans_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{
         ac_plan.data_driven
@@ -331,6 +366,16 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     if (!ac_encoded) {
         return false;
     }
+    const bool ac_ans_encoded{
+        ac_plan.data_driven
+            ? ac_encode_groups_ans_runtime_map(
+                  ac_device, width, height, d_ac_context_map, d_ac_ans_tables,
+                  ac_plan.ans_global.tables.size(), d_ac_ans_body, ac_capacity,
+                  d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total)
+            : ac_encode_groups_ans(ac_device, width, height, d_ac_ans_tables,
+                                   ac_plan.ans_global.tables.size(), d_ac_ans_body,
+                                   ac_capacity, d_ac_ans_sizes, d_ac_ans_offsets,
+                                   &ac_ans_total)};
     if (!dc_encode_groups(dc_device, width, height, quant_field, nullptr, nullptr, nullptr,
                           d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
                           d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes,
@@ -339,17 +384,32 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     }
 
     std::vector<std::uint32_t> ac_sizes(num_ac, 0);
+    std::vector<std::uint32_t> ac_ans_sizes(num_ac, 0);
     std::vector<std::uint32_t> dc_sizes(num_dc, 0);
     if (cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        (ac_ans_encoded &&
+         cudaMemcpy(ac_ans_sizes.data(), d_ac_ans_sizes,
+                    num_ac * sizeof(std::uint32_t), cudaMemcpyDeviceToHost) !=
+             cudaSuccess)) {
         return false;
     }
+    const bool use_ans{
+        ac_ans_encoded &&
+        ac_plan.ans_global.section.size() + ac_ans_total <
+            ac_plan.global.section.size() + ac_total};
+    const std::vector<std::uint8_t>& ac_global{
+        use_ans ? ac_plan.ans_global.section : ac_plan.global.section};
+    const std::vector<std::uint32_t>& selected_ac_sizes{
+        use_ans ? ac_ans_sizes : ac_sizes};
+    std::uint8_t* selected_ac_body{use_ans ? d_ac_ans_body : d_ac_body};
+    const std::size_t selected_ac_total{use_ans ? ac_ans_total : ac_total};
     entropy.gpu_us += us_since(entropy_encode_start);
     const std::size_t coeff_bytes{3 * bw * bh * AC_COEFFS_PER_BLOCK * sizeof(std::int16_t) +
                                   3 * bw * bh * sizeof(std::int32_t)};
-    entropy.bytes_moved = 2 * coeff_bytes + ac_total + dc_total;
+    entropy.bytes_moved = 3 * coeff_bytes + ac_total + ac_ans_total + dc_total;
 
     // Section sizes in codestream order: DcGlobal, DcGroups, AcGlobal, AcGroups.
     const Clock::time_point assembly_head_start{Clock::now()};
@@ -358,8 +418,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     for (std::uint32_t s : dc_sizes) {
         section_sizes.push_back(s);
     }
-    section_sizes.push_back(static_cast<std::uint32_t>(ac_plan.global.section.size()));
-    for (std::uint32_t s : ac_sizes) {
+    section_sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
+    for (std::uint32_t s : selected_ac_sizes) {
         section_sizes.push_back(s);
     }
 
@@ -369,8 +429,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
 
     // Gather the body [DcGlobal | DcGroups | AcGlobal | AcGroups] into one device
     // buffer (byte-aligned sections -> byte concatenation), then a single D2H.
-    const std::size_t body_size{dc_global.size() + dc_total +
-                                ac_plan.global.section.size() + ac_total};
+    const std::size_t body_size{dc_global.size() + dc_total + ac_global.size() +
+                                selected_ac_total};
     const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
@@ -383,11 +443,11 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
         (at += dc_global.size(),
          cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
         (at += dc_total,
-         cudaMemcpy(d_body + at, ac_plan.global.section.data(),
-                    ac_plan.global.section.size(), cudaMemcpyHostToDevice) ==
+         cudaMemcpy(d_body + at, ac_global.data(), ac_global.size(), cudaMemcpyHostToDevice) ==
              cudaSuccess) &&
-        (at += ac_plan.global.section.size(),
-         cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
+        (at += ac_global.size(),
+         cudaMemcpy(d_body + at, selected_ac_body, selected_ac_total,
+                    cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
         return false;
     }
@@ -502,6 +562,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         ac_plan.histograms = std::move(ac_hist);
         ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(),
                                                     num_ac);
+        ac_plan.ans_global = bitstream::build_ac_global_ans(ac_plan.histograms.data(),
+                                                            num_ac);
         ac_plan.ready = true;
     }
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
@@ -510,6 +572,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     const Clock::time_point entropy_encode_start{Clock::now()};
+    const std::vector<AcAnsEncodingTable> ac_ans_tables{
+        device_ans_tables(ac_plan.ans_global.tables)};
     std::uint8_t* d_ac_depth{nullptr};
     std::uint16_t* d_ac_bits{nullptr};
     std::uint8_t* d_dc_depth{nullptr};
@@ -523,8 +587,10 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
     std::uint8_t* d_ac_context_map{nullptr};
+    AcAnsEncodingTable* d_ac_ans_tables{nullptr};
     if (!upload(ac_plan.global.depth, &d_ac_depth) ||
         !upload(ac_plan.global.bits, &d_ac_bits) ||
+        !upload(ac_ans_tables, &d_ac_ans_tables) ||
         !upload(ac_plan.context_map, &d_ac_context_map) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
@@ -544,21 +610,30 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
             scope.track(p);
         }
     }
+    if (d_ac_ans_tables) {
+        scope.track(d_ac_ans_tables);
+    }
 
     const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
     const std::size_t dc_capacity{48 * bw * bh + blobs.blob_pre.size() + blobs.blob_mid.size() +
                                   num_dc * 64 + 4096};
     std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
+    std::uint8_t* d_ac_ans_body{scope.alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
     std::uint32_t* d_ac_sizes{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_ac_ans_sizes{scope.alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_ac_ans_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets || !d_dc_sizes || !d_dc_offsets) {
+    if (!d_ac_body || !d_ac_ans_body || !d_dc_body || !d_ac_sizes ||
+        !d_ac_offsets || !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes ||
+        !d_dc_offsets) {
         return false;
     }
 
     std::size_t ac_total{0};
+    std::size_t ac_ans_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{
         ac_plan.data_driven
@@ -572,6 +647,17 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     if (!ac_encoded) {
         return false;
     }
+    const bool ac_ans_encoded{
+        ac_plan.data_driven
+            ? ac_encode_groups_m3_ans_runtime_map(
+                  ac_device, acs, width, height, d_ac_context_map,
+                  d_ac_ans_tables, ac_plan.ans_global.tables.size(),
+                  d_ac_ans_body, ac_capacity, d_ac_ans_sizes, d_ac_ans_offsets,
+                  &ac_ans_total)
+            : ac_encode_groups_m3_ans(
+                  ac_device, acs, width, height, d_ac_ans_tables,
+                  ac_plan.ans_global.tables.size(), d_ac_ans_body, ac_capacity,
+                  d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total)};
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_dc_depth,
                           d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid,
                           d_mid_off, d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets,
@@ -580,13 +666,28 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     }
 
     std::vector<std::uint32_t> ac_sizes(num_ac, 0);
+    std::vector<std::uint32_t> ac_ans_sizes(num_ac, 0);
     std::vector<std::uint32_t> dc_sizes(num_dc, 0);
     if (cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        (ac_ans_encoded &&
+         cudaMemcpy(ac_ans_sizes.data(), d_ac_ans_sizes,
+                    num_ac * sizeof(std::uint32_t), cudaMemcpyDeviceToHost) !=
+             cudaSuccess)) {
         return false;
     }
+    const bool use_ans{
+        ac_ans_encoded &&
+        ac_plan.ans_global.section.size() + ac_ans_total <
+            ac_plan.global.section.size() + ac_total};
+    const std::vector<std::uint8_t>& ac_global{
+        use_ans ? ac_plan.ans_global.section : ac_plan.global.section};
+    const std::vector<std::uint32_t>& selected_ac_sizes{
+        use_ans ? ac_ans_sizes : ac_sizes};
+    std::uint8_t* selected_ac_body{use_ans ? d_ac_ans_body : d_ac_body};
+    const std::size_t selected_ac_total{use_ans ? ac_ans_total : ac_total};
     entropy.gpu_us += us_since(entropy_encode_start);
 
     // Sections in codestream order: DcGlobal, DcGroups, AcGlobal, AcGroups.
@@ -596,16 +697,16 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     for (std::uint32_t s : dc_sizes) {
         section_sizes.push_back(s);
     }
-    section_sizes.push_back(static_cast<std::uint32_t>(ac_plan.global.section.size()));
-    for (std::uint32_t s : ac_sizes) {
+    section_sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
+    for (std::uint32_t s : selected_ac_sizes) {
         section_sizes.push_back(s);
     }
     const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), section_sizes)};
     assembly.cpu_us += us_since(assembly_head_start);
 
-    const std::size_t body_size{dc_global.size() + dc_total +
-                                ac_plan.global.section.size() + ac_total};
+    const std::size_t body_size{dc_global.size() + dc_total + ac_global.size() +
+                                selected_ac_total};
     const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
@@ -618,11 +719,11 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         (at += dc_global.size(),
          cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
         (at += dc_total,
-         cudaMemcpy(d_body + at, ac_plan.global.section.data(),
-                    ac_plan.global.section.size(), cudaMemcpyHostToDevice) ==
+         cudaMemcpy(d_body + at, ac_global.data(), ac_global.size(), cudaMemcpyHostToDevice) ==
              cudaSuccess) &&
-        (at += ac_plan.global.section.size(),
-         cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
+        (at += ac_global.size(),
+         cudaMemcpy(d_body + at, selected_ac_body, selected_ac_total,
+                    cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
         return false;
     }

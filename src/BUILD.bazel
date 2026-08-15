@@ -478,6 +478,7 @@ cc_test(
         ":entropy",
         ":frame_encoder",
         "//src/bitstream",
+        "//src/bitstream:frame_assembly",
         "//tools/bitstream:vardct_frame",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",

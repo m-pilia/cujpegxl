@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "ans_encoder.h"
+
 namespace cujpegxl::bitstream {
 
 // Serialized quantizer state for a VarDCT frame (see libjxl Quantizer). The
@@ -40,6 +42,17 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
                                const std::uint8_t* context_map,
                                std::size_t num_clusters,
                                std::size_t num_ac_groups);
+
+struct AcAnsGlobalResult {
+    std::vector<std::uint8_t> section{};
+    std::vector<AnsEncodingTable> tables{};
+};
+AcAnsGlobalResult build_ac_global_ans(const std::uint32_t* ac_histogram,
+                                      std::size_t num_ac_groups);
+AcAnsGlobalResult build_ac_global_ans(const std::uint32_t* ac_histograms,
+                                      const std::uint8_t* context_map,
+                                      std::size_t num_clusters,
+                                      std::size_t num_ac_groups);
 
 // The byte-aligned DcGlobal section.
 std::vector<std::uint8_t> build_dc_global(const QuantParams& qp);
