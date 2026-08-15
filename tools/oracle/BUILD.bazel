@@ -11,7 +11,10 @@ cc_binary(
     name = "libjxl_oracle",
     testonly = True,
     srcs = ["libjxl_oracle.cc"],
-    deps = ["@libjxl//:jxl"],
+    deps = [
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
+    ],
 )
 
 py_library(

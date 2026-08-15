@@ -44,7 +44,8 @@ cc_test(
     srcs = ["ans_encoder_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -54,7 +55,8 @@ cc_test(
     srcs = ["ans_histogram_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -64,7 +66,8 @@ cc_test(
     srcs = ["context_map_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -86,7 +89,8 @@ cc_test(
     srcs = ["entropy_selector_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -106,7 +110,8 @@ cc_test(
     srcs = ["codestream_parse_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -116,7 +121,8 @@ cc_test(
     srcs = ["clustered_histogram_test.cc"],
     deps = [
         ":bitstream",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -127,7 +133,8 @@ cc_test(
     deps = [
         ":bitstream",
         "//tools/bitstream:vardct_frame",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )

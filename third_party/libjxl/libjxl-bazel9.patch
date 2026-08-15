@@ -1,0 +1,83 @@
+--- a/lib/BUILD
++++ b/lib/BUILD
+@@ -5,6 +5,8 @@
+ 
+ load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+ load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
++load("@bazel_skylib//rules:write_file.bzl", "write_file")
++load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+ 
+ # Load sources/headers/tests lists.
+ load(
+@@ -61,7 +63,7 @@
+     "libjxl_test_timeouts",
+ )
+ 
+-DEFAULT_VISIBILITY = ["//:__subpackages__"]
++DEFAULT_VISIBILITY = ["//visibility:public"]
+ 
+ DEFAULT_COMPATIBILITY = []
+ 
+@@ -91,29 +93,26 @@
+ 
+ JXL_EXPORT_H = INCLUDES_DIR + "/jxl/jxl_export.h"
+ 
+-genrule(
++write_file(
+     name = "create_jxl_export",
+-    outs = [JXL_EXPORT_H],
+-    cmd = "echo '" + EXPORT_TEMPLATE.replace("@", "JXL") + "' > $@",
+-    compatible_with = DEFAULT_COMPATIBILITY,
++    out = JXL_EXPORT_H,
++    content = EXPORT_TEMPLATE.replace("@", "JXL").strip().split("\n"),
+ )
+ 
+ JXL_CMS_EXPORT_H = INCLUDES_DIR + "/jxl/jxl_cms_export.h"
+ 
+-genrule(
++write_file(
+     name = "create_jxl_cms_export",
+-    outs = [JXL_CMS_EXPORT_H],
+-    cmd = "echo '" + EXPORT_TEMPLATE.replace("@", "JXL_CMS") + "' > $@",
+-    compatible_with = DEFAULT_COMPATIBILITY,
++    out = JXL_CMS_EXPORT_H,
++    content = EXPORT_TEMPLATE.replace("@", "JXL_CMS").strip().split("\n"),
+ )
+ 
+ JXL_THREADS_EXPORT_H = INCLUDES_DIR + "/jxl/jxl_threads_export.h"
+ 
+-genrule(
++write_file(
+     name = "create_jxl_threads_export",
+-    outs = [JXL_THREADS_EXPORT_H],
+-    cmd = "echo '" + EXPORT_TEMPLATE.replace("@", "JXL_THREADS") + "' > $@",
+-    compatible_with = DEFAULT_COMPATIBILITY,
++    out = JXL_THREADS_EXPORT_H,
++    content = EXPORT_TEMPLATE.replace("@", "JXL_THREADS").strip().split("\n"),
+ )
+ 
+ JXL_VERSION_H = INCLUDES_DIR + "/jxl/version.h"
+@@ -191,6 +190,7 @@
+     srcs = [path for path in libjxl_base_sources if path.endswith(".cc")],
+     hdrs = [path for path in libjxl_base_sources if path.endswith(".h")],
+     compatible_with = DEFAULT_COMPATIBILITY,
++    defines = ["NDEBUG"],
+     deps = [
+         ":includes",
+     ] + libjxl_deps_hwy,
+@@ -201,6 +201,7 @@
+     srcs = libjxl_dec_sources + libjxl_dec_box_sources + libjxl_dec_jpeg_sources + libjxl_enc_sources + libjxl_cms_sources,
+     compatible_with = DEFAULT_COMPATIBILITY,
+     defines = [
++        "NDEBUG",
+         "JPEGXL_ENABLE_SKCMS=1",
+     ],
+     deps = [
+@@ -225,6 +226,7 @@
+     srcs = libjxl_threads_sources,
+     hdrs = libjxl_threads_public_headers + [JXL_THREADS_EXPORT_H],
+     compatible_with = DEFAULT_COMPATIBILITY,
++    defines = ["NDEBUG"],
+     strip_include_prefix = INCLUDES_DIR,
+     deps = [
+         ":base",

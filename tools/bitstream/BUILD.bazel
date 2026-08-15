@@ -45,7 +45,8 @@ cc_test(
     srcs = ["entropy_encoder_test.cc"],
     deps = [
         ":entropy_encoder",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -55,7 +56,8 @@ cc_test(
     srcs = ["modular_test.cc"],
     deps = [
         ":modular",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )
@@ -66,7 +68,8 @@ cc_test(
     deps = [
         ":vardct_frame",
         "//src:vardct_layout",
-        "@libjxl//:jxl",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
         "@googletest//:gtest_main",
     ],
 )

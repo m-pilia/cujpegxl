@@ -3,9 +3,29 @@
 
 load("@cujpegxl_pip//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "ssimulacra2",
+    testonly = True,
+    srcs = [
+        "@libjxl//tools:gauss_blur.cc",
+        "@libjxl//tools:no_memory_manager.cc",
+        "@libjxl//tools:ssimulacra2.cc",
+    ],
+    hdrs = [
+        "@libjxl//tools:gauss_blur.h",
+        "@libjxl//tools:no_memory_manager.h",
+        "@libjxl//tools:ssimulacra2.h",
+    ],
+    deps = [
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
+    ],
+)
 
 pybind_extension(
     name = "pylibjxl",
@@ -13,8 +33,10 @@ pybind_extension(
     srcs = ["pylibjxl.cc"],
     visibility = ["//visibility:public"],
     deps = [
-        "@libjxl//:jxl",
-        "@libjxl//:ssimulacra2",
+        ":ssimulacra2",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
+        "@libjxl//lib:jpegxl_threads",
     ],
 )
 

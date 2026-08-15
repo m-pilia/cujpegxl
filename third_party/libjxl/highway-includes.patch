@@ -1,0 +1,10 @@
+--- a/BUILD
++++ b/BUILD
+@@ -138,6 +138,7 @@
+ # test to the highway.users list in highway.blueprint.
+ cc_library(
+     name = "hwy",
++    includes = ["."],
+     srcs = [
+         "hwy/abort.cc",
+         "hwy/aligned_allocator.cc",
