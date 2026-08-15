@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cassert>
+#include <functional>
 
 #include "histogram_writer.h"
 #include "hybrid_uint.h"
@@ -13,6 +14,45 @@ namespace cujpegxl::bitstream {
 namespace {
 
 constexpr std::size_t CONTEXT_MAP_ALPHABET_SIZE = 16;
+constexpr std::size_t MAX_CONTEXT_MAP_SIZE = 7425;
+
+std::size_t ceil_log2(std::size_t value) {
+    if (value <= 1) {
+        return 0;
+    }
+    std::size_t bits{0};
+    --value;
+    while (value != 0) {
+        value >>= 1;
+        ++bits;
+    }
+    return bits;
+}
+
+void append_writer_bits(BitWriter& destination, const BitWriter& source) {
+    std::size_t remaining{source.bits_written()};
+    std::size_t byte{0};
+    while (remaining != 0) {
+        const std::size_t take{remaining < 8 ? remaining : 8};
+        destination.write(take, source.bytes()[byte]);
+        remaining -= take;
+        ++byte;
+    }
+}
+
+void write_simple_context_map(BitWriter& w, const std::uint8_t* context_map,
+                              std::size_t num_contexts, std::size_t num_clusters) {
+    assert(num_clusters >= 1 && num_clusters <= 8);
+    const std::size_t bits_per_entry{ceil_log2(num_clusters)};
+    w.write(1, 1);
+    w.write(2, bits_per_entry);
+    for (std::size_t i{0}; i < num_contexts; ++i) {
+        assert(context_map[i] < num_clusters);
+        if (bits_per_entry != 0) {
+            w.write(bits_per_entry, context_map[i]);
+        }
+    }
+}
 
 template <typename Emit>
 void for_each_context_map_symbol(const std::uint8_t* context_map, std::size_t num_contexts,
@@ -90,6 +130,41 @@ void write_complex_prefix_context_map(BitWriter& w, const std::uint8_t* context_
             w.write(nbits, extra_bits);
         }
     });
+}
+
+ContextMapEncoding write_best_prefix_context_map(BitWriter& w, const std::uint8_t* context_map,
+                                                 std::size_t num_contexts,
+                                                 std::size_t num_clusters) {
+    assert(context_map != nullptr);
+    assert(num_contexts > 0 && num_contexts <= MAX_CONTEXT_MAP_SIZE);
+    assert(num_clusters >= 1 && num_clusters <= 256);
+    for (std::size_t i{0}; i < num_contexts; ++i) {
+        assert(context_map[i] < num_clusters);
+    }
+
+    BitWriter complex{};
+    write_complex_prefix_context_map(complex, context_map, num_contexts, false);
+    BitWriter complex_mtf{};
+    write_complex_prefix_context_map(complex_mtf, context_map, num_contexts, true);
+
+    std::reference_wrapper<const BitWriter> selected{complex};
+    ContextMapEncoding encoding{ContextMapEncoding::COMPLEX};
+    if (complex_mtf.bits_written() < selected.get().bits_written()) {
+        selected = std::cref(complex_mtf);
+        encoding = ContextMapEncoding::COMPLEX_MTF;
+    }
+
+    BitWriter simple{};
+    if (num_clusters <= 8) {
+        write_simple_context_map(simple, context_map, num_contexts, num_clusters);
+        if (simple.bits_written() <= selected.get().bits_written()) {
+            selected = std::cref(simple);
+            encoding = ContextMapEncoding::SIMPLE;
+        }
+    }
+
+    append_writer_bits(w, selected.get());
+    return encoding;
 }
 
 }  // namespace cujpegxl::bitstream

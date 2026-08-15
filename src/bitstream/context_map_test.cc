@@ -49,6 +49,26 @@ void expect_complex_map_round_trip(const std::vector<std::uint8_t>& context_map,
     EXPECT_TRUE(br.Close());
 }
 
+ContextMapEncoding expect_best_map_round_trip(const std::vector<std::uint8_t>& context_map,
+                                              std::size_t num_clusters) {
+    BitWriter w{};
+    w.write(5, 0x15);
+    const ContextMapEncoding encoding{write_best_prefix_context_map(
+        w, context_map.data(), context_map.size(), num_clusters)};
+    w.zero_pad_to_byte();
+
+    JxlMemoryManager mm{nullptr, &test_alloc, &test_free};
+    jxl::BitReader br{jxl::Bytes(w.bytes().data(), w.bytes().size())};
+    EXPECT_EQ(br.ReadBits(5), 0x15u);
+    std::vector<std::uint8_t> decoded(context_map.size());
+    std::size_t decoded_clusters{0};
+    EXPECT_TRUE(jxl::DecodeContextMap(&mm, &decoded, &decoded_clusters, &br));
+    EXPECT_EQ(decoded, context_map);
+    EXPECT_EQ(decoded_clusters, num_clusters);
+    EXPECT_TRUE(br.Close());
+    return encoding;
+}
+
 TEST(ContextMap, Empty) {
     move_to_front_transform(nullptr, 0, nullptr);
     expect_libjxl_inverse({});
@@ -121,6 +141,43 @@ TEST(ContextMap, ComplexWithMtf) {
 
 TEST(ContextMap, ComplexSingleCluster) {
     expect_complex_map_round_trip(std::vector<std::uint8_t>(128, 0), true);
+}
+
+TEST(ContextMap, BestSingleClusterIsSimple) {
+    EXPECT_EQ(expect_best_map_round_trip(std::vector<std::uint8_t>(7425, 0), 1),
+              ContextMapEncoding::SIMPLE);
+}
+
+TEST(ContextMap, BestEightClusterBoundary) {
+    std::vector<std::uint8_t> context_map{};
+    for (std::size_t i{0}; i < 8; ++i) {
+        context_map.push_back(static_cast<std::uint8_t>(i));
+    }
+    EXPECT_EQ(expect_best_map_round_trip(context_map, 8), ContextMapEncoding::SIMPLE);
+}
+
+TEST(ContextMap, BestChoosesComplexBelowSimpleLimit) {
+    std::vector<std::uint8_t> context_map(7425, 0);
+    for (std::size_t i{0}; i < 8; ++i) {
+        context_map[i] = static_cast<std::uint8_t>(i);
+    }
+    EXPECT_NE(expect_best_map_round_trip(context_map, 8), ContextMapEncoding::SIMPLE);
+}
+
+TEST(ContextMap, BestNineClustersRequiresComplexForm) {
+    std::vector<std::uint8_t> context_map{};
+    for (std::size_t i{0}; i < 1024; ++i) {
+        context_map.push_back(static_cast<std::uint8_t>(i % 9));
+    }
+    EXPECT_NE(expect_best_map_round_trip(context_map, 9), ContextMapEncoding::SIMPLE);
+}
+
+TEST(ContextMap, BestSupportsAllClusters) {
+    std::vector<std::uint8_t> context_map(256);
+    for (std::size_t i{0}; i < context_map.size(); ++i) {
+        context_map[i] = static_cast<std::uint8_t>(i);
+    }
+    EXPECT_NE(expect_best_map_round_trip(context_map, 256), ContextMapEncoding::SIMPLE);
 }
 
 }  // namespace
