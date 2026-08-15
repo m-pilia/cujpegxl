@@ -9,8 +9,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "src/bitstream/ans_encoder.h"
-
 namespace cujpegxl::bitstream {
 
 // Quantized coefficients and quantizer parameters for a VarDCT frame with mixed
@@ -76,17 +74,6 @@ AcReference reference_ac_encode(const FrameCoefficients& fc);
 AcReference reference_ac_encode(const FrameCoefficients& fc,
                                 const std::vector<std::uint8_t>& context_map,
                                 std::size_t num_clusters);
-
-struct AcAnsReference {
-    std::vector<std::uint32_t> histogram{};
-    std::vector<AnsEncodingTable> tables{};
-    std::vector<std::vector<std::uint8_t>> group_streams{};
-};
-
-AcAnsReference reference_ac_ans_encode(const FrameCoefficients& fc);
-AcAnsReference reference_ac_ans_encode(const FrameCoefficients& fc,
-                                       const std::vector<std::uint8_t>& context_map,
-                                       std::size_t num_clusters);
 
 std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc);
 

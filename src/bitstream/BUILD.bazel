@@ -14,51 +14,23 @@ RUNTIME_COPTS = [
 cc_library(
     name = "bitstream",
     srcs = [
-        "ans_encoder.cc",
-        "ans_histogram.cc",
         "codestream.cc",
         "container.cc",
         "context_map.cc",
-        "entropy_selector.cc",
         "histogram_writer.cc",
         "prefix_code.cc",
     ],
     hdrs = [
-        "ans_encoder.h",
-        "ans_histogram.h",
         "bit_writer.h",
         "codestream.h",
         "container.h",
         "context_map.h",
-        "entropy_selector.h",
         "field_coder.h",
         "histogram_writer.h",
         "hybrid_uint.h",
         "prefix_code.h",
     ],
     copts = RUNTIME_COPTS,
-)
-
-cc_test(
-    name = "ans_encoder_test",
-    srcs = ["ans_encoder_test.cc"],
-    deps = [
-        ":bitstream",
-        "@libjxl//lib:jpegxl",
-        "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "ans_histogram_test",
-    srcs = ["ans_histogram_test.cc"],
-    deps = [
-        ":bitstream",
-        "@libjxl//lib:jpegxl",
-        "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
-    ],
 )
 
 cc_test(
@@ -81,17 +53,6 @@ cc_library(
         ":bitstream",
         "//src:ac_context",
         "//src:dc_predict",
-    ],
-)
-
-cc_test(
-    name = "entropy_selector_test",
-    srcs = ["entropy_selector_test.cc"],
-    deps = [
-        ":bitstream",
-        "@libjxl//lib:jpegxl",
-        "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
     ],
 )
 

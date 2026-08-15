@@ -3,8 +3,6 @@
 
 #include "frontend_transform.h"
 
-#include "device_allocation_cache.h"
-
 #include <cmath>
 
 #include <cuda_runtime.h>
@@ -119,10 +117,9 @@ bool variable_forward_dct(const float* xyb, std::size_t width, std::size_t heigh
     const std::size_t bh{height / 8};
     const unsigned int threads{128};
     const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    variable_forward_dct_kernel<<<blocks, threads, 0, encoder_stream()>>>(
-        xyb, width, height, bw, bh, acs, coeffs);
+    variable_forward_dct_kernel<<<blocks, threads>>>(xyb, width, height, bw, bh, acs, coeffs);
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{encoder_stream_synchronize()};
+    const cudaError_t sync{cudaDeviceSynchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 
@@ -132,11 +129,11 @@ bool frontend_transform_m3(const std::uint8_t* luma, std::size_t luma_pitch,
     const std::size_t plane{width * height};
     float* xyb{nullptr};
     float* sharp{nullptr};
-    if (cached_device_allocate(&xyb, 3 * plane * sizeof(float)) != cudaSuccess) {
+    if (cudaMalloc(&xyb, 3 * plane * sizeof(float)) != cudaSuccess) {
         return false;
     }
-    if (cached_device_allocate(&sharp, 3 * plane * sizeof(float)) != cudaSuccess) {
-        cached_device_release(xyb);
+    if (cudaMalloc(&sharp, 3 * plane * sizeof(float)) != cudaSuccess) {
+        cudaFree(xyb);
         return false;
     }
 
@@ -147,14 +144,14 @@ bool frontend_transform_m3(const std::uint8_t* luma, std::size_t luma_pitch,
         const unsigned int threads{256};
         const unsigned int blocks{
             static_cast<unsigned int>((3 * plane + threads - 1) / threads)};
-        gaborish_kernel<<<blocks, threads, 0, encoder_stream()>>>(xyb, width, height, sharp);
-        ok = cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
+        gaborish_kernel<<<blocks, threads>>>(xyb, width, height, sharp);
+        ok = cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
     }
     ok = ok && select_transforms(sharp + plane, width, height, distance, acs);  // Y plane
     ok = ok && variable_forward_dct(sharp, width, height, acs, coeffs);
 
-    cached_device_release(xyb);
-    cached_device_release(sharp);
+    cudaFree(xyb);
+    cudaFree(sharp);
     return ok;
 }
 

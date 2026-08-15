@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "src/ac_context.h"
-#include "src/bitstream/ans_histogram.h"
 #include "src/bitstream/bit_writer.h"
 #include "src/bitstream/codestream.h"
 #include "src/bitstream/field_coder.h"
@@ -380,32 +379,6 @@ void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t be
     }
 }
 
-void emit_ac_ans_tokens(BitWriter& w, const std::vector<AcTok>& tokens,
-                        std::size_t begin, std::size_t end,
-                        const std::vector<AnsEncodingTable>& tables) {
-    std::vector<std::uint32_t> renormalization(end - begin, 0);
-    std::uint32_t state{ANS_INITIAL_STATE};
-    for (std::size_t i{end}; i > begin; --i) {
-        const AcTok& token{tokens[i - 1]};
-        const AnsStateTransition transition{
-            ans_put_symbol(state, tables[token.cluster], token.symbol)};
-        state = transition.state;
-        renormalization[i - begin - 1] =
-            transition.renormalized ? 0x10000u | transition.renormalization_bits : 0;
-    }
-    w.write(32, state);
-    for (std::size_t i{begin}; i < end; ++i) {
-        const AcTok& token{tokens[i]};
-        const std::uint32_t renorm{renormalization[i - begin]};
-        if ((renorm & 0x10000u) != 0) {
-            w.write(16, renorm & 0xffffu);
-        }
-        if (token.nbits != 0) {
-            w.write(token.nbits, token.bits);
-        }
-    }
-}
-
 void write_dc_global(BitWriter& w, const FrameCoefficients& fc) {
     write_bool(w, true);                     // DequantMatrices::DecodeDC all_default
     write_u32(w, GLOBAL_SCALE_ENC, fc.global_scale);
@@ -626,55 +599,6 @@ AcReference reference_ac_encode(const FrameCoefficients& fc,
         ref.group_streams.push_back(group.bytes());
     }
     return ref;
-}
-
-AcAnsReference reference_ac_ans_encode(const FrameCoefficients& fc) {
-    return reference_ac_ans_encode(fc, ac_context_map(), AC_NUM_CLUSTERS);
-}
-
-AcAnsReference reference_ac_ans_encode(
-    const FrameCoefficients& fc, const std::vector<std::uint8_t>& context_map,
-    std::size_t num_clusters) {
-    assert(fc.width % 8 == 0 && fc.height % 8 == 0);
-    assert(context_map.size() == AC_NUM_CONTEXTS);
-    const std::size_t bw{fc.width / 8};
-    const std::size_t bh{fc.height / 8};
-    const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
-    const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
-    const std::size_t num_groups{xg * yg};
-
-    std::vector<std::uint32_t> histograms(num_clusters * AC_STRIDE, 0);
-    std::vector<AcTok> tokens{};
-    std::vector<std::pair<std::size_t, std::size_t>> ranges(num_groups);
-    for (std::size_t group{0}; group < num_groups; ++group) {
-        const std::size_t bx0{(group % xg) * AC_GROUP_BLOCKS};
-        const std::size_t by0{(group / xg) * AC_GROUP_BLOCKS};
-        const std::size_t gbw{std::min(AC_GROUP_BLOCKS, bw - bx0)};
-        const std::size_t gbh{std::min(AC_GROUP_BLOCKS, bh - by0)};
-        const std::size_t begin{tokens.size()};
-        tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, histograms,
-                                    tokens, context_map.data());
-        ranges[group] = {begin, tokens.size()};
-    }
-
-    AcAnsReference reference{};
-    reference.histogram = histograms;
-    reference.tables.resize(num_clusters);
-    for (std::size_t cluster{0}; cluster < num_clusters; ++cluster) {
-        AnsDistribution distribution{};
-        build_ans_distribution(histograms.data() + cluster * AC_STRIDE,
-                               AC_STRIDE, distribution);
-        build_ans_encoding_table(distribution, reference.tables[cluster]);
-    }
-    reference.group_streams.reserve(num_groups);
-    for (const auto& range : ranges) {
-        BitWriter group{};
-        emit_ac_ans_tokens(group, tokens, range.first, range.second,
-                           reference.tables);
-        group.zero_pad_to_byte();
-        reference.group_streams.push_back(group.bytes());
-    }
-    return reference;
 }
 
 std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc) {

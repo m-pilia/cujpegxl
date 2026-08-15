@@ -6,7 +6,6 @@
 #include <algorithm>
 
 #include "bit_writer.h"
-#include "ans_histogram.h"
 #include "codestream.h"
 #include "field_coder.h"
 #include "histogram_writer.h"
@@ -144,39 +143,6 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
     write_clustered_prefix_histograms(w, context_map, NUM_AC_CONTEXTS, num_clusters,
                                       ac_histograms, HISTOGRAM_STRIDE, HybridUintConfig{},
                                       out.depth.data(), out.bits.data());
-    w.zero_pad_to_byte();
-    out.section = w.bytes();
-    return out;
-}
-
-AcAnsGlobalResult build_ac_global_ans(const std::uint32_t* ac_histogram,
-                                      std::size_t num_ac_groups) {
-    std::vector<std::uint8_t> context_map(NUM_AC_CONTEXTS);
-    for (std::size_t i{0}; i < NUM_AC_CONTEXTS; ++i) {
-        context_map[i] = static_cast<std::uint8_t>(ac_cluster(static_cast<std::uint32_t>(i)));
-    }
-    return build_ac_global_ans(ac_histogram, context_map.data(), AC_NUM_CLUSTERS,
-                               num_ac_groups);
-}
-
-AcAnsGlobalResult build_ac_global_ans(const std::uint32_t* ac_histograms,
-                                      const std::uint8_t* context_map,
-                                      std::size_t num_clusters,
-                                      std::size_t num_ac_groups) {
-    AcAnsGlobalResult out{};
-    std::vector<AnsDistribution> distributions(num_clusters);
-    out.tables.resize(num_clusters);
-
-    BitWriter w{};
-    write_bool(w, true);
-    write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);
-    write_u32(w, ORDER_ENC, 0);
-    write_clustered_ans_histograms(w, context_map, NUM_AC_CONTEXTS, num_clusters,
-                                   ac_histograms, HISTOGRAM_STRIDE, HybridUintConfig{},
-                                   distributions.data());
-    for (std::size_t cluster{0}; cluster < num_clusters; ++cluster) {
-        build_ans_encoding_table(distributions[cluster], out.tables[cluster]);
-    }
     w.zero_pad_to_byte();
     out.section = w.bytes();
     return out;

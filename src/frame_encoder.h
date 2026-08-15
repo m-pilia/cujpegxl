@@ -4,26 +4,15 @@
 #ifndef CUJPEGXL_SRC_FRAME_ENCODER_H_
 #define CUJPEGXL_SRC_FRAME_ENCODER_H_
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <vector>
 
 #include "src/bitstream/frame_assembly.h"
 
 namespace cujpegxl {
-
-struct PhaseTiming {
-    const char* name{""};
-    double gpu_us{0.0};
-    double cpu_us{0.0};
-};
-
-struct ProfileMetric {
-    const char* name{""};
-    double value{0.0};
-};
 
 // Per-stage instrumentation record consumed by the budget model
 // (tools/budget/budget_model.py). `gpu_us`/`cpu_us` are measured wall time of
@@ -35,8 +24,6 @@ struct StageTiming {
     std::size_t bytes_moved{0};
     double gpu_us{0.0};
     double cpu_us{0.0};
-    std::vector<PhaseTiming> phases{};
-    std::vector<ProfileMetric> metrics{};
 };
 
 enum class AcClusteringMode : std::uint8_t {
@@ -175,7 +162,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
                      const std::int8_t* acs, const std::int8_t* ytox_map,
                      const std::int8_t* ytob_map, std::size_t width, std::size_t height,
                      const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                     std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr,
+                     std::vector<std::uint8_t>& out_file,
+                     std::vector<StageTiming>* stats = nullptr,
                      AcClusteringMode clustering = AcClusteringMode::DATA_DRIVEN);
 
 // M3 full device encode path (K1 select+transform, K2 CfL estimate, K3

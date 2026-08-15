@@ -3,8 +3,6 @@
 
 #include "frontend_fused.h"
 
-#include "device_allocation_cache.h"
-
 #include <cmath>
 #include <mutex>
 
@@ -414,12 +412,12 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
     const dim3 block{8, 8};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
-    frontend_fused_kernel<<<grid, block, 0, encoder_stream()>>>(
-        luma, luma_pitch, chroma_tex, width, height, bw, bh, gsf, dc_scale, km0, km1, km2, km3,
-        mul_pb, add_pb, cal.inv_global_scale, ac, dc, quant_field);
+    frontend_fused_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, bw, bh, gsf,
+                                           dc_scale, km0, km1, km2, km3, mul_pb, add_pb,
+                                           cal.inv_global_scale, ac, dc, quant_field);
 
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{encoder_stream_synchronize()};
+    const cudaError_t sync{cudaDeviceSynchronize()};
     cudaDestroyTextureObject(chroma_tex);
     return launch == cudaSuccess && sync == cudaSuccess;
 }

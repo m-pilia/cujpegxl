@@ -3,8 +3,6 @@
 
 #include "xyb.h"
 
-#include "device_allocation_cache.h"
-
 #include <cuda_runtime.h>
 
 #include "xyb_impl.cuh"
@@ -58,11 +56,10 @@ bool nv12_to_xyb(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     const dim3 block{16, 16};
     const dim3 grid{static_cast<unsigned int>((width + block.x - 1) / block.x),
                     static_cast<unsigned int>((height + block.y - 1) / block.y)};
-    nv12_to_xyb_kernel<<<grid, block, 0, encoder_stream()>>>(luma, luma_pitch, chroma_tex, width,
-                                                             height, xyb);
+    nv12_to_xyb_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, xyb);
 
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{encoder_stream_synchronize()};
+    const cudaError_t sync{cudaDeviceSynchronize()};
     cudaDestroyTextureObject(chroma_tex);
     return launch == cudaSuccess && sync == cudaSuccess;
 }

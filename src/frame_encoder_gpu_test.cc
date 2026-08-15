@@ -3,8 +3,8 @@
 
 // End-to-end validation of the device frame encoder: for a set of quantized
 // coefficients it must produce the exact ISOBMFF .jxl file the host oracle
-// produces, and that file must decode through libjxl's public decoder to the
-// expected dimensions.
+// produces (write_container(write_vardct_codestream)), and that file must decode
+// through libjxl's public decoder to the expected dimensions.
 
 #include <cstdint>
 #include <vector>
@@ -18,7 +18,6 @@
 #include "entropy.h"
 #include "frame_encoder.h"
 #include "src/bitstream/container.h"
-#include "src/bitstream/frame_assembly.h"
 #include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl {
@@ -26,53 +25,6 @@ namespace {
 
 using bitstream::FrameCoefficients;
 using bitstream::QuantParams;
-
-std::vector<std::uint8_t> reference_file(const FrameCoefficients& fc) {
-    const bitstream::DcReference dc{bitstream::reference_dc_encode(fc)};
-    const bitstream::AcReference prefix{bitstream::reference_ac_encode(fc)};
-    const bitstream::AcAnsReference ans{bitstream::reference_ac_ans_encode(fc)};
-    const std::size_t num_groups{bitstream::ac_group_count(fc.width, fc.height)};
-    const bitstream::AcGlobalResult prefix_global{
-        bitstream::build_ac_global(prefix.histogram.data(), num_groups)};
-    const bitstream::AcAnsGlobalResult ans_global{
-        bitstream::build_ac_global_ans(ans.histogram.data(), num_groups)};
-    std::size_t prefix_size{prefix_global.section.size()};
-    std::size_t ans_size{ans_global.section.size()};
-    for (std::size_t group{0}; group < num_groups; ++group) {
-        prefix_size += prefix.group_streams[group].size();
-        ans_size += ans.group_streams[group].size();
-    }
-    const bool use_ans{ans_size < prefix_size};
-    const std::vector<std::uint8_t>& ac_global{
-        use_ans ? ans_global.section : prefix_global.section};
-
-    const std::vector<std::uint8_t> dc_global{
-        bitstream::build_dc_global(QuantParams{fc.global_scale, fc.quant_dc})};
-    std::vector<std::uint32_t> sizes{static_cast<std::uint32_t>(dc_global.size())};
-    for (const bitstream::DcGroupReference& group : dc.groups) {
-        sizes.push_back(static_cast<std::uint32_t>(group.section.size()));
-    }
-    sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
-    for (std::size_t group{0}; group < num_groups; ++group) {
-        sizes.push_back(static_cast<std::uint32_t>(
-            use_ans ? ans.group_streams[group].size()
-                    : prefix.group_streams[group].size()));
-    }
-
-    std::vector<std::uint8_t> codestream{bitstream::build_codestream_head(
-        static_cast<std::uint32_t>(fc.width), static_cast<std::uint32_t>(fc.height), sizes)};
-    codestream.insert(codestream.end(), dc_global.begin(), dc_global.end());
-    for (const bitstream::DcGroupReference& group : dc.groups) {
-        codestream.insert(codestream.end(), group.section.begin(), group.section.end());
-    }
-    codestream.insert(codestream.end(), ac_global.begin(), ac_global.end());
-    for (std::size_t group{0}; group < num_groups; ++group) {
-        const std::vector<std::uint8_t>& stream{
-            use_ans ? ans.group_streams[group] : prefix.group_streams[group]};
-        codestream.insert(codestream.end(), stream.begin(), stream.end());
-    }
-    return bitstream::write_container(codestream);
-}
 
 // Packs fc's AC (slots 1..63 of each block) into the device int16 AC layout
 // (channel-major planes X, Y, B; AC_COEFFS_PER_BLOCK per block; slot k-1).
@@ -133,8 +85,7 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 
 bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out,
                       AcClusteringMode clustering =
-                          AcClusteringMode::DATA_DRIVEN,
-                      std::vector<StageTiming>* stats = nullptr) {
+                          AcClusteringMode::DATA_DRIVEN) {
     const std::vector<std::int16_t> ac{flatten_ac(fc)};
     const std::vector<std::int32_t> dc{flatten_dc(fc)};
     const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
@@ -155,27 +106,11 @@ bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& ou
                 cudaSuccess};
     ok = ok && encode_frame(d_ac, d_dc, fc.width, fc.height,
                             QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out,
-                            stats, clustering);
+                            nullptr, clustering);
     cudaFree(d_ac);
     cudaFree(d_dc);
     cudaFree(d_qf);
     return ok;
-}
-
-TEST(FrameEncoderGpu, PrefixSelectedFrameEmitsPrefixOnly) {
-    FrameCoefficients fc{make_frame(512, 256)};
-    for (std::vector<std::int32_t>& channel : fc.ac) {
-        std::fill(channel.begin(), channel.end(), 0);
-    }
-    std::vector<std::uint8_t> encoded{};
-    std::vector<StageTiming> stats{};
-    ASSERT_TRUE(encode_on_device(fc, encoded, AcClusteringMode::FIXED, &stats));
-    EXPECT_EQ(encoded, reference_file(fc));
-    ASSERT_EQ(stats.size(), 2u);
-    ASSERT_GE(stats[0].phases.size(), 15u);
-    ASSERT_GE(stats[0].metrics.size(), 9u);
-    EXPECT_GT(stats[0].phases[6].gpu_us, 0.0);
-    EXPECT_EQ(stats[0].metrics[8].value, 0.0);
 }
 
 testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std::uint32_t& xs,
@@ -216,7 +151,8 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
 }
 
 void check(const FrameCoefficients& fc) {
-    const std::vector<std::uint8_t> expected{reference_file(fc)};
+    const std::vector<std::uint8_t> expected{
+        bitstream::write_container(write_vardct_codestream(fc, /*clustered_ac=*/true))};
 
     std::vector<std::uint8_t> got{};
     ASSERT_TRUE(encode_on_device(fc, got, AcClusteringMode::FIXED));

@@ -3,8 +3,6 @@
 
 #include "transform_select.h"
 
-#include "device_allocation_cache.h"
-
 #include <cuda_runtime.h>
 
 #include "quant_calibration.h"
@@ -46,11 +44,11 @@ bool select_transforms(const float* y, std::size_t width, std::size_t height, fl
 
     const unsigned int threads{64};
     const unsigned int blocks{static_cast<unsigned int>((rbw * rbh + threads - 1) / threads)};
-    select_transforms_kernel<<<blocks, threads, 0, encoder_stream()>>>(
-        y, width, bw, bh, rbw, rbh, qgsf, TRANSFORM_SELECT_LAMBDA, acs);
+    select_transforms_kernel<<<blocks, threads>>>(y, width, bw, bh, rbw, rbh, qgsf,
+                                                  TRANSFORM_SELECT_LAMBDA, acs);
 
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{encoder_stream_synchronize()};
+    const cudaError_t sync{cudaDeviceSynchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 

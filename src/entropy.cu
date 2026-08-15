@@ -1,10 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "device_allocation_cache.h"
 #include "entropy.h"
 
-#include <chrono>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -19,12 +17,6 @@
 
 namespace cujpegxl {
 namespace {
-
-using EntropyClock = std::chrono::steady_clock;
-
-double elapsed_us(EntropyClock::time_point start) {
-    return std::chrono::duration<double, std::micro>(EntropyClock::now() - start).count();
-}
 
 constexpr std::size_t AC_GROUP_BLOCKS = 32;
 constexpr std::size_t DC_GROUP_BLOCKS = 256;
@@ -162,8 +154,8 @@ constexpr std::size_t AC_CLUSTER_HIST = AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE;
 // (bx, by) of physical channel `c`, read from the normalized non-zero grid
 // (3 * nblocks int32, covered positions filled).
 __device__ std::uint32_t ac_predicted_nzeros_dev(const std::int32_t* nz_grid, int c,
-                                                 std::size_t nblocks, std::size_t bw,
-                                                 std::size_t bx, std::size_t by) {
+                                                 std::size_t nblocks, std::size_t bw, std::size_t bx,
+                                                 std::size_t by) {
     const bool has_left{(bx % AC_GROUP_BLOCKS) > 0};
     const bool has_top{(by % AC_GROUP_BLOCKS) > 0};
     const std::size_t base{static_cast<std::size_t>(c) * nblocks};
@@ -203,43 +195,10 @@ __device__ void for_each_token_ctx(const std::int16_t* blk, int c, std::uint32_t
     }
 }
 
-template <typename Emit>
-__device__ void for_each_token_ctx_reverse(const std::int16_t* blk, int c, std::uint32_t predicted,
-                                           Emit emit) {
-    const int block_ctx{ac_block_context(c, 0)};
-    std::uint32_t nzeros{0};
-    int last{0};
-    for (int k{1}; k < 64; ++k) {
-        if (blk[NATURAL_ORDER[k] - 1] != 0) {
-            ++nzeros;
-            last = k;
-        }
-    }
-
-    const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
-    std::uint32_t remaining{0};
-    for (int k{last}; k >= 1; --k) {
-        const std::int32_t v{blk[NATURAL_ORDER[k] - 1]};
-        remaining += v != 0 ? 1u : 0u;
-        const std::uint32_t prev{k == 1 ? (nzeros > 4u ? 0u : 1u)
-                                        : (blk[NATURAL_ORDER[k - 1] - 1] != 0 ? 1u : 0u)};
-        const std::uint32_t context{
-            histo_off +
-            ac_zero_density_context(remaining, static_cast<std::uint32_t>(k), 1u, 0u, prev)};
-        std::uint32_t symbol{}, nbits{}, bits{};
-        hybrid_encode(pack_signed(v), symbol, nbits, bits);
-        emit(symbol, nbits, bits, context);
-    }
-
-    std::uint32_t symbol{}, nbits{}, bits{};
-    hybrid_encode(nzeros, symbol, nbits, bits);
-    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
-}
-
 // Builds the DCT8 normalized non-zero grid: one entry per (block, physical
 // channel) = the block's non-zero count (covered_blocks = 1).
 __global__ void ac_nzeros_grid_kernel(const std::int16_t* ac, std::size_t bw, std::size_t bh,
-                                      std::size_t nblocks, std::int32_t* nz_grid) {
+                                     std::size_t nblocks, std::int32_t* nz_grid) {
     const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
     if (idx >= 3 * bw * bh) {
         return;
@@ -257,9 +216,8 @@ __global__ void ac_nzeros_grid_kernel(const std::int16_t* ac, std::size_t bw, st
     nz_grid[static_cast<std::size_t>(c) * nblocks + block] = nz;
 }
 
-__global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
-                                 std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                 std::uint32_t* histogram) {
+__global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_grid, std::size_t bw,
+                                 std::size_t bh, std::size_t nblocks, std::uint32_t* histogram) {
     __shared__ unsigned int sh[AC_CLUSTER_HIST];
     for (unsigned int i{threadIdx.x}; i < AC_CLUSTER_HIST; i += blockDim.x) {
         sh[i] = 0;
@@ -277,12 +235,14 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_
         const std::int16_t* blk{ac + static_cast<std::size_t>(c) * nblocks * AC_COEFFS_PER_BLOCK +
                                 block * AC_COEFFS_PER_BLOCK};
         const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-        for_each_token_ctx(
-            blk, c, predicted,
-            [&](std::uint32_t symbol, std::uint32_t, std::uint32_t, std::uint32_t context) {
-                const int cluster{ac_cluster(context)};
-                atomicAdd(&sh[static_cast<std::size_t>(cluster) * AC_HISTOGRAM_SIZE + symbol], 1u);
-            });
+        for_each_token_ctx(blk, c, predicted,
+                           [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                               std::uint32_t context) {
+                               const int cluster{ac_cluster(context)};
+                               atomicAdd(&sh[static_cast<std::size_t>(cluster) * AC_HISTOGRAM_SIZE +
+                                             symbol],
+                                         1u);
+                           });
     }
     __syncthreads();
 
@@ -308,17 +268,19 @@ __global__ void context_histogram_kernel(const std::int16_t* ac, const std::int3
     const std::int16_t* blk{ac + static_cast<std::size_t>(c) * nblocks * AC_COEFFS_PER_BLOCK +
                             block * AC_COEFFS_PER_BLOCK};
     const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-    for_each_token_ctx(
-        blk, c, predicted,
-        [&](std::uint32_t symbol, std::uint32_t, std::uint32_t, std::uint32_t context) {
-            atomicAdd(&histograms[static_cast<std::size_t>(context) * AC_HISTOGRAM_SIZE + symbol],
-                      1u);
-        });
+    for_each_token_ctx(blk, c, predicted,
+                       [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                           std::uint32_t context) {
+                           atomicAdd(&histograms[static_cast<std::size_t>(context) *
+                                                     AC_HISTOGRAM_SIZE +
+                                                 symbol],
+                                     1u);
+                       });
 }
 
-__global__ void collapse_context_histograms_kernel(const std::uint32_t* context_histograms,
-                                                   const std::uint8_t* context_map,
-                                                   std::uint32_t* cluster_histograms) {
+__global__ void collapse_context_histograms_kernel(
+    const std::uint32_t* context_histograms, const std::uint8_t* context_map,
+    std::uint32_t* cluster_histograms) {
     const std::size_t index{blockIdx.x * blockDim.x + threadIdx.x};
     if (index >= AC_CONTEXT_HISTOGRAM_ENTRIES) {
         return;
@@ -326,10 +288,10 @@ __global__ void collapse_context_histograms_kernel(const std::uint32_t* context_
     const std::size_t context{index / AC_HISTOGRAM_SIZE};
     const std::uint32_t count{context_histograms[index]};
     if (count != 0) {
-        atomicAdd(
-            &cluster_histograms[static_cast<std::size_t>(context_map[context]) * AC_HISTOGRAM_SIZE +
-                                index % AC_HISTOGRAM_SIZE],
-            count);
+        atomicAdd(&cluster_histograms[static_cast<std::size_t>(context_map[context]) *
+                                          AC_HISTOGRAM_SIZE +
+                                      index % AC_HISTOGRAM_SIZE],
+                  count);
     }
 }
 
@@ -421,8 +383,8 @@ struct DcCtx {
 // (symbol, extra bits) of the group's `j`-th AcMetadata sample, in channel/row
 // order: YtoX, YtoB, ACS row 0, QF row 1, EPF. Predictor::Zero, so each sample is
 // pack_signed of its raw value.
-__device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sym,
-                                std::uint32_t& rn, std::uint32_t& rw) {
+__device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sym, std::uint32_t& rn,
+                                std::uint32_t& rw) {
     const std::size_t cwch{c.cw * c.ch};
     std::int32_t v{0};
     if (j < cwch) {
@@ -496,7 +458,8 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
         const std::size_t bx{c.bx0 + bp % c.gbw};
         const std::size_t by{c.by0 + bp / c.gbw};
         const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
-        const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
+        const std::int32_t pred{
+            dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
         hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
         return c.dcd[sym] + rn;
@@ -548,33 +511,6 @@ struct AtomicBitWriter {
     }
 };
 
-struct BackwardBitWriter {
-    unsigned int* words;
-    unsigned long long end;
-    std::uint64_t pending{0};
-    std::uint32_t pending_bits{0};
-
-    __device__ void prepend(std::uint32_t n_bits, std::uint32_t value) {
-        pending = value | (pending << n_bits);
-        pending_bits += n_bits;
-        if (pending_bits >= 32) {
-            const std::uint32_t keep{pending_bits - 32};
-            end -= 32;
-            words[end >> 5] = static_cast<std::uint32_t>(pending >> keep);
-            pending = keep == 0 ? 0 : pending & ((std::uint64_t{1} << keep) - 1);
-            pending_bits = keep;
-        }
-    }
-
-    __device__ unsigned long long finish() {
-        end -= pending_bits;
-        if (pending_bits != 0) {
-            words[end >> 5] = static_cast<std::uint32_t>(pending << (end & 31));
-        }
-        return end;
-    }
-};
-
 // Emits item k at the writer's current position.
 __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) {
     if (k == 0) {
@@ -588,7 +524,8 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) 
         const std::size_t bx{c.bx0 + bp % c.gbw};
         const std::size_t by{c.by0 + bp / c.gbw};
         const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
-        const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
+        const std::int32_t pred{
+            dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
         hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
         w.put(c.dcd[sym], c.dcb[sym]);
@@ -651,15 +588,18 @@ struct AcGroupCtx {
     std::size_t n_items;  // gbw * gbh * 3 block-channels
 };
 
-__device__ std::uint8_t runtime_ac_cluster(const std::uint8_t* context_map, std::uint32_t context) {
-    return context_map == nullptr ? static_cast<std::uint8_t>(ac_cluster(context))
-                                  : context_map[context];
+__device__ std::uint8_t runtime_ac_cluster(const std::uint8_t* context_map,
+                                           std::uint32_t context) {
+    return context_map == nullptr
+               ? static_cast<std::uint8_t>(ac_cluster(context))
+               : context_map[context];
 }
 
 __device__ AcGroupCtx build_ac_ctx(std::size_t g, const std::int16_t* ac,
                                    const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
                                    std::size_t nblocks, std::size_t xg, const std::uint8_t* depth,
-                                   const std::uint16_t* bits, const std::uint8_t* context_map) {
+                                   const std::uint16_t* bits,
+                                   const std::uint8_t* context_map) {
     const GroupExtent e{group_extent(g, bw, bh, xg)};
     AcGroupCtx c{};
     c.ac = ac;
@@ -694,12 +634,16 @@ __device__ std::uint32_t ac_item_bits(const AcGroupCtx& c, std::size_t i) {
     std::uint32_t predicted{};
     const std::int16_t* blk{ac_item_info(c, i, ch, predicted)};
     std::uint32_t total{0};
-    for_each_token_ctx(
-        blk, ch, predicted,
-        [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t, std::uint32_t context) {
-            const std::uint8_t cl{runtime_ac_cluster(c.context_map, context)};
-            total += c.depth[static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE + sym] + nbits;
-        });
+    for_each_token_ctx(blk, ch, predicted,
+                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t,
+                           std::uint32_t context) {
+                           const std::uint8_t cl{
+                               runtime_ac_cluster(c.context_map, context)};
+                           total += c.depth[static_cast<std::size_t>(cl) *
+                                                AC_HISTOGRAM_SIZE +
+                                            sym] +
+                                    nbits;
+                       });
     return total;
 }
 
@@ -707,16 +651,18 @@ __device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, AtomicBitWriter
     int ch{};
     std::uint32_t predicted{};
     const std::int16_t* blk{ac_item_info(c, i, ch, predicted)};
-    for_each_token_ctx(
-        blk, ch, predicted,
-        [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw, std::uint32_t context) {
-            const std::uint8_t cl{runtime_ac_cluster(c.context_map, context)};
-            const std::size_t idx{static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE + sym};
-            w.put(c.depth[idx], c.bits[idx]);
-            if (nbits) {
-                w.put(nbits, raw);
-            }
-        });
+    for_each_token_ctx(blk, ch, predicted,
+                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw,
+                           std::uint32_t context) {
+                           const std::uint8_t cl{
+                               runtime_ac_cluster(c.context_map, context)};
+                           const std::size_t idx{static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE +
+                                                 sym};
+                           w.put(c.depth[idx], c.bits[idx]);
+                           if (nbits) {
+                               w.put(nbits, raw);
+                           }
+                       });
 }
 
 // Each thread owns a contiguous run of the group's block-channels; `run_off`
@@ -726,8 +672,8 @@ __device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, AtomicBitWriter
 __global__ void group_size_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
                                   std::size_t bw, std::size_t bh, std::size_t nblocks,
                                   std::size_t xg, std::size_t num_groups, const std::uint8_t* depth,
-                                  const std::uint8_t* context_map, std::uint32_t* group_sizes,
-                                  unsigned long long* run_offsets) {
+                                  const std::uint8_t* context_map,
+                                  std::uint32_t* group_sizes, unsigned long long* run_offsets) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
@@ -754,7 +700,8 @@ __global__ void group_size_kernel(const std::int16_t* ac, const std::int32_t* nz
 __global__ void group_emit_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
                                   std::size_t bw, std::size_t bh, std::size_t nblocks,
                                   std::size_t xg, std::size_t num_groups, const std::uint8_t* depth,
-                                  const std::uint16_t* bits_table, const std::uint8_t* context_map,
+                                  const std::uint16_t* bits_table,
+                                  const std::uint8_t* context_map,
                                   const unsigned long long* run_offsets, std::uint8_t* out,
                                   const std::uint32_t* group_offsets) {
     const std::size_t g{blockIdx.x};
@@ -772,133 +719,6 @@ __global__ void group_emit_kernel(const std::int16_t* ac, const std::int32_t* nz
                       (static_cast<unsigned long long>(group_offsets[g]) << 3) + run_off};
     for (std::size_t k{k0}; k < k1; ++k) {
         ac_item_emit(c, k, w);
-    }
-}
-
-struct DeviceAnsTransition {
-    std::uint32_t state;
-    std::uint16_t bits;
-    bool renormalized;
-};
-
-constexpr unsigned int AC_ANS_GROUP_THREADS = 1;
-constexpr std::size_t AC_ANS_GROUP_SLOT_BYTES =
-    ac_ans_group_scratch_bound(AC_GROUP_BLOCKS * AC_GROUP_BLOCKS);
-constexpr unsigned long long AC_ANS_GROUP_SLOT_BITS =
-    static_cast<unsigned long long>(AC_ANS_GROUP_SLOT_BYTES) * 8;
-constexpr std::size_t AC_ANS_GROUP_ITEMS = 3 * AC_GROUP_BLOCKS * AC_GROUP_BLOCKS;
-constexpr std::size_t AC_ANS_DESCRIPTORS_PER_ITEM = 64;
-
-__device__ std::uint32_t pack_ans_descriptor(std::uint32_t symbol, std::uint32_t nbits,
-                                             std::uint32_t bits, std::uint32_t cluster) {
-    return bits | (cluster << 13) | (nbits << 21) | (symbol << 25);
-}
-
-__global__ void group_ans_tokenize_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
-                                          std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                          std::size_t xg, std::size_t num_groups,
-                                          const std::uint8_t* context_map,
-                                          std::uint32_t* descriptors, std::uint8_t* token_counts) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const AcGroupCtx c{
-        build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, nullptr)};
-    for (std::size_t item{threadIdx.x}; item < c.n_items; item += blockDim.x) {
-        int ch{};
-        std::uint32_t predicted{};
-        const std::int16_t* blk{ac_item_info(c, item, ch, predicted)};
-        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item};
-        std::uint8_t count{0};
-        for_each_token_ctx_reverse(
-            blk, ch, predicted,
-            [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
-                std::uint32_t context) {
-                const std::uint8_t cluster{runtime_ac_cluster(context_map, context)};
-                descriptors[item_index * AC_ANS_DESCRIPTORS_PER_ITEM + count] =
-                    pack_ans_descriptor(symbol, nbits, bits, cluster);
-                ++count;
-            });
-        token_counts[item_index] = count;
-    }
-}
-
-__device__ DeviceAnsTransition ac_ans_put(std::uint32_t state, const AcAnsEncodingTable& table,
-                                          std::uint8_t symbol) {
-    const std::uint32_t frequency{table.frequencies[symbol]};
-    DeviceAnsTransition transition{state, 0, false};
-    if ((transition.state >> 20) >= frequency) {
-        transition.bits = static_cast<std::uint16_t>(transition.state);
-        transition.state >>= 16;
-        transition.renormalized = true;
-    }
-    const std::uint32_t quotient{transition.state / frequency};
-    const std::uint32_t remainder{transition.state % frequency};
-    transition.state = (quotient << 12) + table.reverse_map[table.offsets[symbol] + remainder];
-    return transition;
-}
-
-__global__ void group_ans_encode_kernel(
-    const std::int16_t* ac, const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
-    std::size_t nblocks, std::size_t xg, std::size_t num_groups, const std::uint8_t* context_map,
-    const AcAnsEncodingTable* tables, std::uint8_t* scratch, const std::uint32_t* descriptors,
-    const std::uint8_t* token_counts, unsigned long long* group_starts,
-    std::uint32_t* group_sizes) {
-    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const AcGroupCtx c{
-        build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
-    const unsigned long long slot_base{static_cast<unsigned long long>(g) * AC_ANS_GROUP_SLOT_BITS};
-    const unsigned long long stream_end{slot_base + AC_ANS_GROUP_SLOT_BITS - 32};
-    BackwardBitWriter writer{reinterpret_cast<unsigned int*>(scratch), stream_end};
-    std::uint32_t state{0x13u << 16};
-    for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item - 1};
-        const std::size_t descriptor_base{item_index * AC_ANS_DESCRIPTORS_PER_ITEM};
-        for (std::size_t token{0}; token < token_counts[item_index]; ++token) {
-            const std::uint32_t descriptor{descriptors[descriptor_base + token]};
-            const std::uint32_t bits{descriptor & 0x1fffu};
-            const std::uint8_t cluster{static_cast<std::uint8_t>((descriptor >> 13) & 0xffu)};
-            const std::uint32_t nbits{(descriptor >> 21) & 0xfu};
-            const std::uint32_t symbol{(descriptor >> 25) & 0x3fu};
-            const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[cluster], static_cast<std::uint8_t>(symbol))};
-            state = transition.state;
-            const std::uint32_t token_bits{nbits + (transition.renormalized ? 16u : 0u)};
-            const std::uint32_t token_value{transition.renormalized ? transition.bits | (bits << 16)
-                                                                    : bits};
-            writer.prepend(token_bits, token_value);
-        }
-    }
-    writer.prepend(32, state);
-    const unsigned long long stream_start{writer.finish()};
-    group_starts[g] = stream_start;
-    group_sizes[g] = static_cast<std::uint32_t>((stream_end - stream_start + 7) / 8);
-}
-
-__global__ void compact_ans_groups_kernel(const std::uint8_t* scratch,
-                                          const unsigned long long* group_starts,
-                                          const std::uint32_t* group_sizes,
-                                          const std::uint32_t* group_offsets,
-                                          std::size_t num_groups, std::uint8_t* out) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const unsigned int* words{reinterpret_cast<const unsigned int*>(scratch)};
-    const unsigned long long start{group_starts[g]};
-    for (std::size_t byte{threadIdx.x}; byte < group_sizes[g]; byte += blockDim.x) {
-        const unsigned long long pos{start + byte * 8};
-        const unsigned long long word{pos >> 5};
-        const std::uint32_t shift{static_cast<std::uint32_t>(pos & 31)};
-        std::uint64_t pair{words[word]};
-        if (shift > 24) {
-            pair |= static_cast<std::uint64_t>(words[word + 1]) << 32;
-        }
-        out[group_offsets[g] + byte] = static_cast<std::uint8_t>(pair >> shift);
     }
 }
 
@@ -930,9 +750,8 @@ __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, 
 // Accumulates each first-block's ACS strategy token (row 0) and quant-field token
 // (row 1) into its DcGroup's AcMetadata histogram.
 __global__ void acmeta_acsqf_histogram_kernel(const std::int32_t* quant_field,
-                                              const std::int8_t* acs, std::size_t bw,
-                                              std::size_t bh, std::size_t xdg,
-                                              std::uint32_t* histograms) {
+                                              const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                              std::size_t xdg, std::uint32_t* histograms) {
     const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
     if (block >= bw * bh) {
         return;
@@ -973,7 +792,7 @@ __global__ void acmeta_cfl_histogram_kernel(const std::int8_t* ytox_map,
 
 // Adds each DcGroup's EPF structural zeros (n samples) to symbol 0.
 __global__ void acmeta_epf_zeros_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
-                                        std::size_t num_groups, std::uint32_t* histograms) {
+                                       std::size_t num_groups, std::uint32_t* histograms) {
     const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
     if (g >= num_groups) {
         return;
@@ -1131,8 +950,7 @@ __device__ void m3_for_each_token_ctx(const std::int16_t* plane, std::size_t bx,
     std::uint32_t prev{nzeros > size / 16 ? 0u : 1u};
     for (std::uint32_t k{covered}; k < size && remaining > 0; ++k) {
         const std::int32_t v{plane[covered_plane_slot(side, bx, by, bw, order[k])]};
-        const std::uint32_t ctx{histo_off +
-                                ac_zero_density_context(remaining, k, covered, l2, prev)};
+        const std::uint32_t ctx{histo_off + ac_zero_density_context(remaining, k, covered, l2, prev)};
         hybrid_encode(pack_signed(v), symbol, nbits, bits);
         emit(symbol, nbits, bits, ctx);
         prev = v != 0 ? 1u : 0u;
@@ -1140,54 +958,12 @@ __device__ void m3_for_each_token_ctx(const std::int16_t* plane, std::size_t bx,
     }
 }
 
-template <typename Emit>
-__device__ void m3_for_each_token_ctx_reverse(const std::int16_t* plane, std::size_t bx,
-                                              std::size_t by, int side, std::size_t bw, int c,
-                                              std::uint32_t predicted, Emit emit) {
-    const int cx{side / 8};
-    const std::uint32_t covered{static_cast<std::uint32_t>(cx * cx)};
-    const std::uint32_t size{static_cast<std::uint32_t>(side * side)};
-    const std::uint32_t l2{side == 16 ? 2u : (side == 32 ? 4u : 0u)};
-    const std::uint32_t* order{natural_order_dev(side)};
-    const int block_ctx{ac_block_context(c, ac_strategy_order(side))};
-
-    std::uint32_t nzeros{0};
-    std::uint32_t last_exclusive{covered};
-    for (std::uint32_t k{covered}; k < size; ++k) {
-        if (plane[covered_plane_slot(side, bx, by, bw, order[k])] != 0) {
-            ++nzeros;
-            last_exclusive = k + 1;
-        }
-    }
-
-    const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
-    std::uint32_t remaining{0};
-    for (std::uint32_t next{last_exclusive}; next > covered; --next) {
-        const std::uint32_t k{next - 1};
-        const std::int32_t v{plane[covered_plane_slot(side, bx, by, bw, order[k])]};
-        remaining += v != 0 ? 1u : 0u;
-        const std::uint32_t prev{
-            k == covered
-                ? (nzeros > size / 16 ? 0u : 1u)
-                : (plane[covered_plane_slot(side, bx, by, bw, order[k - 1])] != 0 ? 1u : 0u)};
-        const std::uint32_t context{histo_off +
-                                    ac_zero_density_context(remaining, k, covered, l2, prev)};
-        std::uint32_t symbol{}, nbits{}, bits{};
-        hybrid_encode(pack_signed(v), symbol, nbits, bits);
-        emit(symbol, nbits, bits, context);
-    }
-
-    std::uint32_t symbol{}, nbits{}, bits{};
-    hybrid_encode(nzeros, symbol, nbits, bits);
-    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
-}
-
 // Builds the mixed-block normalized non-zero grid: each first-block writes its
 // normalized count ((nz + covered - 1) >> log2_covered) to all its covered
 // positions, per physical channel.
 __global__ void ac_nzeros_grid_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                                         std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                         std::int32_t* nz_grid) {
+                                        std::size_t bw, std::size_t bh, std::size_t nblocks,
+                                        std::int32_t* nz_grid) {
     const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
     if (block >= bw * bh) {
         return;
@@ -1212,8 +988,8 @@ __global__ void ac_nzeros_grid_m3_kernel(const std::int16_t* ac, const std::int8
                 ++nz;
             }
         }
-        const std::int32_t norm{
-            static_cast<std::int32_t>((static_cast<std::uint32_t>(nz) + covered - 1) >> l2)};
+        const std::int32_t norm{static_cast<std::int32_t>((static_cast<std::uint32_t>(nz) +
+                                                           covered - 1) >> l2)};
         for (int dy{0}; dy < cx; ++dy) {
             for (int dx{0}; dx < cx; ++dx) {
                 nz_grid[static_cast<std::size_t>(c) * nblocks + (by + dy) * bw + (bx + dx)] = norm;
@@ -1241,16 +1017,17 @@ __global__ void histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* a
             const int c{CHANNEL_ORDER[p]};
             const std::size_t bx{block % bw};
             const std::size_t by{block / bw};
-            const std::int16_t* plane{ac +
-                                      static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
+            const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
             const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-            m3_for_each_token_ctx(
-                plane, bx, by, side, bw, c, predicted,
-                [&](std::uint32_t symbol, std::uint32_t, std::uint32_t, std::uint32_t context) {
-                    const int cluster{ac_cluster(context)};
-                    atomicAdd(&sh[static_cast<std::size_t>(cluster) * AC_HISTOGRAM_SIZE + symbol],
-                              1u);
-                });
+            m3_for_each_token_ctx(plane, bx, by, side, bw, c, predicted,
+                                  [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                                      std::uint32_t context) {
+                                      const int cluster{ac_cluster(context)};
+                                      atomicAdd(&sh[static_cast<std::size_t>(cluster) *
+                                                        AC_HISTOGRAM_SIZE +
+                                                    symbol],
+                                                1u);
+                                  });
         }
     }
     __syncthreads();
@@ -1281,12 +1058,14 @@ __global__ void context_histogram_m3_kernel(const std::int16_t* ac, const std::i
     const std::size_t by{block / bw};
     const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
     const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-    m3_for_each_token_ctx(
-        plane, bx, by, side, bw, c, predicted,
-        [&](std::uint32_t symbol, std::uint32_t, std::uint32_t, std::uint32_t context) {
-            atomicAdd(&histograms[static_cast<std::size_t>(context) * AC_HISTOGRAM_SIZE + symbol],
-                      1u);
-        });
+    m3_for_each_token_ctx(plane, bx, by, side, bw, c, predicted,
+                          [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                              std::uint32_t context) {
+                              atomicAdd(&histograms[static_cast<std::size_t>(context) *
+                                                        AC_HISTOGRAM_SIZE +
+                                                    symbol],
+                                        1u);
+                          });
 }
 
 struct AcGroupCtxM3 {
@@ -1349,12 +1128,15 @@ __device__ std::uint32_t ac_item_bits_m3(const AcGroupCtxM3& c, std::size_t i) {
         return 0;
     }
     std::uint32_t total{0};
-    m3_for_each_token_ctx(
-        plane, bx, by, side, c.bw, ch, predicted,
-        [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t, std::uint32_t context) {
-            const std::uint8_t cl{runtime_ac_cluster(c.context_map, context)};
-            total += c.depth[static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE + sym] + nbits;
-        });
+    m3_for_each_token_ctx(plane, bx, by, side, c.bw, ch, predicted,
+                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t,
+                              std::uint32_t context) {
+                              const std::uint8_t cl{
+                                  runtime_ac_cluster(c.context_map, context)};
+                              total += c.depth[static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE +
+                                               sym] +
+                                       nbits;
+                          });
     return total;
 }
 
@@ -1367,29 +1149,34 @@ __device__ void ac_item_emit_m3(const AcGroupCtxM3& c, std::size_t i, AtomicBitW
     if (side == ACS_COVERED) {
         return;
     }
-    m3_for_each_token_ctx(
-        plane, bx, by, side, c.bw, ch, predicted,
-        [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw, std::uint32_t context) {
-            const std::uint8_t cl{runtime_ac_cluster(c.context_map, context)};
-            const std::size_t idx{static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE + sym};
-            w.put(c.depth[idx], c.bits[idx]);
-            if (nbits) {
-                w.put(nbits, raw);
-            }
-        });
+    m3_for_each_token_ctx(plane, bx, by, side, c.bw, ch, predicted,
+                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw,
+                              std::uint32_t context) {
+                              const std::uint8_t cl{
+                                  runtime_ac_cluster(c.context_map, context)};
+                              const std::size_t idx{static_cast<std::size_t>(cl) *
+                                                        AC_HISTOGRAM_SIZE +
+                                                    sym};
+                              w.put(c.depth[idx], c.bits[idx]);
+                              if (nbits) {
+                                  w.put(nbits, raw);
+                              }
+                          });
 }
 
 __global__ void group_size_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                      const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
                                      std::size_t nblocks, std::size_t xg, std::size_t num_groups,
-                                     const std::uint8_t* depth, const std::uint8_t* context_map,
-                                     std::uint32_t* group_sizes, unsigned long long* run_offsets) {
+                                     const std::uint8_t* depth,
+                                     const std::uint8_t* context_map,
+                                     std::uint32_t* group_sizes,
+                                     unsigned long long* run_offsets) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
     }
-    const AcGroupCtxM3 c{
-        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, depth, nullptr, context_map)};
+    const AcGroupCtxM3 c{build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg,
+                                         depth, nullptr, context_map)};
     const std::size_t r{(c.n_items + blockDim.x - 1) / blockDim.x};
     const std::size_t k0{min(static_cast<std::size_t>(threadIdx.x) * r, c.n_items)};
     const std::size_t k1{min(k0 + r, c.n_items)};
@@ -1418,7 +1205,8 @@ __global__ void group_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* 
         return;
     }
     const AcGroupCtxM3 c{
-        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, depth, bits_table, context_map)};
+        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, depth, bits_table,
+                        context_map)};
     const std::size_t r{(c.n_items + blockDim.x - 1) / blockDim.x};
     const std::size_t k0{min(static_cast<std::size_t>(threadIdx.x) * r, c.n_items)};
     const std::size_t k1{min(k0 + r, c.n_items)};
@@ -1427,90 +1215,6 @@ __global__ void group_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* 
                       (static_cast<unsigned long long>(group_offsets[g]) << 3) + run_off};
     for (std::size_t k{k0}; k < k1; ++k) {
         ac_item_emit_m3(c, k, w);
-    }
-}
-
-__global__ void group_ans_encode_m3_kernel(
-    const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid, std::size_t bw,
-    std::size_t bh, std::size_t nblocks, std::size_t xg, std::size_t num_groups,
-    const std::uint8_t* context_map, const AcAnsEncodingTable* tables, std::uint8_t* scratch,
-    const std::uint32_t* descriptors, const std::uint32_t* descriptor_offsets,
-    const std::uint16_t* token_counts, unsigned long long* group_starts,
-    std::uint32_t* group_sizes) {
-    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const AcGroupCtxM3 c{
-        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
-    const unsigned long long slot_base{static_cast<unsigned long long>(g) * AC_ANS_GROUP_SLOT_BITS};
-    const unsigned long long stream_end{slot_base + AC_ANS_GROUP_SLOT_BITS - 32};
-    BackwardBitWriter writer{reinterpret_cast<unsigned int*>(scratch), stream_end};
-    std::uint32_t state{0x13u << 16};
-    for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item - 1};
-        const std::size_t descriptor_base{g * AC_ANS_GROUP_ITEMS * AC_ANS_DESCRIPTORS_PER_ITEM +
-                                          descriptor_offsets[item_index]};
-        for (std::size_t token{0}; token < token_counts[item_index]; ++token) {
-            const std::uint32_t descriptor{descriptors[descriptor_base + token]};
-            const std::uint32_t bits{descriptor & 0x1fffu};
-            const std::uint8_t cluster{static_cast<std::uint8_t>((descriptor >> 13) & 0xffu)};
-            const std::uint32_t nbits{(descriptor >> 21) & 0xfu};
-            const std::uint32_t symbol{(descriptor >> 25) & 0x3fu};
-            const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[cluster], static_cast<std::uint8_t>(symbol))};
-            state = transition.state;
-            const std::uint32_t token_bits{nbits + (transition.renormalized ? 16u : 0u)};
-            const std::uint32_t token_value{transition.renormalized ? transition.bits | (bits << 16)
-                                                                    : bits};
-            writer.prepend(token_bits, token_value);
-        }
-    }
-    writer.prepend(32, state);
-    const unsigned long long stream_start{writer.finish()};
-    group_starts[g] = stream_start;
-    group_sizes[g] = static_cast<std::uint32_t>((stream_end - stream_start + 7) / 8);
-}
-
-__global__ void group_ans_tokenize_m3_kernel(
-    const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid, std::size_t bw,
-    std::size_t bh, std::size_t nblocks, std::size_t xg, std::size_t num_groups,
-    const std::uint8_t* context_map, std::uint32_t* descriptors, std::uint32_t* descriptor_offsets,
-    std::uint16_t* token_counts, std::uint32_t* descriptor_heads) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const AcGroupCtxM3 c{
-        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, nullptr)};
-    for (std::size_t item{threadIdx.x}; item < c.n_items; item += blockDim.x) {
-        std::size_t bx{}, by{};
-        int ch{};
-        std::uint32_t predicted{};
-        const std::int16_t* plane{};
-        const int side{ac_item_m3(c, item, bx, by, ch, predicted, plane)};
-        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item};
-        if (side == ACS_COVERED) {
-            token_counts[item_index] = 0;
-            continue;
-        }
-        const std::uint32_t covered{static_cast<std::uint32_t>((side / 8) * (side / 8))};
-        const std::uint32_t capacity{static_cast<std::uint32_t>(side * side) - covered + 1};
-        const std::uint32_t offset{atomicAdd(descriptor_heads + g, capacity)};
-        const std::size_t descriptor_base{g * AC_ANS_GROUP_ITEMS * AC_ANS_DESCRIPTORS_PER_ITEM +
-                                          offset};
-        std::uint16_t count{0};
-        m3_for_each_token_ctx_reverse(
-            plane, bx, by, side, c.bw, ch, predicted,
-            [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
-                std::uint32_t context) {
-                const std::uint8_t cluster{runtime_ac_cluster(context_map, context)};
-                descriptors[descriptor_base + count] =
-                    pack_ans_descriptor(symbol, nbits, bits, cluster);
-                ++count;
-            });
-        descriptor_offsets[item_index] = offset;
-        token_counts[item_index] = count;
     }
 }
 
@@ -1530,7 +1234,7 @@ bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t h
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (encoder_memset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
+    if (cudaMemset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     std::int32_t* nz_grid{nullptr};
@@ -1540,29 +1244,11 @@ bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t h
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    ac_nzeros_grid_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, bw, bh, nblocks, nz_grid);
-    histogram_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, nz_grid, bw, bh, nblocks,
-                                                               histogram);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
+    ac_nzeros_grid_kernel<<<blocks, threads>>>(ac, bw, bh, nblocks, nz_grid);
+    histogram_kernel<<<blocks, threads>>>(ac, nz_grid, bw, bh, nblocks, histogram);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
-}
-
-bool ac_build_histogram_with_nonzero_grid(const std::int16_t* ac, std::size_t width,
-                                          std::size_t height, const std::int32_t* nonzero_grid,
-                                          std::uint32_t* histogram) {
-    if (ac == nullptr || nonzero_grid == nullptr || histogram == nullptr ||
-        encoder_memset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t total{3 * bw * bh};
-    constexpr unsigned int threads{256};
-    histogram_kernel<<<static_cast<unsigned int>((total + threads - 1) / threads), threads, 0,
-                       encoder_stream()>>>(ac, nonzero_grid, bw, bh, bw * bh, histogram);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
 }
 
 bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
@@ -1571,8 +1257,8 @@ bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std:
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (encoder_memset(histograms, 0, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) !=
-        cudaSuccess) {
+    if (cudaMemset(histograms, 0,
+                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     std::int32_t* nz_grid{nullptr};
@@ -1582,56 +1268,36 @@ bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std:
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    ac_nzeros_grid_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, bw, bh, nblocks, nz_grid);
-    context_histogram_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, nz_grid, bw, bh, nblocks,
-                                                                       histograms);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
+    ac_nzeros_grid_kernel<<<blocks, threads>>>(ac, bw, bh, nblocks, nz_grid);
+    context_histogram_kernel<<<blocks, threads>>>(ac, nz_grid, bw, bh, nblocks, histograms);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
 }
 
-bool ac_build_context_histograms_with_nonzero_grid(const std::int16_t* ac, std::size_t width,
-                                                   std::size_t height,
-                                                   const std::int32_t* nonzero_grid,
-                                                   std::uint32_t* histograms) {
-    if (ac == nullptr || nonzero_grid == nullptr || histograms == nullptr ||
-        encoder_memset(histograms, 0, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) !=
-            cudaSuccess) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t total{3 * bw * bh};
-    constexpr unsigned int threads{256};
-    context_histogram_kernel<<<static_cast<unsigned int>((total + threads - 1) / threads), threads,
-                               0, encoder_stream()>>>(ac, nonzero_grid, bw, bh, bw * bh,
-                                                      histograms);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
-}
-
 bool ac_collapse_context_histograms(const std::uint32_t* context_histograms,
-                                    const std::uint8_t* context_map, std::size_t num_clusters,
+                                    const std::uint8_t* context_map,
+                                    std::size_t num_clusters,
                                     std::uint32_t* cluster_histograms) {
     if (num_clusters == 0 || num_clusters > 256 ||
-        encoder_memset(cluster_histograms, 0,
-                       num_clusters * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
+        cudaMemset(cluster_histograms, 0,
+                   num_clusters * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     constexpr unsigned int threads{256};
-    const unsigned int blocks{
-        static_cast<unsigned int>((AC_CONTEXT_HISTOGRAM_ENTRIES + threads - 1) / threads)};
-    collapse_context_histograms_kernel<<<blocks, threads, 0, encoder_stream()>>>(
+    const unsigned int blocks{static_cast<unsigned int>(
+        (AC_CONTEXT_HISTOGRAM_ENTRIES + threads - 1) / threads)};
+    collapse_context_histograms_kernel<<<blocks, threads>>>(
         context_histograms, context_map, cluster_histograms);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
-static bool ac_encode_groups_impl(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                  const std::uint8_t* context_map, const std::uint8_t* depth,
-                                  const std::uint16_t* bits, std::size_t num_clusters,
-                                  std::uint8_t* out, std::size_t out_capacity,
-                                  std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                  std::size_t* total_bytes, AcEntropyTiming* timing) {
+static bool ac_encode_groups_impl(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const std::uint8_t* depth,
+    const std::uint16_t* bits, std::size_t num_clusters, std::uint8_t* out,
+    std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes) {
     ensure_constants();
     if (num_clusters == 0 || num_clusters > 256) {
         return false;
@@ -1642,92 +1308,60 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, std::size_t width, std
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
 
-    const EntropyClock::time_point allocation_start{EntropyClock::now()};
     unsigned long long* run_offsets{nullptr};
     std::int32_t* nz_grid{nullptr};
-    if (cached_device_allocate(&run_offsets,
-                               num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
-                               0) != cudaSuccess ||
-        cached_device_allocate(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
-        cached_device_release(run_offsets, 0);
-        cached_device_release(nz_grid, 0);
+    if (cudaMallocAsync(&run_offsets, num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
+                        0) != cudaSuccess ||
+        cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
+        cudaFreeAsync(run_offsets, 0);
+        cudaFreeAsync(nz_grid, 0);
         return false;
-    }
-    if (timing != nullptr) {
-        timing->allocation_us += elapsed_us(allocation_start);
-        timing->allocation_count += 2;
     }
 
     const auto free_run = [&] {
-        cached_device_release(run_offsets, 0);
-        cached_device_release(nz_grid, 0);
+        cudaFreeAsync(run_offsets, 0);
+        cudaFreeAsync(nz_grid, 0);
     };
 
-    const EntropyClock::time_point nonzero_start{EntropyClock::now()};
     const std::size_t gtotal{3 * bw * bh};
     const unsigned int gthreads{256};
-    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((gtotal + gthreads - 1) / gthreads), gthreads,
-                            0, encoder_stream()>>>(ac, bw, bh, nblocks, nz_grid);
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_run();
-            return false;
-        }
-        timing->nonzero_grid_us += elapsed_us(nonzero_start);
-        ++timing->synchronization_count;
-    }
+    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((gtotal + gthreads - 1) / gthreads),
+                            gthreads>>>(ac, bw, bh, nblocks, nz_grid);
 
-    const EntropyClock::time_point size_start{EntropyClock::now()};
     const unsigned int grid{static_cast<unsigned int>(num_groups)};
-    group_size_kernel<<<grid, AC_EMIT_THREADS, 0, encoder_stream()>>>(
-        ac, nz_grid, bw, bh, nblocks, xg, num_groups, depth, context_map, group_sizes, run_offsets);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
+    group_size_kernel<<<grid, AC_EMIT_THREADS>>>(
+        ac, nz_grid, bw, bh, nblocks, xg, num_groups, depth, context_map,
+        group_sizes, run_offsets);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
     void* d_temp{nullptr};
     std::size_t temp_bytes{0};
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&d_temp, temp_bytes, 0) != cudaSuccess) {
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&d_temp, temp_bytes, 0) != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
-    }
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(d_temp, 0);
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(d_temp, 0);
     if (scan_status != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
     std::uint32_t last_offset{0};
     std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
         free_run();
         return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
     }
     *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
     if (*total_bytes > out_capacity) {
@@ -1738,387 +1372,42 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, std::size_t width, std
     // The emit kernel composes bits with atomicOr (block-channel runs sharing a
     // byte), so the section region must start zeroed. Round up to the 32-bit word
     // the last bits land in; the wrapper's capacity has slack for the padding.
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (encoder_memset(out, 0, zero_bytes) != cudaSuccess) {
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_run();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_emit_kernel<<<grid, AC_EMIT_THREADS, 0, encoder_stream()>>>(
-        ac, nz_grid, bw, bh, nblocks, xg, num_groups, depth, bits, context_map, run_offsets, out,
-        group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point cleanup_start{EntropyClock::now()};
+    group_emit_kernel<<<grid, AC_EMIT_THREADS>>>(
+        ac, nz_grid, bw, bh, nblocks, xg, num_groups, depth, bits, context_map,
+        run_offsets, out, group_offsets);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_run();
-    if (timing != nullptr) {
-        timing->cleanup_us += elapsed_us(cleanup_start);
-    }
     return ok;
 }
 
 bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits,
-                      std::size_t alphabet_size, std::uint8_t* out, std::size_t out_capacity,
-                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                      std::size_t* total_bytes, AcEntropyTiming* timing) {
+                      std::size_t alphabet_size, std::uint8_t* out,
+                      std::size_t out_capacity, std::uint32_t* group_sizes,
+                      std::uint32_t* group_offsets, std::size_t* total_bytes) {
     return ac_encode_groups_impl(ac, width, height, nullptr, depth, bits,
-                                 alphabet_size / AC_HISTOGRAM_SIZE, out, out_capacity, group_sizes,
-                                 group_offsets, total_bytes, timing);
+                                 alphabet_size / AC_HISTOGRAM_SIZE, out,
+                                 out_capacity, group_sizes, group_offsets, total_bytes);
 }
 
-bool ac_encode_groups_runtime_map(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                  const std::uint8_t* context_map, const std::uint8_t* depth,
-                                  const std::uint16_t* bits, std::size_t num_clusters,
-                                  std::uint8_t* out, std::size_t out_capacity,
-                                  std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                  std::size_t* total_bytes, AcEntropyTiming* timing) {
+bool ac_encode_groups_runtime_map(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const std::uint8_t* depth,
+    const std::uint16_t* bits, std::size_t num_clusters, std::uint8_t* out,
+    std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes) {
     if (context_map == nullptr) {
         return false;
     }
-    return ac_encode_groups_impl(ac, width, height, context_map, depth, bits, num_clusters, out,
-                                 out_capacity, group_sizes, group_offsets, total_bytes, timing);
-}
-
-std::size_t ac_prefix_run_count(std::size_t width, std::size_t height) {
-    return ac_num_groups(width, height) * AC_EMIT_THREADS;
-}
-
-bool ac_build_nonzero_grid(const std::int16_t* ac, std::size_t width, std::size_t height,
-                           std::int32_t* nonzero_grid, AcEntropyTiming* timing) {
-    if (ac == nullptr || nonzero_grid == nullptr) {
-        return false;
-    }
-    ensure_constants();
-    const EntropyClock::time_point start{EntropyClock::now()};
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t total{3 * bw * bh};
-    constexpr unsigned int threads{256};
-    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((total + threads - 1) / threads), threads, 0,
-                            encoder_stream()>>>(ac, bw, bh, bw * bh, nonzero_grid);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->nonzero_grid_us += elapsed_us(start);
-        ++timing->synchronization_count;
-    }
-    return ok;
-}
-
-bool ac_size_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
-                    const std::uint8_t* context_map, const std::uint8_t* depth,
-                    std::size_t num_clusters, const std::int32_t* nonzero_grid,
-                    unsigned long long* run_offsets, std::size_t out_capacity,
-                    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                    std::size_t* total_bytes, AcEntropyTiming* timing) {
-    if (ac == nullptr || depth == nullptr || nonzero_grid == nullptr || run_offsets == nullptr ||
-        group_sizes == nullptr || group_offsets == nullptr || total_bytes == nullptr ||
-        num_clusters == 0 || num_clusters > 256) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const EntropyClock::time_point size_start{EntropyClock::now()};
-    group_size_kernel<<<static_cast<unsigned int>(num_groups), AC_EMIT_THREADS, 0,
-                        encoder_stream()>>>(ac, nonzero_grid, bw, bh, nblocks, xg, num_groups,
-                                            depth, context_map, group_sizes, run_offsets);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
-    void* scan_temp{nullptr};
-    std::size_t scan_temp_bytes{0};
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
-    }
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(scan_temp, 0);
-    if (scan_status != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
-    return *total_bytes <= out_capacity;
-}
-
-bool ac_emit_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
-                    const std::uint8_t* context_map, const std::uint8_t* depth,
-                    const std::uint16_t* bits, const std::int32_t* nonzero_grid,
-                    const unsigned long long* run_offsets, std::uint8_t* out,
-                    std::size_t out_capacity, const std::uint32_t* group_offsets,
-                    std::size_t total_bytes, AcEntropyTiming* timing) {
-    if (ac == nullptr || depth == nullptr || bits == nullptr || nonzero_grid == nullptr ||
-        run_offsets == nullptr || out == nullptr || group_offsets == nullptr ||
-        total_bytes > out_capacity) {
-        return false;
-    }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    if (encoder_memset(out, 0, (total_bytes + 3) & ~std::size_t{3}) != cudaSuccess ||
-        encoder_stream_synchronize() != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_emit_kernel<<<static_cast<unsigned int>(num_groups), AC_EMIT_THREADS, 0,
-                        encoder_stream()>>>(
-        ac, nonzero_grid, bw, bh, bw * bh, (bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS, num_groups,
-        depth, bits, context_map, run_offsets, out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    return ok;
-}
-
-static bool ac_encode_groups_ans_impl(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                      const std::uint8_t* context_map,
-                                      const AcAnsEncodingTable* tables, std::size_t num_clusters,
-                                      const std::int32_t* shared_nz_grid, std::uint8_t* out,
-                                      std::size_t out_capacity, std::uint32_t* group_sizes,
-                                      std::uint32_t* group_offsets, std::size_t* total_bytes,
-                                      AcEntropyTiming* timing) {
-    ensure_constants();
-    if (tables == nullptr || num_clusters == 0 || num_clusters > 256) {
-        return false;
-    }
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const std::size_t scratch_bytes{num_groups * AC_ANS_GROUP_SLOT_BYTES};
-    const std::size_t group_starts_bytes{num_groups * sizeof(unsigned long long)};
-    const std::size_t descriptor_items{num_groups * AC_ANS_GROUP_ITEMS};
-    const std::size_t descriptor_bytes{descriptor_items * AC_ANS_DESCRIPTORS_PER_ITEM *
-                                       sizeof(std::uint32_t)};
-
-    const EntropyClock::time_point allocation_start{EntropyClock::now()};
-    std::int32_t* allocated_nz_grid{nullptr};
-    const std::int32_t* nz_grid{shared_nz_grid};
-    std::uint8_t* scratch{nullptr};
-    if ((nz_grid == nullptr &&
-         cached_device_allocate(&allocated_nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) !=
-             cudaSuccess) ||
-        cached_device_allocate(
-            &scratch, scratch_bytes + group_starts_bytes + descriptor_bytes + descriptor_items,
-            0) != cudaSuccess) {
-        cached_device_release(allocated_nz_grid, 0);
-        cached_device_release(scratch, 0);
-        return false;
-    }
-    unsigned long long* group_starts{
-        reinterpret_cast<unsigned long long*>(scratch + scratch_bytes)};
-    std::uint32_t* descriptors{
-        reinterpret_cast<std::uint32_t*>(scratch + scratch_bytes + group_starts_bytes)};
-    std::uint8_t* token_counts{reinterpret_cast<std::uint8_t*>(descriptors) + descriptor_bytes};
-    if (timing != nullptr) {
-        timing->allocation_us += elapsed_us(allocation_start);
-        timing->allocation_count += shared_nz_grid == nullptr ? 2 : 1;
-    }
-    const auto free_scratch = [&] {
-        cached_device_release(allocated_nz_grid, 0);
-        cached_device_release(scratch, 0);
-    };
-
-    if (nz_grid == nullptr) {
-        nz_grid = allocated_nz_grid;
-        const EntropyClock::time_point nonzero_start{EntropyClock::now()};
-        const std::size_t total_items{3 * bw * bh};
-        constexpr unsigned int threads{256};
-        ac_nzeros_grid_kernel<<<static_cast<unsigned int>((total_items + threads - 1) / threads),
-                                threads, 0, encoder_stream()>>>(ac, bw, bh, nblocks,
-                                                                allocated_nz_grid);
-        if (timing != nullptr) {
-            if (encoder_stream_synchronize() != cudaSuccess) {
-                free_scratch();
-                return false;
-            }
-            timing->nonzero_grid_us += elapsed_us(nonzero_start);
-            ++timing->synchronization_count;
-        }
-    }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    if (encoder_memset(scratch, 0, scratch_bytes) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_scratch();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point size_start{EntropyClock::now()};
-    const unsigned int grid{
-        static_cast<unsigned int>((num_groups + AC_ANS_GROUP_THREADS - 1) / AC_ANS_GROUP_THREADS)};
-    constexpr unsigned int tokenize_threads{256};
-    group_ans_tokenize_kernel<<<static_cast<unsigned int>(num_groups), tokenize_threads, 0,
-                                encoder_stream()>>>(ac, nz_grid, bw, bh, nblocks, xg, num_groups,
-                                                    context_map, descriptors, token_counts);
-    group_ans_encode_kernel<<<grid, AC_ANS_GROUP_THREADS, 0, encoder_stream()>>>(
-        ac, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables, scratch, descriptors,
-        token_counts, group_starts, group_sizes);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
-    void* scan_temp{nullptr};
-    std::size_t scan_temp_bytes{0};
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
-    }
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(scan_temp, 0);
-    if (scan_status != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
-    if (*total_bytes > out_capacity) {
-        free_scratch();
-        return false;
-    }
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    constexpr unsigned int compact_threads{256};
-    compact_ans_groups_kernel<<<static_cast<unsigned int>(num_groups), compact_threads, 0,
-                                encoder_stream()>>>(scratch, group_starts, group_sizes,
-                                                    group_offsets, num_groups, out);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point cleanup_start{EntropyClock::now()};
-    free_scratch();
-    if (timing != nullptr) {
-        timing->cleanup_us += elapsed_us(cleanup_start);
-    }
-    return ok;
-}
-
-bool ac_encode_groups_ans(const std::int16_t* ac, std::size_t width, std::size_t height,
-                          const AcAnsEncodingTable* tables, std::size_t num_clusters,
-                          std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
-                          std::uint32_t* group_offsets, std::size_t* total_bytes,
-                          AcEntropyTiming* timing) {
-    return ac_encode_groups_ans_impl(ac, width, height, nullptr, tables, num_clusters, nullptr, out,
-                                     out_capacity, group_sizes, group_offsets, total_bytes, timing);
-}
-
-bool ac_encode_groups_ans_runtime_map(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                      const std::uint8_t* context_map,
-                                      const AcAnsEncodingTable* tables, std::size_t num_clusters,
-                                      std::uint8_t* out, std::size_t out_capacity,
-                                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                      std::size_t* total_bytes, AcEntropyTiming* timing) {
-    if (context_map == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_ans_impl(ac, width, height, context_map, tables, num_clusters, nullptr,
-                                     out, out_capacity, group_sizes, group_offsets, total_bytes,
-                                     timing);
-}
-
-bool ac_encode_groups_ans_with_nonzero_grid(
-    const std::int16_t* ac, std::size_t width, std::size_t height, const std::uint8_t* context_map,
-    const AcAnsEncodingTable* tables, std::size_t num_clusters, const std::int32_t* nonzero_grid,
-    std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
-    std::uint32_t* group_offsets, std::size_t* total_bytes, AcEntropyTiming* timing) {
-    if (nonzero_grid == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_ans_impl(ac, width, height, context_map, tables, num_clusters,
-                                     nonzero_grid, out, out_capacity, group_sizes, group_offsets,
-                                     total_bytes, timing);
+    return ac_encode_groups_impl(ac, width, height, context_map, depth, bits,
+                                 num_clusters, out, out_capacity, group_sizes,
+                                 group_offsets, total_bytes);
 }
 
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
@@ -2127,7 +1416,7 @@ bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (encoder_memset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
+    if (cudaMemset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     std::int32_t* nz_grid{nullptr};
@@ -2136,33 +1425,14 @@ bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::
     }
     const unsigned int gthreads{256};
     ac_nzeros_grid_m3_kernel<<<static_cast<unsigned int>((bw * bh + gthreads - 1) / gthreads),
-                               gthreads, 0, encoder_stream()>>>(ac, acs, bw, bh, nblocks, nz_grid);
+                               gthreads>>>(ac, acs, bw, bh, nblocks, nz_grid);
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    histogram_m3_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, acs, nz_grid, bw, bh, nblocks,
-                                                                  histogram);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
+    histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks, histogram);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
-}
-
-bool ac_build_histogram_m3_with_nonzero_grid(const std::int16_t* ac, const std::int8_t* acs,
-                                             std::size_t width, std::size_t height,
-                                             const std::int32_t* nonzero_grid,
-                                             std::uint32_t* histogram) {
-    if (ac == nullptr || acs == nullptr || nonzero_grid == nullptr || histogram == nullptr ||
-        encoder_memset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t total{3 * bw * bh};
-    constexpr unsigned int threads{256};
-    histogram_m3_kernel<<<static_cast<unsigned int>((total + threads - 1) / threads), threads, 0,
-                          encoder_stream()>>>(ac, acs, nonzero_grid, bw, bh, bw * bh, histogram);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
 }
 
 bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
@@ -2172,8 +1442,8 @@ bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* a
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (encoder_memset(histograms, 0, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) !=
-        cudaSuccess) {
+    if (cudaMemset(histograms, 0,
+                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
         return false;
     }
     std::int32_t* nz_grid{nullptr};
@@ -2181,48 +1451,26 @@ bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* a
         return false;
     }
     const unsigned int grid_threads{256};
-    ac_nzeros_grid_m3_kernel<<<static_cast<unsigned int>((bw * bh + grid_threads - 1) /
-                                                         grid_threads),
-                               grid_threads, 0, encoder_stream()>>>(ac, acs, bw, bh, nblocks,
-                                                                    nz_grid);
+    ac_nzeros_grid_m3_kernel<<<
+        static_cast<unsigned int>((bw * bh + grid_threads - 1) / grid_threads), grid_threads>>>(
+        ac, acs, bw, bh, nblocks, nz_grid);
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    context_histogram_m3_kernel<<<blocks, threads, 0, encoder_stream()>>>(ac, acs, nz_grid, bw, bh,
-                                                                          nblocks, histograms);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
+    context_histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks,
+                                                     histograms);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
 }
 
-bool ac_build_context_histograms_m3_with_nonzero_grid(const std::int16_t* ac,
-                                                      const std::int8_t* acs, std::size_t width,
-                                                      std::size_t height,
-                                                      const std::int32_t* nonzero_grid,
-                                                      std::uint32_t* histograms) {
-    if (ac == nullptr || acs == nullptr || nonzero_grid == nullptr || histograms == nullptr ||
-        encoder_memset(histograms, 0, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) !=
-            cudaSuccess) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t total{3 * bw * bh};
-    constexpr unsigned int threads{256};
-    context_histogram_m3_kernel<<<static_cast<unsigned int>((total + threads - 1) / threads),
-                                  threads, 0, encoder_stream()>>>(ac, acs, nonzero_grid, bw, bh,
-                                                                  bw * bh, histograms);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
-}
-
-static bool ac_encode_groups_m3_impl(const std::int16_t* ac, const std::int8_t* acs,
-                                     std::size_t width, std::size_t height,
-                                     const std::uint8_t* context_map, const std::uint8_t* depth,
-                                     const std::uint16_t* bits, std::size_t num_clusters,
-                                     std::uint8_t* out, std::size_t out_capacity,
-                                     std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                     std::size_t* total_bytes, AcEntropyTiming* timing) {
+static bool ac_encode_groups_m3_impl(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const std::uint8_t* depth, const std::uint16_t* bits,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes) {
     ensure_constants();
     if (num_clusters == 0 || num_clusters > 256) {
         return false;
@@ -2233,91 +1481,58 @@ static bool ac_encode_groups_m3_impl(const std::int16_t* ac, const std::int8_t* 
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
 
-    const EntropyClock::time_point allocation_start{EntropyClock::now()};
     unsigned long long* run_offsets{nullptr};
     std::int32_t* nz_grid{nullptr};
-    if (cached_device_allocate(&run_offsets,
-                               num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
-                               0) != cudaSuccess ||
-        cached_device_allocate(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
-        cached_device_release(run_offsets, 0);
-        cached_device_release(nz_grid, 0);
+    if (cudaMallocAsync(&run_offsets, num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
+                        0) != cudaSuccess ||
+        cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
+        cudaFreeAsync(run_offsets, 0);
+        cudaFreeAsync(nz_grid, 0);
         return false;
     }
-    if (timing != nullptr) {
-        timing->allocation_us += elapsed_us(allocation_start);
-        timing->allocation_count += 2;
-    }
     const auto free_run = [&] {
-        cached_device_release(run_offsets, 0);
-        cached_device_release(nz_grid, 0);
+        cudaFreeAsync(run_offsets, 0);
+        cudaFreeAsync(nz_grid, 0);
     };
 
-    const EntropyClock::time_point nonzero_start{EntropyClock::now()};
     const unsigned int gthreads{256};
     ac_nzeros_grid_m3_kernel<<<static_cast<unsigned int>((bw * bh + gthreads - 1) / gthreads),
-                               gthreads, 0, encoder_stream()>>>(ac, acs, bw, bh, nblocks, nz_grid);
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_run();
-            return false;
-        }
-        timing->nonzero_grid_us += elapsed_us(nonzero_start);
-        ++timing->synchronization_count;
-    }
+                               gthreads>>>(ac, acs, bw, bh, nblocks, nz_grid);
 
-    const EntropyClock::time_point size_start{EntropyClock::now()};
     const unsigned int grid{static_cast<unsigned int>(num_groups)};
-    group_size_m3_kernel<<<grid, AC_EMIT_THREADS, 0, encoder_stream()>>>(
-        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, depth, context_map, group_sizes,
-        run_offsets);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
+    group_size_m3_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, bw, bh, nblocks, xg,
+                                                    num_groups, depth, context_map,
+                                                    group_sizes, run_offsets);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
     void* d_temp{nullptr};
     std::size_t temp_bytes{0};
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&d_temp, temp_bytes, 0) != cudaSuccess) {
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&d_temp, temp_bytes, 0) != cudaSuccess) {
         free_run();
         return false;
-    }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
     }
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(d_temp, 0);
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(d_temp, 0);
     if (scan_status != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
     std::uint32_t last_offset{0};
     std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
         free_run();
         return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
     }
     *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
     if (*total_bytes > out_capacity) {
@@ -2325,398 +1540,44 @@ static bool ac_encode_groups_m3_impl(const std::int16_t* ac, const std::int8_t* 
         return false;
     }
 
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (encoder_memset(out, 0, zero_bytes) != cudaSuccess) {
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
         free_run();
         return false;
     }
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_run();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
 
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_emit_m3_kernel<<<grid, AC_EMIT_THREADS, 0, encoder_stream()>>>(
-        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, depth, bits, context_map, run_offsets,
-        out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point cleanup_start{EntropyClock::now()};
+    group_emit_m3_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, bw, bh, nblocks, xg,
+                                                    num_groups, depth, bits, context_map,
+                                                    run_offsets, out, group_offsets);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_run();
-    if (timing != nullptr) {
-        timing->cleanup_us += elapsed_us(cleanup_start);
-    }
     return ok;
 }
 
-bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                         std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
-                         std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
-                         std::uint32_t* group_offsets, std::size_t* total_bytes,
-                         AcEntropyTiming* timing) {
-    return ac_encode_groups_m3_impl(ac, acs, width, height, nullptr, depth, bits, AC_NUM_CLUSTERS,
-                                    out, out_capacity, group_sizes, group_offsets, total_bytes,
-                                    timing);
+bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs,
+                         std::size_t width, std::size_t height,
+                         const std::uint8_t* depth, const std::uint16_t* bits,
+                         std::uint8_t* out, std::size_t out_capacity,
+                         std::uint32_t* group_sizes,
+                         std::uint32_t* group_offsets, std::size_t* total_bytes) {
+    return ac_encode_groups_m3_impl(ac, acs, width, height, nullptr, depth, bits,
+                                    AC_NUM_CLUSTERS, out, out_capacity, group_sizes,
+                                    group_offsets, total_bytes);
 }
 
-bool ac_encode_groups_m3_runtime_map(const std::int16_t* ac, const std::int8_t* acs,
-                                     std::size_t width, std::size_t height,
-                                     const std::uint8_t* context_map, const std::uint8_t* depth,
-                                     const std::uint16_t* bits, std::size_t num_clusters,
-                                     std::uint8_t* out, std::size_t out_capacity,
-                                     std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                     std::size_t* total_bytes, AcEntropyTiming* timing) {
+bool ac_encode_groups_m3_runtime_map(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const std::uint8_t* depth, const std::uint16_t* bits,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes) {
     if (context_map == nullptr) {
         return false;
     }
-    return ac_encode_groups_m3_impl(ac, acs, width, height, context_map, depth, bits, num_clusters,
-                                    out, out_capacity, group_sizes, group_offsets, total_bytes,
-                                    timing);
-}
-
-bool ac_build_nonzero_grid_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                              std::size_t height, std::int32_t* nonzero_grid,
-                              AcEntropyTiming* timing) {
-    if (ac == nullptr || acs == nullptr || nonzero_grid == nullptr) {
-        return false;
-    }
-    ensure_constants();
-    const EntropyClock::time_point start{EntropyClock::now()};
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    constexpr unsigned int threads{256};
-    ac_nzeros_grid_m3_kernel<<<static_cast<unsigned int>((bw * bh + threads - 1) / threads),
-                               threads, 0, encoder_stream()>>>(ac, acs, bw, bh, bw * bh,
-                                                               nonzero_grid);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->nonzero_grid_us += elapsed_us(start);
-        ++timing->synchronization_count;
-    }
-    return ok;
-}
-
-bool ac_size_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                       std::size_t height, const std::uint8_t* context_map,
-                       const std::uint8_t* depth, std::size_t num_clusters,
-                       const std::int32_t* nonzero_grid, unsigned long long* run_offsets,
-                       std::size_t out_capacity, std::uint32_t* group_sizes,
-                       std::uint32_t* group_offsets, std::size_t* total_bytes,
-                       AcEntropyTiming* timing) {
-    if (ac == nullptr || acs == nullptr || depth == nullptr || nonzero_grid == nullptr ||
-        run_offsets == nullptr || group_sizes == nullptr || group_offsets == nullptr ||
-        total_bytes == nullptr || num_clusters == 0 || num_clusters > 256) {
-        return false;
-    }
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const EntropyClock::time_point size_start{EntropyClock::now()};
-    group_size_m3_kernel<<<static_cast<unsigned int>(num_groups), AC_EMIT_THREADS, 0,
-                           encoder_stream()>>>(
-        ac, acs, nonzero_grid, bw, bh, bw * bh, (bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS,
-        num_groups, depth, context_map, group_sizes, run_offsets);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
-    void* scan_temp{nullptr};
-    std::size_t scan_temp_bytes{0};
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
-    }
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(scan_temp, 0);
-    if (scan_status != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
-    return *total_bytes <= out_capacity;
-}
-
-bool ac_emit_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                       std::size_t height, const std::uint8_t* context_map,
-                       const std::uint8_t* depth, const std::uint16_t* bits,
-                       const std::int32_t* nonzero_grid, const unsigned long long* run_offsets,
-                       std::uint8_t* out, std::size_t out_capacity,
-                       const std::uint32_t* group_offsets, std::size_t total_bytes,
-                       AcEntropyTiming* timing) {
-    if (ac == nullptr || acs == nullptr || depth == nullptr || bits == nullptr ||
-        nonzero_grid == nullptr || run_offsets == nullptr || out == nullptr ||
-        group_offsets == nullptr || total_bytes > out_capacity) {
-        return false;
-    }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    if (encoder_memset(out, 0, (total_bytes + 3) & ~std::size_t{3}) != cudaSuccess ||
-        encoder_stream_synchronize() != cudaSuccess) {
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_emit_m3_kernel<<<static_cast<unsigned int>(num_groups), AC_EMIT_THREADS, 0,
-                           encoder_stream()>>>(
-        ac, acs, nonzero_grid, bw, bh, bw * bh, (bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS,
-        num_groups, depth, bits, context_map, run_offsets, out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    return ok;
-}
-
-static bool ac_encode_groups_m3_ans_impl(const std::int16_t* ac, const std::int8_t* acs,
-                                         std::size_t width, std::size_t height,
-                                         const std::uint8_t* context_map,
-                                         const AcAnsEncodingTable* tables, std::size_t num_clusters,
-                                         const std::int32_t* shared_nz_grid, std::uint8_t* out,
-                                         std::size_t out_capacity, std::uint32_t* group_sizes,
-                                         std::uint32_t* group_offsets, std::size_t* total_bytes,
-                                         AcEntropyTiming* timing) {
-    ensure_constants();
-    if (tables == nullptr || num_clusters == 0 || num_clusters > 256) {
-        return false;
-    }
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
-    const std::size_t num_groups{ac_num_groups(width, height)};
-    const std::size_t scratch_bytes{num_groups * AC_ANS_GROUP_SLOT_BYTES};
-    const std::size_t group_starts_bytes{num_groups * sizeof(unsigned long long)};
-    const std::size_t descriptor_items{num_groups * AC_ANS_GROUP_ITEMS};
-    const std::size_t descriptor_bytes{descriptor_items * AC_ANS_DESCRIPTORS_PER_ITEM *
-                                       sizeof(std::uint32_t)};
-    const std::size_t descriptor_offsets_bytes{descriptor_items * sizeof(std::uint32_t)};
-    const std::size_t token_counts_bytes{descriptor_items * sizeof(std::uint16_t)};
-    const EntropyClock::time_point allocation_start{EntropyClock::now()};
-    std::int32_t* allocated_nz_grid{nullptr};
-    const std::int32_t* nz_grid{shared_nz_grid};
-    std::uint8_t* scratch{nullptr};
-    if ((nz_grid == nullptr &&
-         cached_device_allocate(&allocated_nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) !=
-             cudaSuccess) ||
-        cached_device_allocate(&scratch,
-                               scratch_bytes + group_starts_bytes + descriptor_bytes +
-                                   descriptor_offsets_bytes + token_counts_bytes +
-                                   num_groups * sizeof(std::uint32_t),
-                               0) != cudaSuccess) {
-        cached_device_release(allocated_nz_grid, 0);
-        cached_device_release(scratch, 0);
-        return false;
-    }
-    unsigned long long* group_starts{
-        reinterpret_cast<unsigned long long*>(scratch + scratch_bytes)};
-    std::uint32_t* descriptors{
-        reinterpret_cast<std::uint32_t*>(scratch + scratch_bytes + group_starts_bytes)};
-    std::uint32_t* descriptor_offsets{reinterpret_cast<std::uint32_t*>(
-        reinterpret_cast<std::uint8_t*>(descriptors) + descriptor_bytes)};
-    std::uint16_t* token_counts{reinterpret_cast<std::uint16_t*>(
-        reinterpret_cast<std::uint8_t*>(descriptor_offsets) + descriptor_offsets_bytes)};
-    std::uint32_t* descriptor_heads{reinterpret_cast<std::uint32_t*>(
-        reinterpret_cast<std::uint8_t*>(token_counts) + token_counts_bytes)};
-    if (timing != nullptr) {
-        timing->allocation_us += elapsed_us(allocation_start);
-        timing->allocation_count += shared_nz_grid == nullptr ? 2 : 1;
-    }
-    const auto free_scratch = [&] {
-        cached_device_release(allocated_nz_grid, 0);
-        cached_device_release(scratch, 0);
-    };
-    if (nz_grid == nullptr) {
-        nz_grid = allocated_nz_grid;
-        const EntropyClock::time_point nonzero_start{EntropyClock::now()};
-        constexpr unsigned int threads{256};
-        ac_nzeros_grid_m3_kernel<<<static_cast<unsigned int>((bw * bh + threads - 1) / threads),
-                                   threads, 0, encoder_stream()>>>(ac, acs, bw, bh, nblocks,
-                                                                   allocated_nz_grid);
-        if (timing != nullptr) {
-            if (encoder_stream_synchronize() != cudaSuccess) {
-                free_scratch();
-                return false;
-            }
-            timing->nonzero_grid_us += elapsed_us(nonzero_start);
-            ++timing->synchronization_count;
-        }
-    }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    if (encoder_memset(scratch, 0, scratch_bytes) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        if (encoder_stream_synchronize() != cudaSuccess) {
-            free_scratch();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
-    if (encoder_memset(descriptor_heads, 0, num_groups * sizeof(std::uint32_t)) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    const EntropyClock::time_point size_start{EntropyClock::now()};
-    const unsigned int grid{
-        static_cast<unsigned int>((num_groups + AC_ANS_GROUP_THREADS - 1) / AC_ANS_GROUP_THREADS)};
-    constexpr unsigned int tokenize_threads{256};
-    group_ans_tokenize_m3_kernel<<<static_cast<unsigned int>(num_groups), tokenize_threads, 0,
-                                   encoder_stream()>>>(
-        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, descriptors,
-        descriptor_offsets, token_counts, descriptor_heads);
-    group_ans_encode_m3_kernel<<<grid, AC_ANS_GROUP_THREADS, 0, encoder_stream()>>>(
-        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables, scratch,
-        descriptors, descriptor_offsets, token_counts, group_starts, group_sizes);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_us += elapsed_us(size_start);
-        ++timing->synchronization_count;
-    }
-
-    const EntropyClock::time_point scan_start{EntropyClock::now()};
-    void* scan_temp{nullptr};
-    std::size_t scan_temp_bytes{0};
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        ++timing->allocation_count;
-    }
-    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(scan_temp, 0);
-    if (scan_status != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->scan_us += elapsed_us(scan_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point copy_start{EntropyClock::now()};
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + num_groups - 1, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        timing->size_copy_us += elapsed_us(copy_start);
-        timing->copied_bytes += 2 * sizeof(std::uint32_t);
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
-    if (*total_bytes > out_capacity) {
-        free_scratch();
-        return false;
-    }
-    const EntropyClock::time_point emit_start{EntropyClock::now()};
-    constexpr unsigned int compact_threads{256};
-    compact_ans_groups_kernel<<<static_cast<unsigned int>(num_groups), compact_threads, 0,
-                                encoder_stream()>>>(scratch, group_starts, group_sizes,
-                                                    group_offsets, num_groups, out);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
-    if (timing != nullptr) {
-        timing->emit_us += elapsed_us(emit_start);
-        ++timing->synchronization_count;
-    }
-    const EntropyClock::time_point cleanup_start{EntropyClock::now()};
-    free_scratch();
-    if (timing != nullptr) {
-        timing->cleanup_us += elapsed_us(cleanup_start);
-    }
-    return ok;
-}
-
-bool ac_encode_groups_m3_ans(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                             std::size_t height, const AcAnsEncodingTable* tables,
-                             std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
-                             std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                             std::size_t* total_bytes, AcEntropyTiming* timing) {
-    return ac_encode_groups_m3_ans_impl(ac, acs, width, height, nullptr, tables, num_clusters,
-                                        nullptr, out, out_capacity, group_sizes, group_offsets,
-                                        total_bytes, timing);
-}
-
-bool ac_encode_groups_m3_ans_runtime_map(const std::int16_t* ac, const std::int8_t* acs,
-                                         std::size_t width, std::size_t height,
-                                         const std::uint8_t* context_map,
-                                         const AcAnsEncodingTable* tables, std::size_t num_clusters,
-                                         std::uint8_t* out, std::size_t out_capacity,
-                                         std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                         std::size_t* total_bytes, AcEntropyTiming* timing) {
-    if (context_map == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_m3_ans_impl(ac, acs, width, height, context_map, tables, num_clusters,
-                                        nullptr, out, out_capacity, group_sizes, group_offsets,
-                                        total_bytes, timing);
-}
-
-bool ac_encode_groups_m3_ans_with_nonzero_grid(
-    const std::int16_t* ac, const std::int8_t* acs, std::size_t width, std::size_t height,
-    const std::uint8_t* context_map, const AcAnsEncodingTable* tables, std::size_t num_clusters,
-    const std::int32_t* nonzero_grid, std::uint8_t* out, std::size_t out_capacity,
-    std::uint32_t* group_sizes, std::uint32_t* group_offsets, std::size_t* total_bytes,
-    AcEntropyTiming* timing) {
-    if (nonzero_grid == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_m3_ans_impl(ac, acs, width, height, context_map, tables, num_clusters,
-                                        nonzero_grid, out, out_capacity, group_sizes, group_offsets,
-                                        total_bytes, timing);
+    return ac_encode_groups_m3_impl(ac, acs, width, height, context_map, depth,
+                                    bits, num_clusters, out, out_capacity,
+                                    group_sizes, group_offsets, total_bytes);
 }
 
 std::size_t dc_num_groups(std::size_t width, std::size_t height) {
@@ -2735,16 +1596,15 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
     const std::size_t nblocks{bw * bh};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (encoder_memset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
         cudaSuccess) {
         return false;
     }
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    dc_histogram_kernel<<<blocks, threads, 0, encoder_stream()>>>(dc, bw, bh, nblocks, xdg,
-                                                                  histograms);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
+    dc_histogram_kernel<<<blocks, threads>>>(dc, bw, bh, nblocks, xdg, histograms);
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
 bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
@@ -2757,21 +1617,19 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t cmh{(bh + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (encoder_memset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
         cudaSuccess) {
         return false;
     }
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    acmeta_acsqf_histogram_kernel<<<blocks, threads, 0, encoder_stream()>>>(quant_field, acs, bw,
-                                                                            bh, xdg, histograms);
+    acmeta_acsqf_histogram_kernel<<<blocks, threads>>>(quant_field, acs, bw, bh, xdg, histograms);
     const unsigned int cfl_blocks{static_cast<unsigned int>((cmw * cmh + threads - 1) / threads)};
-    acmeta_cfl_histogram_kernel<<<cfl_blocks, threads, 0, encoder_stream()>>>(
-        ytox_map, ytob_map, cmw, cmh, xdg, histograms);
+    acmeta_cfl_histogram_kernel<<<cfl_blocks, threads>>>(ytox_map, ytob_map, cmw, cmh, xdg,
+                                                        histograms);
     const unsigned int zero_blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
-    acmeta_epf_zeros_kernel<<<zero_blocks, threads, 0, encoder_stream()>>>(bw, bh, xdg, num_groups,
-                                                                           histograms);
-    return cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess;
+    acmeta_epf_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
@@ -2798,36 +1656,35 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     std::size_t* fb_count{nullptr};
     unsigned long long* chunk_bits{nullptr};
     unsigned long long* chunk_base{nullptr};
-    if (cached_device_allocate(&fb_pos, num_groups * fb_stride * sizeof(std::size_t), 0) !=
+    if (cudaMallocAsync(&fb_pos, num_groups * fb_stride * sizeof(std::size_t), 0) != cudaSuccess ||
+        cudaMallocAsync(&fb_count, num_groups * sizeof(std::size_t), 0) != cudaSuccess ||
+        cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
             cudaSuccess ||
-        cached_device_allocate(&fb_count, num_groups * sizeof(std::size_t), 0) != cudaSuccess ||
-        cached_device_allocate(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long),
-                               0) != cudaSuccess ||
-        cached_device_allocate(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long),
-                               0) != cudaSuccess) {
+        cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
+            cudaSuccess) {
         return false;
     }
     const auto free_chunks = [&] {
-        cached_device_release(fb_pos, 0);
-        cached_device_release(fb_count, 0);
-        cached_device_release(chunk_bits, 0);
-        cached_device_release(chunk_base, 0);
+        cudaFreeAsync(fb_pos, 0);
+        cudaFreeAsync(fb_count, 0);
+        cudaFreeAsync(chunk_bits, 0);
+        cudaFreeAsync(chunk_base, 0);
     };
 
     const unsigned int fb_threads{64};
-    const unsigned int fb_blocks{
-        static_cast<unsigned int>((num_groups + fb_threads - 1) / fb_threads)};
-    build_first_blocks_kernel<<<fb_blocks, fb_threads, 0, encoder_stream()>>>(
-        acs, bw, bh, xdg, num_groups, fb_stride, fb_pos, fb_count);
+    const unsigned int fb_blocks{static_cast<unsigned int>((num_groups + fb_threads - 1) /
+                                                           fb_threads)};
+    build_first_blocks_kernel<<<fb_blocks, fb_threads>>>(acs, bw, bh, xdg, num_groups, fb_stride,
+                                                        fb_pos, fb_count);
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
-    dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS, 0, encoder_stream()>>>(
+    dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
         fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
         blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
-    dc_group_scan_kernel<<<static_cast<unsigned int>(num_groups), DC_CHUNKS, 0, encoder_stream()>>>(
+    dc_group_scan_kernel<<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
         num_groups, chunk_bits, chunk_base, group_sizes);
-    if (cudaGetLastError() != cudaSuccess || encoder_stream_synchronize() != cudaSuccess) {
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         free_chunks();
         return false;
     }
@@ -2835,15 +1692,15 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     void* d_temp{nullptr};
     std::size_t temp_bytes{0};
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    if (cached_device_allocate(&d_temp, temp_bytes, 0) != cudaSuccess) {
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&d_temp, temp_bytes, 0) != cudaSuccess) {
         free_chunks();
         return false;
     }
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups), encoder_stream());
-    const cudaError_t scan_status{encoder_stream_synchronize()};
-    cached_device_release(d_temp, 0);
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(d_temp, 0);
     if (scan_status != cudaSuccess) {
         free_chunks();
         return false;
@@ -2851,10 +1708,10 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
 
     std::uint32_t last_offset{0};
     std::uint32_t last_size{0};
-    if (encoder_memcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess ||
-        encoder_memcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
         free_chunks();
         return false;
     }
@@ -2868,16 +1725,16 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     // section region must start zeroed. Round up to the 32-bit word the last bits
     // land in; the wrapper's capacity has slack for the padding.
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (encoder_memset(out, 0, zero_bytes) != cudaSuccess) {
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
         free_chunks();
         return false;
     }
 
-    dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS, 0, encoder_stream()>>>(
+    dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
         fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
         blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && encoder_stream_synchronize() == cudaSuccess};
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_chunks();
     return ok;
 }

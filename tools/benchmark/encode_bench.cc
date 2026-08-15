@@ -39,8 +39,8 @@
 #include <nvjpeg.h>
 #include <nvtx3/nvToolsExt.h>
 
-#include "src/bitstream/frame_assembly.h"
 #include "src/frame_encoder.h"
+#include "src/bitstream/frame_assembly.h"
 
 namespace {
 
@@ -257,9 +257,9 @@ void upload_nv12(BenchImage& img, std::uint32_t width, std::uint32_t height) {
     check_cuda(cudaMalloc(&img.d_chroma, chroma_bytes), "cudaMalloc chroma");
     check_cuda(cudaMemcpy(img.d_luma, img.host.data(), luma_bytes, cudaMemcpyHostToDevice),
                "cudaMemcpy luma");
-    check_cuda(cudaMemcpy(img.d_chroma, img.host.data() + luma_bytes, chroma_bytes,
-                          cudaMemcpyHostToDevice),
-               "cudaMemcpy chroma");
+    check_cuda(
+        cudaMemcpy(img.d_chroma, img.host.data() + luma_bytes, chroma_bytes, cudaMemcpyHostToDevice),
+        "cudaMemcpy chroma");
 }
 
 void upload_planar_yuv(BenchImage& img, std::uint32_t width, std::uint32_t height) {
@@ -338,8 +338,9 @@ struct NvjpegSession {
         check_nvjpeg(nvjpegEncoderStateCreate(handle, &state, nullptr), "EncoderStateCreate");
         check_nvjpeg(nvjpegEncoderParamsCreate(handle, &params, nullptr), "EncoderParamsCreate");
         check_nvjpeg(nvjpegEncoderParamsSetQuality(params, quality, nullptr), "SetQuality");
-        check_nvjpeg(nvjpegEncoderParamsSetSamplingFactors(params, NVJPEG_CSS_420, nullptr),
-                     "SetSamplingFactors");
+        check_nvjpeg(
+            nvjpegEncoderParamsSetSamplingFactors(params, NVJPEG_CSS_420, nullptr),
+            "SetSamplingFactors");
         std::size_t max_size{0};
         check_nvjpeg(nvjpegEncodeGetBufferSize(handle, params, static_cast<int>(width),
                                                static_cast<int>(height), &max_size),
@@ -395,10 +396,12 @@ void print_stats(const std::vector<double>& times_us, std::string_view codec) {
     std::printf("  total:      %.0f\n", total_us);
     std::printf("  mean:       %.0f   (%.2f fps)\n", mean_us, fps);
     std::printf("  stddev:     %.0f\n", stddev_of(times_us));
-    std::printf("  min:        %.0f\n", *std::min_element(times_us.begin(), times_us.end()));
+    std::printf("  min:        %.0f\n",
+                *std::min_element(times_us.begin(), times_us.end()));
     std::printf("  p50:        %.0f\n", percentile_of(times_us, 0.50));
     std::printf("  p99:        %.0f\n", percentile_of(times_us, 0.99));
-    std::printf("  max:        %.0f\n", *std::max_element(times_us.begin(), times_us.end()));
+    std::printf("  max:        %.0f\n",
+                *std::max_element(times_us.begin(), times_us.end()));
 }
 
 }  // namespace
@@ -474,11 +477,12 @@ int main(int argc, char** argv) {
     std::unique_ptr<cujpegxl::EncoderSession> cujpegxl_session{};
     if (args.codec == "cujpegxl") {
         cujpegxl_session = cujpegxl::EncoderSession::create(
-            cujpegxl::EncoderConfig{.device_ordinal = args.device,
-                                    .max_width = args.width,
-                                    .max_height = args.height,
-                                    .pipeline_depth = static_cast<std::size_t>(args.pipeline_depth),
-                                    .pipeline = cujpegxl::EncoderPipeline::DCT8});
+            cujpegxl::EncoderConfig{
+                .device_ordinal = args.device,
+                .max_width = args.width,
+                .max_height = args.height,
+                .pipeline_depth = static_cast<std::size_t>(args.pipeline_depth),
+                .pipeline = cujpegxl::EncoderPipeline::DCT8});
         if (cujpegxl_session == nullptr) {
             die("failed to create cujpegxl encoder session");
         }
@@ -492,24 +496,27 @@ int main(int argc, char** argv) {
     auto encode_cujpegxl = [&](const BenchImage& img) -> double {
         const auto t0{std::chrono::steady_clock::now()};
         cujpegxl::EncodedFrameFuture future{};
-        const cujpegxl::EncoderInput input{.luma = img.d_luma,
-                                           .luma_pitch = args.width,
-                                           .chroma = img.d_chroma,
-                                           .chroma_pitch = args.width,
-                                           .width = args.width,
-                                           .height = args.height,
-                                           .distance = args.distance,
-                                           .quant_params = qp,
-                                           .sequence = 0,
-                                           .collect_stats = args.profile};
+        const cujpegxl::EncoderInput input{
+            .luma = img.d_luma,
+            .luma_pitch = args.width,
+            .chroma = img.d_chroma,
+            .chroma_pitch = args.width,
+            .width = args.width,
+            .height = args.height,
+            .distance = args.distance,
+            .quant_params = qp,
+            .sequence = 0,
+            .collect_stats = args.profile};
         cujpegxl::EncodedFrame output{};
-        const bool ok{cujpegxl_session->encode(input, future) && future.get(output)};
+        const bool ok{cujpegxl_session->encode(input, future) &&
+                      future.get(output)};
         const auto t1{std::chrono::steady_clock::now()};
         if (!ok) {
             die("cujpegxl encode failed");
         }
         cujpegxl_out = std::move(output.bytes);
-        cujpegxl_stages.insert(cujpegxl_stages.end(), output.stats.begin(), output.stats.end());
+        cujpegxl_stages.insert(cujpegxl_stages.end(), output.stats.begin(),
+                               output.stats.end());
         return std::chrono::duration<double, std::micro>(t1 - t0).count();
     };
 
@@ -522,8 +529,9 @@ int main(int argc, char** argv) {
         nvjpeg->image.channel[2] = img.d_cr;
         nvjpeg->image.pitch[2] = chroma_w;
         const auto t0{std::chrono::steady_clock::now()};
-        check_nvjpeg(nvjpegEncodeYUV(nvjpeg->handle, nvjpeg->state, nvjpeg->params, &nvjpeg->image,
-                                     NVJPEG_CSS_420, static_cast<int>(args.width),
+        check_nvjpeg(nvjpegEncodeYUV(nvjpeg->handle, nvjpeg->state, nvjpeg->params,
+                                     &nvjpeg->image, NVJPEG_CSS_420,
+                                     static_cast<int>(args.width),
                                      static_cast<int>(args.height), nullptr),
                      "EncodeYUV");
         std::size_t length{nvjpeg->output.size()};
@@ -582,7 +590,8 @@ int main(int argc, char** argv) {
         while (completed < args.iterations) {
             while (submitted < args.iterations &&
                    pending.size() < static_cast<std::size_t>(args.pipeline_depth)) {
-                const BenchImage& img{images[static_cast<std::size_t>(submitted) % images.size()]};
+                const BenchImage& img{
+                    images[static_cast<std::size_t>(submitted) % images.size()]};
                 const cujpegxl::EncoderInput input{
                     .luma = img.d_luma,
                     .luma_pitch = args.width,
@@ -598,8 +607,9 @@ int main(int argc, char** argv) {
                 if (!cujpegxl_session->try_encode(input, future)) {
                     die("pipeline rejected a submission below its configured depth");
                 }
-                pending.push_back({std::move(future), std::chrono::steady_clock::now(),
-                                   static_cast<std::uint64_t>(submitted)});
+                pending.push_back(
+                    {std::move(future), std::chrono::steady_clock::now(),
+                     static_cast<std::uint64_t>(submitted)});
                 ++submitted;
             }
 
@@ -611,12 +621,14 @@ int main(int argc, char** argv) {
             }
             const TimePoint completed_at{std::chrono::steady_clock::now()};
             const double latency_us{
-                std::chrono::duration<double, std::micro>(completed_at - current.submitted)
+                std::chrono::duration<double, std::micro>(completed_at -
+                                                          current.submitted)
                     .count()};
             times_us.push_back(latency_us);
             completions.push_back(completed_at);
             cujpegxl_out = std::move(output.bytes);
-            cujpegxl_stages.insert(cujpegxl_stages.end(), output.stats.begin(), output.stats.end());
+            cujpegxl_stages.insert(cujpegxl_stages.end(), output.stats.begin(),
+                                   output.stats.end());
             ++completed;
         }
         const TimePoint batch_end{std::chrono::steady_clock::now()};
@@ -624,17 +636,18 @@ int main(int argc, char** argv) {
             std::chrono::duration<double, std::micro>(batch_end - batch_start).count()};
         std::printf("\npipeline throughput:\n");
         std::printf("  batch:       %.0f us\n", batch_us);
-        std::printf("  throughput:  %.2f fps\n", 1.0e6 * args.iterations / batch_us);
+        std::printf("  throughput:  %.2f fps\n",
+                    1.0e6 * args.iterations / batch_us);
         const std::size_t depth{static_cast<std::size_t>(args.pipeline_depth)};
         if (completions.size() > 2 * depth) {
             const std::size_t first{depth - 1};
             const std::size_t last{completions.size() - depth};
-            const double steady_us{
-                std::chrono::duration<double, std::micro>(completions[last] - completions[first])
-                    .count()};
+            const double steady_us{std::chrono::duration<double, std::micro>(
+                                       completions[last] - completions[first])
+                                       .count()};
             const std::size_t steady_frames{last - first};
-            std::printf("  steady:      %.2f fps (%zu frames)\n", 1.0e6 * steady_frames / steady_us,
-                        steady_frames);
+            std::printf("  steady:      %.2f fps (%zu frames)\n",
+                        1.0e6 * steady_frames / steady_us, steady_frames);
         }
     }
 
@@ -642,21 +655,13 @@ int main(int argc, char** argv) {
 
     if (args.profile && args.codec == "cujpegxl" && !cujpegxl_stages.empty()) {
         const std::size_t stages_per_call{3};
-        const std::size_t offset{cujpegxl_stages.size() >= stages_per_call
-                                     ? cujpegxl_stages.size() - stages_per_call
-                                     : 0};
+        const std::size_t offset{
+            cujpegxl_stages.size() >= stages_per_call ? cujpegxl_stages.size() - stages_per_call : 0};
         std::printf("\ncujpegxl per-stage timings (last iteration):\n");
         for (std::size_t i{offset}; i < cujpegxl_stages.size(); ++i) {
             const cujpegxl::StageTiming& s{cujpegxl_stages[i]};
             std::printf("  %-10s gpu=%9.0f us  cpu=%7.0f us  bytes=%zu\n", s.name, s.gpu_us,
                         s.cpu_us, s.bytes_moved);
-            for (const cujpegxl::PhaseTiming& phase : s.phases) {
-                std::printf("    %-24s gpu=%9.0f us  cpu=%7.0f us\n", phase.name, phase.gpu_us,
-                            phase.cpu_us);
-            }
-            for (const cujpegxl::ProfileMetric& metric : s.metrics) {
-                std::printf("    %-24s %.0f\n", metric.name, metric.value);
-            }
         }
         std::printf("\nCapture a detailed profile with:\n");
         std::printf(

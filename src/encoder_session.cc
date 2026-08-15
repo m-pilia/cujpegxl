@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "encoder_session_internal.h"
-#include "device_allocation_cache.h"
 
 namespace cujpegxl {
 
@@ -52,9 +51,6 @@ struct EncoderSession::Impl {
     }
 
     void run() {
-        cudaSetDevice(config.device_ordinal);
-        DeviceAllocationCache allocation_cache{};
-        ScopedDeviceAllocationCache scoped_cache{allocation_cache};
         for (;;) {
             Job job{};
             {
@@ -147,7 +143,7 @@ EncoderSession::EncoderSession(std::unique_ptr<Impl> impl)
 std::unique_ptr<EncoderSession> EncoderSession::create(
     const EncoderConfig& config) {
     if (config.pipeline_depth == 0 || config.max_width == 0 ||
-        config.max_height == 0 || cudaSetDevice(config.device_ordinal) != cudaSuccess) {
+        config.max_height == 0) {
         return nullptr;
     }
     std::unique_ptr<Impl> impl{new Impl{config}};
