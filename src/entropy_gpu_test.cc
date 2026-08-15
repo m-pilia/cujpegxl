@@ -18,11 +18,11 @@
 namespace cujpegxl {
 namespace {
 
-using bitstream::AcReference;
 using bitstream::AcAnsReference;
+using bitstream::AcReference;
 using bitstream::FrameCoefficients;
-using bitstream::reference_ac_encode;
 using bitstream::reference_ac_ans_encode;
+using bitstream::reference_ac_encode;
 
 // Flattens fc.ac into the device coefficient layout (plane-major over channels
 // X, Y, B; blocks in raster order; 64 coefficients each).
@@ -154,8 +154,8 @@ FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
                 continue;
             }
             for (int raw{1}; raw < side * side; raw += 3) {
-                const std::size_t slot{covered_plane_slot(side, bx, by, bw,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
                 for (int c{0}; c < 3; ++c) {
                     fc.ac[c][slot] = static_cast<std::int32_t>((raw + bx + by + c) % 9) - 4;
                 }
@@ -227,8 +227,8 @@ void check_context_histograms(const FrameCoefficients& fc, bool mixed) {
     const AcReference clustered{reference_ac_encode(fc)};
     std::vector<std::uint32_t> collapsed(clustered.histogram.size(), 0);
     for (std::size_t context{0}; context < AC_NUM_CONTEXTS; ++context) {
-        const std::size_t cluster{static_cast<std::size_t>(
-            ac_cluster(static_cast<std::uint32_t>(context)))};
+        const std::size_t cluster{
+            static_cast<std::size_t>(ac_cluster(static_cast<std::uint32_t>(context)))};
         for (std::size_t symbol{0}; symbol < AC_HISTOGRAM_SIZE; ++symbol) {
             collapsed[cluster * AC_HISTOGRAM_SIZE + symbol] +=
                 actual[context * AC_HISTOGRAM_SIZE + symbol];
@@ -249,15 +249,15 @@ TEST(EntropyGpu, RuntimeContextMapMatchesHostBytes) {
     constexpr std::size_t num_clusters{7};
     std::vector<std::uint8_t> context_map(AC_NUM_CONTEXTS);
     for (std::size_t context{0}; context < context_map.size(); ++context) {
-        context_map[context] = static_cast<std::uint8_t>(
-            (context * 5 + context / 17) % num_clusters);
+        context_map[context] =
+            static_cast<std::uint8_t>((context * 5 + context / 17) % num_clusters);
     }
 
     const AcReference ref{reference_ac_encode(fc, context_map, num_clusters)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult dev{};
-    ASSERT_TRUE(ac_encode_device_runtime_map(q, fc.width, fc.height, context_map,
-                                             num_clusters, ref.depth, ref.bits, dev));
+    ASSERT_TRUE(ac_encode_device_runtime_map(q, fc.width, fc.height, context_map, num_clusters,
+                                             ref.depth, ref.bits, dev));
     EXPECT_EQ(dev.histogram, ref.histogram);
     ASSERT_EQ(dev.group_sizes.size(), ref.group_streams.size());
     for (std::size_t group{0}; group < ref.group_streams.size(); ++group) {
@@ -271,18 +271,16 @@ TEST(EntropyGpu, RuntimeContextMapMatchesHostBytes) {
     }
 }
 
-void check_ans_streams(const FrameCoefficients& fc,
-                       const std::vector<std::uint8_t>& context_map,
+void check_ans_streams(const FrameCoefficients& fc, const std::vector<std::uint8_t>& context_map,
                        std::size_t num_clusters) {
-    const AcAnsReference reference{
-        reference_ac_ans_encode(fc, context_map, num_clusters)};
+    const AcAnsReference reference{reference_ac_ans_encode(fc, context_map, num_clusters)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult device{};
-    ASSERT_TRUE(ac_encode_device_ans_runtime_map(
-        q, fc.width, fc.height, context_map, reference.tables, device));
+    ASSERT_TRUE(ac_encode_device_ans_runtime_map(q, fc.width, fc.height, context_map,
+                                                 reference.tables, device));
     AcDeviceResult repeated{};
-    ASSERT_TRUE(ac_encode_device_ans_runtime_map(
-        q, fc.width, fc.height, context_map, reference.tables, repeated));
+    ASSERT_TRUE(ac_encode_device_ans_runtime_map(q, fc.width, fc.height, context_map,
+                                                 reference.tables, repeated));
     EXPECT_EQ(repeated.group_sizes, device.group_sizes);
     EXPECT_EQ(repeated.group_offsets, device.group_offsets);
     EXPECT_EQ(repeated.stream, device.stream);
@@ -309,8 +307,7 @@ TEST(EntropyGpuAns, FixedContextMapMatchesHostBytes) {
     const AcAnsReference reference{reference_ac_ans_encode(fc)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult device{};
-    ASSERT_TRUE(ac_encode_device_ans(q, fc.width, fc.height, reference.tables,
-                                     device));
+    ASSERT_TRUE(ac_encode_device_ans(q, fc.width, fc.height, reference.tables, device));
     ASSERT_EQ(device.group_sizes.size(), reference.group_streams.size());
     for (std::size_t group{0}; group < reference.group_streams.size(); ++group) {
         EXPECT_EQ(device.group_sizes[group], reference.group_streams[group].size());
@@ -330,19 +327,24 @@ TEST(EntropyGpuAns, RuntimeContextMapMatchesHostBytes) {
     constexpr std::size_t NUM_CLUSTERS = 7;
     std::vector<std::uint8_t> context_map(AC_NUM_CONTEXTS);
     for (std::size_t context{0}; context < context_map.size(); ++context) {
-        context_map[context] = static_cast<std::uint8_t>(
-            (context * 5 + context / 17) % NUM_CLUSTERS);
+        context_map[context] =
+            static_cast<std::uint8_t>((context * 5 + context / 17) % NUM_CLUSTERS);
     }
     check_ans_streams(fc, context_map, NUM_CLUSTERS);
 }
 
 TEST(EntropyGpuAns, MixedBlocksMatchHostBytes) {
-    const FrameCoefficients fc{make_mixed_frame(256, 256)};
+    const FrameCoefficients fc{make_mixed_frame(512, 384)};
     const AcAnsReference reference{reference_ac_ans_encode(fc)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult device{};
-    ASSERT_TRUE(ac_encode_device_m3_ans(q, fc.acs, fc.width, fc.height,
-                                        reference.tables, device));
+    ASSERT_TRUE(ac_encode_device_m3_ans(q, fc.acs, fc.width, fc.height, reference.tables, device));
+    AcDeviceResult repeated{};
+    ASSERT_TRUE(
+        ac_encode_device_m3_ans(q, fc.acs, fc.width, fc.height, reference.tables, repeated));
+    EXPECT_EQ(repeated.group_sizes, device.group_sizes);
+    EXPECT_EQ(repeated.group_offsets, device.group_offsets);
+    EXPECT_EQ(repeated.stream, device.stream);
     ASSERT_EQ(device.group_sizes.size(), reference.group_streams.size());
     for (std::size_t group{0}; group < reference.group_streams.size(); ++group) {
         EXPECT_EQ(device.group_sizes[group], reference.group_streams[group].size());

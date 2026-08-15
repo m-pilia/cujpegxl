@@ -202,6 +202,39 @@ __device__ void for_each_token_ctx(const std::int16_t* blk, int c, std::uint32_t
     }
 }
 
+template <typename Emit>
+__device__ void for_each_token_ctx_reverse(const std::int16_t* blk, int c, std::uint32_t predicted,
+                                           Emit emit) {
+    const int block_ctx{ac_block_context(c, 0)};
+    std::uint32_t nzeros{0};
+    int last{0};
+    for (int k{1}; k < 64; ++k) {
+        if (blk[NATURAL_ORDER[k] - 1] != 0) {
+            ++nzeros;
+            last = k;
+        }
+    }
+
+    const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
+    std::uint32_t remaining{0};
+    for (int k{last}; k >= 1; --k) {
+        const std::int32_t v{blk[NATURAL_ORDER[k] - 1]};
+        remaining += v != 0 ? 1u : 0u;
+        const std::uint32_t prev{k == 1 ? (nzeros > 4u ? 0u : 1u)
+                                        : (blk[NATURAL_ORDER[k - 1] - 1] != 0 ? 1u : 0u)};
+        const std::uint32_t context{
+            histo_off +
+            ac_zero_density_context(remaining, static_cast<std::uint32_t>(k), 1u, 0u, prev)};
+        std::uint32_t symbol{}, nbits{}, bits{};
+        hybrid_encode(pack_signed(v), symbol, nbits, bits);
+        emit(symbol, nbits, bits, context);
+    }
+
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(nzeros, symbol, nbits, bits);
+    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
+}
+
 // Builds the DCT8 normalized non-zero grid: one entry per (block, physical
 // channel) = the block's non-zero count (covered_blocks = 1).
 __global__ void ac_nzeros_grid_kernel(const std::int16_t* ac, std::size_t bw, std::size_t bh,
@@ -514,6 +547,33 @@ struct AtomicBitWriter {
     }
 };
 
+struct BackwardBitWriter {
+    unsigned int* words;
+    unsigned long long end;
+    std::uint64_t pending{0};
+    std::uint32_t pending_bits{0};
+
+    __device__ void prepend(std::uint32_t n_bits, std::uint32_t value) {
+        pending = value | (pending << n_bits);
+        pending_bits += n_bits;
+        if (pending_bits >= 32) {
+            const std::uint32_t keep{pending_bits - 32};
+            end -= 32;
+            words[end >> 5] = static_cast<std::uint32_t>(pending >> keep);
+            pending = keep == 0 ? 0 : pending & ((std::uint64_t{1} << keep) - 1);
+            pending_bits = keep;
+        }
+    }
+
+    __device__ unsigned long long finish() {
+        end -= pending_bits;
+        if (pending_bits != 0) {
+            words[end >> 5] = static_cast<std::uint32_t>(pending << (end & 31));
+        }
+        return end;
+    }
+};
+
 // Emits item k at the writer's current position.
 __device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) {
     if (k == 0) {
@@ -714,18 +774,53 @@ __global__ void group_emit_kernel(const std::int16_t* ac, const std::int32_t* nz
     }
 }
 
-struct AcAnsToken {
-    std::uint8_t symbol;
-    std::uint8_t cluster;
-    std::uint8_t nbits;
-    std::uint32_t bits;
-};
-
 struct DeviceAnsTransition {
     std::uint32_t state;
     std::uint16_t bits;
     bool renormalized;
 };
+
+constexpr unsigned int AC_ANS_GROUP_THREADS = 1;
+constexpr std::size_t AC_ANS_GROUP_SLOT_BYTES = 3 * AC_GROUP_BLOCKS * AC_GROUP_BLOCKS * 64 * 6 + 64;
+constexpr unsigned long long AC_ANS_GROUP_SLOT_BITS =
+    static_cast<unsigned long long>(AC_ANS_GROUP_SLOT_BYTES) * 8;
+constexpr std::size_t AC_ANS_GROUP_ITEMS = 3 * AC_GROUP_BLOCKS * AC_GROUP_BLOCKS;
+constexpr std::size_t AC_ANS_DESCRIPTORS_PER_ITEM = 64;
+
+__device__ std::uint32_t pack_ans_descriptor(std::uint32_t symbol, std::uint32_t nbits,
+                                             std::uint32_t bits, std::uint32_t cluster) {
+    return bits | (cluster << 13) | (nbits << 21) | (symbol << 25);
+}
+
+__global__ void group_ans_tokenize_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
+                                          std::size_t bw, std::size_t bh, std::size_t nblocks,
+                                          std::size_t xg, std::size_t num_groups,
+                                          const std::uint8_t* context_map,
+                                          std::uint32_t* descriptors, std::uint8_t* token_counts) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const AcGroupCtx c{
+        build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, nullptr)};
+    for (std::size_t item{threadIdx.x}; item < c.n_items; item += blockDim.x) {
+        int ch{};
+        std::uint32_t predicted{};
+        const std::int16_t* blk{ac_item_info(c, item, ch, predicted)};
+        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item};
+        std::uint8_t count{0};
+        for_each_token_ctx_reverse(
+            blk, ch, predicted,
+            [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
+                std::uint32_t context) {
+                const std::uint8_t cluster{runtime_ac_cluster(context_map, context)};
+                descriptors[item_index * AC_ANS_DESCRIPTORS_PER_ITEM + count] =
+                    pack_ans_descriptor(symbol, nbits, bits, cluster);
+                ++count;
+            });
+        token_counts[item_index] = count;
+    }
+}
 
 __device__ DeviceAnsTransition ac_ans_put(std::uint32_t state, const AcAnsEncodingTable& table,
                                           std::uint8_t symbol) {
@@ -742,90 +837,67 @@ __device__ DeviceAnsTransition ac_ans_put(std::uint32_t state, const AcAnsEncodi
     return transition;
 }
 
-__device__ std::size_t collect_ac_ans_tokens(const AcGroupCtx& c, std::size_t item,
-                                             AcAnsToken* tokens) {
-    int ch{};
-    std::uint32_t predicted{};
-    const std::int16_t* blk{ac_item_info(c, item, ch, predicted)};
-    std::size_t count{0};
-    for_each_token_ctx(
-        blk, ch, predicted,
-        [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits, std::uint32_t context) {
-            tokens[count] = {static_cast<std::uint8_t>(symbol),
-                             runtime_ac_cluster(c.context_map, context),
-                             static_cast<std::uint8_t>(nbits), bits};
-            ++count;
-        });
-    return count;
-}
-
-__global__ void group_ans_size_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
-                                      std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                      std::size_t xg, std::size_t num_groups,
-                                      const std::uint8_t* context_map,
-                                      const AcAnsEncodingTable* tables, std::uint32_t* group_bits,
-                                      std::uint32_t* group_sizes) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups || threadIdx.x != 0) {
+__global__ void group_ans_encode_kernel(
+    const std::int16_t* ac, const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
+    std::size_t nblocks, std::size_t xg, std::size_t num_groups, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::uint8_t* scratch, const std::uint32_t* descriptors,
+    const std::uint8_t* token_counts, unsigned long long* group_starts,
+    std::uint32_t* group_sizes) {
+    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
+    if (g >= num_groups) {
         return;
     }
     const AcGroupCtx c{
         build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
+    const unsigned long long slot_base{static_cast<unsigned long long>(g) * AC_ANS_GROUP_SLOT_BITS};
+    const unsigned long long stream_end{slot_base + AC_ANS_GROUP_SLOT_BITS - 32};
+    BackwardBitWriter writer{reinterpret_cast<unsigned int*>(scratch), stream_end};
     std::uint32_t state{0x13u << 16};
-    std::uint32_t payload_bits{0};
-    AcAnsToken tokens[64];
     for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t count{collect_ac_ans_tokens(c, item - 1, tokens)};
-        for (std::size_t i{count}; i > 0; --i) {
-            const AcAnsToken& token{tokens[i - 1]};
+        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item - 1};
+        const std::size_t descriptor_base{item_index * AC_ANS_DESCRIPTORS_PER_ITEM};
+        for (std::size_t token{0}; token < token_counts[item_index]; ++token) {
+            const std::uint32_t descriptor{descriptors[descriptor_base + token]};
+            const std::uint32_t bits{descriptor & 0x1fffu};
+            const std::uint8_t cluster{static_cast<std::uint8_t>((descriptor >> 13) & 0xffu)};
+            const std::uint32_t nbits{(descriptor >> 21) & 0xfu};
+            const std::uint32_t symbol{(descriptor >> 25) & 0x3fu};
             const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[token.cluster], token.symbol)};
+                ac_ans_put(state, tables[cluster], static_cast<std::uint8_t>(symbol))};
             state = transition.state;
-            payload_bits += token.nbits + (transition.renormalized ? 16 : 0);
+            const std::uint32_t token_bits{nbits + (transition.renormalized ? 16u : 0u)};
+            const std::uint32_t token_value{transition.renormalized ? transition.bits | (bits << 16)
+                                                                    : bits};
+            writer.prepend(token_bits, token_value);
         }
     }
-    group_bits[g] = 32 + payload_bits;
-    group_sizes[g] = (group_bits[g] + 7) / 8;
+    writer.prepend(32, state);
+    const unsigned long long stream_start{writer.finish()};
+    group_starts[g] = stream_start;
+    group_sizes[g] = static_cast<std::uint32_t>((stream_end - stream_start + 7) / 8);
 }
 
-__global__ void group_ans_emit_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
-                                      std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                      std::size_t xg, std::size_t num_groups,
-                                      const std::uint8_t* context_map,
-                                      const AcAnsEncodingTable* tables,
-                                      const std::uint32_t* group_bits, std::uint8_t* out,
-                                      const std::uint32_t* group_offsets) {
+__global__ void compact_ans_groups_kernel(const std::uint8_t* scratch,
+                                          const unsigned long long* group_starts,
+                                          const std::uint32_t* group_sizes,
+                                          const std::uint32_t* group_offsets,
+                                          std::size_t num_groups, std::uint8_t* out) {
     const std::size_t g{blockIdx.x};
-    if (g >= num_groups || threadIdx.x != 0) {
+    if (g >= num_groups) {
         return;
     }
-    const AcGroupCtx c{
-        build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
-    const unsigned long long base{static_cast<unsigned long long>(group_offsets[g]) << 3};
-    std::uint32_t cursor{group_bits[g] - 32};
-    std::uint32_t state{0x13u << 16};
-    AcAnsToken tokens[64];
-    for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t count{collect_ac_ans_tokens(c, item - 1, tokens)};
-        for (std::size_t i{count}; i > 0; --i) {
-            const AcAnsToken& token{tokens[i - 1]};
-            const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[token.cluster], token.symbol)};
-            state = transition.state;
-            const std::uint32_t token_bits{token.nbits + (transition.renormalized ? 16u : 0u)};
-            cursor -= token_bits;
-            AtomicBitWriter writer{reinterpret_cast<unsigned int*>(out), base + 32 + cursor};
-            if (transition.renormalized) {
-                writer.put(16, transition.bits);
-            }
-            if (token.nbits != 0) {
-                writer.put(token.nbits, token.bits);
-            }
+    const unsigned int* words{reinterpret_cast<const unsigned int*>(scratch)};
+    const unsigned long long start{group_starts[g]};
+    for (std::size_t byte{threadIdx.x}; byte < group_sizes[g]; byte += blockDim.x) {
+        const unsigned long long pos{start + byte * 8};
+        const unsigned long long word{pos >> 5};
+        const std::uint32_t shift{static_cast<std::uint32_t>(pos & 31)};
+        std::uint64_t pair{words[word]};
+        if (shift > 24) {
+            pair |= static_cast<std::uint64_t>(words[word + 1]) << 32;
         }
+        out[group_offsets[g] + byte] = static_cast<std::uint8_t>(pair >> shift);
     }
-    AtomicBitWriter state_writer{reinterpret_cast<unsigned int*>(out), base};
-    state_writer.put(16, state & 0xffffu);
-    state_writer.put(16, state >> 16);
 }
 
 __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, std::size_t bh,
@@ -1064,6 +1136,48 @@ __device__ void m3_for_each_token_ctx(const std::int16_t* plane, std::size_t bx,
         prev = v != 0 ? 1u : 0u;
         remaining -= prev;
     }
+}
+
+template <typename Emit>
+__device__ void m3_for_each_token_ctx_reverse(const std::int16_t* plane, std::size_t bx,
+                                              std::size_t by, int side, std::size_t bw, int c,
+                                              std::uint32_t predicted, Emit emit) {
+    const int cx{side / 8};
+    const std::uint32_t covered{static_cast<std::uint32_t>(cx * cx)};
+    const std::uint32_t size{static_cast<std::uint32_t>(side * side)};
+    const std::uint32_t l2{side == 16 ? 2u : (side == 32 ? 4u : 0u)};
+    const std::uint32_t* order{natural_order_dev(side)};
+    const int block_ctx{ac_block_context(c, ac_strategy_order(side))};
+
+    std::uint32_t nzeros{0};
+    std::uint32_t last_exclusive{covered};
+    for (std::uint32_t k{covered}; k < size; ++k) {
+        if (plane[covered_plane_slot(side, bx, by, bw, order[k])] != 0) {
+            ++nzeros;
+            last_exclusive = k + 1;
+        }
+    }
+
+    const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
+    std::uint32_t remaining{0};
+    for (std::uint32_t next{last_exclusive}; next > covered; --next) {
+        const std::uint32_t k{next - 1};
+        const std::int32_t v{plane[covered_plane_slot(side, bx, by, bw, order[k])]};
+        remaining += v != 0 ? 1u : 0u;
+        const std::uint32_t prev{
+            k == covered
+                ? (nzeros > size / 16 ? 0u : 1u)
+                : (plane[covered_plane_slot(side, bx, by, bw, order[k - 1])] != 0 ? 1u : 0u)};
+        const std::uint32_t context{histo_off +
+                                    ac_zero_density_context(remaining, k, covered, l2, prev)};
+        std::uint32_t symbol{}, nbits{}, bits{};
+        hybrid_encode(pack_signed(v), symbol, nbits, bits);
+        emit(symbol, nbits, bits, context);
+    }
+
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(nzeros, symbol, nbits, bits);
+    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
 }
 
 // Builds the mixed-block normalized non-zero grid: each first-block writes its
@@ -1314,95 +1428,88 @@ __global__ void group_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* 
     }
 }
 
-__device__ std::size_t collect_ac_ans_tokens_m3(const AcGroupCtxM3& c, std::size_t item,
-                                                AcAnsToken* tokens) {
-    std::size_t bx{}, by{};
-    int ch{};
-    std::uint32_t predicted{};
-    const std::int16_t* plane{};
-    const int side{ac_item_m3(c, item, bx, by, ch, predicted, plane)};
-    if (side == ACS_COVERED) {
-        return 0;
-    }
-    std::size_t count{0};
-    m3_for_each_token_ctx(
-        plane, bx, by, side, c.bw, ch, predicted,
-        [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits, std::uint32_t context) {
-            tokens[count] = {static_cast<std::uint8_t>(symbol),
-                             runtime_ac_cluster(c.context_map, context),
-                             static_cast<std::uint8_t>(nbits), bits};
-            ++count;
-        });
-    return count;
-}
-
-__global__ void group_ans_size_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                                         const std::int32_t* nz_grid, std::size_t bw,
-                                         std::size_t bh, std::size_t nblocks, std::size_t xg,
-                                         std::size_t num_groups, const std::uint8_t* context_map,
-                                         const AcAnsEncodingTable* tables,
-                                         std::uint32_t* group_bits, std::uint32_t* group_sizes) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups || threadIdx.x != 0) {
+__global__ void group_ans_encode_m3_kernel(
+    const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid, std::size_t bw,
+    std::size_t bh, std::size_t nblocks, std::size_t xg, std::size_t num_groups,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables, std::uint8_t* scratch,
+    const std::uint32_t* descriptors, const std::uint32_t* descriptor_offsets,
+    const std::uint16_t* token_counts, unsigned long long* group_starts,
+    std::uint32_t* group_sizes) {
+    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
+    if (g >= num_groups) {
         return;
     }
     const AcGroupCtxM3 c{
         build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
+    const unsigned long long slot_base{static_cast<unsigned long long>(g) * AC_ANS_GROUP_SLOT_BITS};
+    const unsigned long long stream_end{slot_base + AC_ANS_GROUP_SLOT_BITS - 32};
+    BackwardBitWriter writer{reinterpret_cast<unsigned int*>(scratch), stream_end};
     std::uint32_t state{0x13u << 16};
-    std::uint32_t payload_bits{0};
-    AcAnsToken tokens[1024];
     for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t count{collect_ac_ans_tokens_m3(c, item - 1, tokens)};
-        for (std::size_t i{count}; i > 0; --i) {
-            const AcAnsToken& token{tokens[i - 1]};
+        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item - 1};
+        const std::size_t descriptor_base{g * AC_ANS_GROUP_ITEMS * AC_ANS_DESCRIPTORS_PER_ITEM +
+                                          descriptor_offsets[item_index]};
+        for (std::size_t token{0}; token < token_counts[item_index]; ++token) {
+            const std::uint32_t descriptor{descriptors[descriptor_base + token]};
+            const std::uint32_t bits{descriptor & 0x1fffu};
+            const std::uint8_t cluster{static_cast<std::uint8_t>((descriptor >> 13) & 0xffu)};
+            const std::uint32_t nbits{(descriptor >> 21) & 0xfu};
+            const std::uint32_t symbol{(descriptor >> 25) & 0x3fu};
             const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[token.cluster], token.symbol)};
+                ac_ans_put(state, tables[cluster], static_cast<std::uint8_t>(symbol))};
             state = transition.state;
-            payload_bits += token.nbits + (transition.renormalized ? 16 : 0);
+            const std::uint32_t token_bits{nbits + (transition.renormalized ? 16u : 0u)};
+            const std::uint32_t token_value{transition.renormalized ? transition.bits | (bits << 16)
+                                                                    : bits};
+            writer.prepend(token_bits, token_value);
         }
     }
-    group_bits[g] = 32 + payload_bits;
-    group_sizes[g] = (group_bits[g] + 7) / 8;
+    writer.prepend(32, state);
+    const unsigned long long stream_start{writer.finish()};
+    group_starts[g] = stream_start;
+    group_sizes[g] = static_cast<std::uint32_t>((stream_end - stream_start + 7) / 8);
 }
 
-__global__ void group_ans_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                                         const std::int32_t* nz_grid, std::size_t bw,
-                                         std::size_t bh, std::size_t nblocks, std::size_t xg,
-                                         std::size_t num_groups, const std::uint8_t* context_map,
-                                         const AcAnsEncodingTable* tables,
-                                         const std::uint32_t* group_bits, std::uint8_t* out,
-                                         const std::uint32_t* group_offsets) {
+__global__ void group_ans_tokenize_m3_kernel(
+    const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid, std::size_t bw,
+    std::size_t bh, std::size_t nblocks, std::size_t xg, std::size_t num_groups,
+    const std::uint8_t* context_map, std::uint32_t* descriptors, std::uint32_t* descriptor_offsets,
+    std::uint16_t* token_counts, std::uint32_t* descriptor_heads) {
     const std::size_t g{blockIdx.x};
-    if (g >= num_groups || threadIdx.x != 0) {
+    if (g >= num_groups) {
         return;
     }
     const AcGroupCtxM3 c{
-        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, context_map)};
-    const unsigned long long base{static_cast<unsigned long long>(group_offsets[g]) << 3};
-    std::uint32_t cursor{group_bits[g] - 32};
-    std::uint32_t state{0x13u << 16};
-    AcAnsToken tokens[1024];
-    for (std::size_t item{c.n_items}; item > 0; --item) {
-        const std::size_t count{collect_ac_ans_tokens_m3(c, item - 1, tokens)};
-        for (std::size_t i{count}; i > 0; --i) {
-            const AcAnsToken& token{tokens[i - 1]};
-            const DeviceAnsTransition transition{
-                ac_ans_put(state, tables[token.cluster], token.symbol)};
-            state = transition.state;
-            const std::uint32_t token_bits{token.nbits + (transition.renormalized ? 16u : 0u)};
-            cursor -= token_bits;
-            AtomicBitWriter writer{reinterpret_cast<unsigned int*>(out), base + 32 + cursor};
-            if (transition.renormalized) {
-                writer.put(16, transition.bits);
-            }
-            if (token.nbits != 0) {
-                writer.put(token.nbits, token.bits);
-            }
+        build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks, xg, nullptr, nullptr, nullptr)};
+    for (std::size_t item{threadIdx.x}; item < c.n_items; item += blockDim.x) {
+        std::size_t bx{}, by{};
+        int ch{};
+        std::uint32_t predicted{};
+        const std::int16_t* plane{};
+        const int side{ac_item_m3(c, item, bx, by, ch, predicted, plane)};
+        const std::size_t item_index{g * AC_ANS_GROUP_ITEMS + item};
+        if (side == ACS_COVERED) {
+            token_counts[item_index] = 0;
+            continue;
         }
+        const std::uint32_t covered{static_cast<std::uint32_t>((side / 8) * (side / 8))};
+        const std::uint32_t capacity{static_cast<std::uint32_t>(side * side) - covered + 1};
+        const std::uint32_t offset{atomicAdd(descriptor_heads + g, capacity)};
+        const std::size_t descriptor_base{g * AC_ANS_GROUP_ITEMS * AC_ANS_DESCRIPTORS_PER_ITEM +
+                                          offset};
+        std::uint16_t count{0};
+        m3_for_each_token_ctx_reverse(
+            plane, bx, by, side, c.bw, ch, predicted,
+            [&](std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
+                std::uint32_t context) {
+                const std::uint8_t cluster{runtime_ac_cluster(context_map, context)};
+                descriptors[descriptor_base + count] =
+                    pack_ans_descriptor(symbol, nbits, bits, cluster);
+                ++count;
+            });
+        descriptor_offsets[item_index] = offset;
+        token_counts[item_index] = count;
     }
-    AtomicBitWriter state_writer{reinterpret_cast<unsigned int*>(out), base};
-    state_writer.put(16, state & 0xffffu);
-    state_writer.put(16, state >> 16);
 }
 
 }  // namespace
@@ -1659,23 +1766,35 @@ static bool ac_encode_groups_ans_impl(const std::int16_t* ac, std::size_t width,
     const std::size_t nblocks{bw * bh};
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
+    const std::size_t scratch_bytes{num_groups * AC_ANS_GROUP_SLOT_BYTES};
+    const std::size_t group_starts_bytes{num_groups * sizeof(unsigned long long)};
+    const std::size_t descriptor_items{num_groups * AC_ANS_GROUP_ITEMS};
+    const std::size_t descriptor_bytes{descriptor_items * AC_ANS_DESCRIPTORS_PER_ITEM *
+                                       sizeof(std::uint32_t)};
 
     const EntropyClock::time_point allocation_start{EntropyClock::now()};
     std::int32_t* nz_grid{nullptr};
-    std::uint32_t* group_bits{nullptr};
+    std::uint8_t* scratch{nullptr};
     if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess ||
-        cudaMallocAsync(&group_bits, num_groups * sizeof(std::uint32_t), 0) != cudaSuccess) {
+        cudaMallocAsync(&scratch,
+                        scratch_bytes + group_starts_bytes + descriptor_bytes + descriptor_items,
+                        0) != cudaSuccess) {
         cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(group_bits, 0);
+        cudaFreeAsync(scratch, 0);
         return false;
     }
+    unsigned long long* group_starts{
+        reinterpret_cast<unsigned long long*>(scratch + scratch_bytes)};
+    std::uint32_t* descriptors{
+        reinterpret_cast<std::uint32_t*>(scratch + scratch_bytes + group_starts_bytes)};
+    std::uint8_t* token_counts{reinterpret_cast<std::uint8_t*>(descriptors) + descriptor_bytes};
     if (timing != nullptr) {
         timing->allocation_us += elapsed_us(allocation_start);
         timing->allocation_count += 2;
     }
     const auto free_scratch = [&] {
         cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(group_bits, 0);
+        cudaFreeAsync(scratch, 0);
     };
 
     const EntropyClock::time_point nonzero_start{EntropyClock::now()};
@@ -1691,10 +1810,29 @@ static bool ac_encode_groups_ans_impl(const std::int16_t* ac, std::size_t width,
         timing->nonzero_grid_us += elapsed_us(nonzero_start);
         ++timing->synchronization_count;
     }
+    const EntropyClock::time_point clear_start{EntropyClock::now()};
+    if (cudaMemset(scratch, 0, scratch_bytes) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    if (timing != nullptr) {
+        if (cudaDeviceSynchronize() != cudaSuccess) {
+            free_scratch();
+            return false;
+        }
+        timing->clear_us += elapsed_us(clear_start);
+        ++timing->synchronization_count;
+    }
+
     const EntropyClock::time_point size_start{EntropyClock::now()};
-    const unsigned int grid{static_cast<unsigned int>(num_groups)};
-    group_ans_size_kernel<<<grid, 1>>>(ac, nz_grid, bw, bh, nblocks, xg, num_groups, context_map,
-                                       tables, group_bits, group_sizes);
+    const unsigned int grid{
+        static_cast<unsigned int>((num_groups + AC_ANS_GROUP_THREADS - 1) / AC_ANS_GROUP_THREADS)};
+    constexpr unsigned int tokenize_threads{256};
+    group_ans_tokenize_kernel<<<static_cast<unsigned int>(num_groups), tokenize_threads>>>(
+        ac, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, descriptors, token_counts);
+    group_ans_encode_kernel<<<grid, AC_ANS_GROUP_THREADS>>>(
+        ac, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables, scratch, descriptors,
+        token_counts, group_starts, group_sizes);
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         free_scratch();
         return false;
@@ -1748,24 +1886,10 @@ static bool ac_encode_groups_ans_impl(const std::int16_t* ac, std::size_t width,
         free_scratch();
         return false;
     }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        if (cudaDeviceSynchronize() != cudaSuccess) {
-            free_scratch();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
-
     const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_ans_emit_kernel<<<grid, 1>>>(ac, nz_grid, bw, bh, nblocks, xg, num_groups, context_map,
-                                       tables, group_bits, out, group_offsets);
+    constexpr unsigned int compact_threads{256};
+    compact_ans_groups_kernel<<<static_cast<unsigned int>(num_groups), compact_threads>>>(
+        scratch, group_starts, group_sizes, group_offsets, num_groups, out);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     if (timing != nullptr) {
         timing->emit_us += elapsed_us(emit_start);
@@ -2035,22 +2159,43 @@ static bool ac_encode_groups_m3_ans_impl(const std::int16_t* ac, const std::int8
     const std::size_t nblocks{bw * bh};
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
+    const std::size_t scratch_bytes{num_groups * AC_ANS_GROUP_SLOT_BYTES};
+    const std::size_t group_starts_bytes{num_groups * sizeof(unsigned long long)};
+    const std::size_t descriptor_items{num_groups * AC_ANS_GROUP_ITEMS};
+    const std::size_t descriptor_bytes{descriptor_items * AC_ANS_DESCRIPTORS_PER_ITEM *
+                                       sizeof(std::uint32_t)};
+    const std::size_t descriptor_offsets_bytes{descriptor_items * sizeof(std::uint32_t)};
+    const std::size_t token_counts_bytes{descriptor_items * sizeof(std::uint16_t)};
     const EntropyClock::time_point allocation_start{EntropyClock::now()};
     std::int32_t* nz_grid{nullptr};
-    std::uint32_t* group_bits{nullptr};
+    std::uint8_t* scratch{nullptr};
     if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess ||
-        cudaMallocAsync(&group_bits, num_groups * sizeof(std::uint32_t), 0) != cudaSuccess) {
+        cudaMallocAsync(&scratch,
+                        scratch_bytes + group_starts_bytes + descriptor_bytes +
+                            descriptor_offsets_bytes + token_counts_bytes +
+                            num_groups * sizeof(std::uint32_t),
+                        0) != cudaSuccess) {
         cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(group_bits, 0);
+        cudaFreeAsync(scratch, 0);
         return false;
     }
+    unsigned long long* group_starts{
+        reinterpret_cast<unsigned long long*>(scratch + scratch_bytes)};
+    std::uint32_t* descriptors{
+        reinterpret_cast<std::uint32_t*>(scratch + scratch_bytes + group_starts_bytes)};
+    std::uint32_t* descriptor_offsets{reinterpret_cast<std::uint32_t*>(
+        reinterpret_cast<std::uint8_t*>(descriptors) + descriptor_bytes)};
+    std::uint16_t* token_counts{reinterpret_cast<std::uint16_t*>(
+        reinterpret_cast<std::uint8_t*>(descriptor_offsets) + descriptor_offsets_bytes)};
+    std::uint32_t* descriptor_heads{reinterpret_cast<std::uint32_t*>(
+        reinterpret_cast<std::uint8_t*>(token_counts) + token_counts_bytes)};
     if (timing != nullptr) {
         timing->allocation_us += elapsed_us(allocation_start);
         timing->allocation_count += 2;
     }
     const auto free_scratch = [&] {
         cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(group_bits, 0);
+        cudaFreeAsync(scratch, 0);
     };
     const EntropyClock::time_point nonzero_start{EntropyClock::now()};
     constexpr unsigned int threads{256};
@@ -2064,10 +2209,33 @@ static bool ac_encode_groups_m3_ans_impl(const std::int16_t* ac, const std::int8
         timing->nonzero_grid_us += elapsed_us(nonzero_start);
         ++timing->synchronization_count;
     }
+    const EntropyClock::time_point clear_start{EntropyClock::now()};
+    if (cudaMemset(scratch, 0, scratch_bytes) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    if (timing != nullptr) {
+        if (cudaDeviceSynchronize() != cudaSuccess) {
+            free_scratch();
+            return false;
+        }
+        timing->clear_us += elapsed_us(clear_start);
+        ++timing->synchronization_count;
+    }
+    if (cudaMemset(descriptor_heads, 0, num_groups * sizeof(std::uint32_t)) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
     const EntropyClock::time_point size_start{EntropyClock::now()};
-    const unsigned int grid{static_cast<unsigned int>(num_groups)};
-    group_ans_size_m3_kernel<<<grid, 1>>>(ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups,
-                                          context_map, tables, group_bits, group_sizes);
+    const unsigned int grid{
+        static_cast<unsigned int>((num_groups + AC_ANS_GROUP_THREADS - 1) / AC_ANS_GROUP_THREADS)};
+    constexpr unsigned int tokenize_threads{256};
+    group_ans_tokenize_m3_kernel<<<static_cast<unsigned int>(num_groups), tokenize_threads>>>(
+        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, descriptors,
+        descriptor_offsets, token_counts, descriptor_heads);
+    group_ans_encode_m3_kernel<<<grid, AC_ANS_GROUP_THREADS>>>(
+        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables, scratch,
+        descriptors, descriptor_offsets, token_counts, group_starts, group_sizes);
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
         free_scratch();
         return false;
@@ -2120,23 +2288,10 @@ static bool ac_encode_groups_m3_ans_impl(const std::int16_t* ac, const std::int8
         free_scratch();
         return false;
     }
-    const EntropyClock::time_point clear_start{EntropyClock::now()};
-    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
-        free_scratch();
-        return false;
-    }
-    if (timing != nullptr) {
-        if (cudaDeviceSynchronize() != cudaSuccess) {
-            free_scratch();
-            return false;
-        }
-        timing->clear_us += elapsed_us(clear_start);
-        ++timing->synchronization_count;
-    }
     const EntropyClock::time_point emit_start{EntropyClock::now()};
-    group_ans_emit_m3_kernel<<<grid, 1>>>(ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups,
-                                          context_map, tables, group_bits, out, group_offsets);
+    constexpr unsigned int compact_threads{256};
+    compact_ans_groups_kernel<<<static_cast<unsigned int>(num_groups), compact_threads>>>(
+        scratch, group_starts, group_sizes, group_offsets, num_groups, out);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     if (timing != nullptr) {
         timing->emit_us += elapsed_us(emit_start);

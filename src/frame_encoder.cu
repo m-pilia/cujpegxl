@@ -35,11 +35,11 @@ double us_since(Clock::time_point start) {
 void append_ac_timing(StageTiming& stage, const AcEntropyTiming& timing, bool ans) {
     const char* allocation{ans ? "ans allocation" : "prefix allocation"};
     const char* nonzero{ans ? "ans nonzero grid" : "prefix nonzero grid"};
-    const char* size{ans ? "ans sizing" : "prefix sizing"};
+    const char* size{ans ? "ans encode" : "prefix sizing"};
     const char* scan{ans ? "ans scan" : "prefix scan"};
     const char* copy{ans ? "ans size copies" : "prefix size copies"};
     const char* clear{ans ? "ans buffer clear" : "prefix buffer clear"};
-    const char* emit{ans ? "ans emission" : "prefix emission"};
+    const char* emit{ans ? "ans compaction" : "prefix emission"};
     const char* cleanup{ans ? "ans cleanup" : "prefix cleanup"};
     stage.phases.insert(stage.phases.end(), {{allocation, timing.allocation_us, 0.0},
                                              {nonzero, timing.nonzero_grid_us, 0.0},
