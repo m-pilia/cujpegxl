@@ -156,6 +156,23 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "ac_precluster",
+    srcs = ["ac_precluster.cc"],
+    hdrs = ["ac_precluster.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":entropy"],
+)
+
+cc_test(
+    name = "ac_precluster_test",
+    srcs = ["ac_precluster_test.cc"],
+    deps = [
+        ":ac_precluster",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "ac_context_test",
     srcs = ["ac_context_test.cc"],
