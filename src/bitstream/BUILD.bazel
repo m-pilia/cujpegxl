@@ -16,6 +16,7 @@ cc_library(
     srcs = [
         "codestream.cc",
         "container.cc",
+        "context_map.cc",
         "histogram_writer.cc",
         "prefix_code.cc",
     ],
@@ -23,12 +24,23 @@ cc_library(
         "bit_writer.h",
         "codestream.h",
         "container.h",
+        "context_map.h",
         "field_coder.h",
         "histogram_writer.h",
         "hybrid_uint.h",
         "prefix_code.h",
     ],
     copts = RUNTIME_COPTS,
+)
+
+cc_test(
+    name = "context_map_test",
+    srcs = ["context_map_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_library(
