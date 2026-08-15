@@ -95,34 +95,12 @@ CUJPEGXL_ACC_HD inline std::uint32_t ac_zero_density_context(std::uint32_t nonze
     return (AC_COEFF_NUM_NONZERO_CONTEXT[nonzeros_left] + AC_COEFF_FREQ_CONTEXT[k]) * 2 + prev;
 }
 
-// Number of AC entropy clusters (histograms) and the fixed, deterministic map
-// from the 7425-context space to a cluster. Chosen to separate the dominant
-// distribution axes within the JXL simple context-map budget (<=8 clusters):
-// non-zero-count vs coefficient symbols, luma vs chroma block context, and a
-// coarse coefficient frequency/density band. Data-driven clustering is a later
-// refinement; this map is O(1) so it adds no per-frame clustering cost.
-inline constexpr int AC_NUM_CLUSTERS = 8;
-
-CUJPEGXL_ACC_HD inline int ac_cluster(std::uint32_t ctx) {
-    const std::uint32_t count_ctxs{AC_NUM_BLOCK_CTX * AC_NON_ZERO_BUCKETS};  // 555
-    if (ctx < count_ctxs) {
-        const int block_ctx{static_cast<int>(ctx % AC_NUM_BLOCK_CTX)};
-        return block_ctx < 7 ? 0 : 1;  // luma / chroma non-zero-count
-    }
-    const std::uint32_t rel{ctx - count_ctxs};
-    const int block_ctx{static_cast<int>(rel / AC_ZERO_DENSITY_COUNT)};
-    const std::uint32_t zdc{rel % AC_ZERO_DENSITY_COUNT};
-    const int base{block_ctx < 7 ? 2 : 5};  // luma coeff 2..4, chroma coeff 5..7
-    const int band{zdc < 64 ? 0 : (zdc < 200 ? 1 : 2)};
-    return base + band;
-}
-
-inline constexpr int AC_FINE_NUM_CLUSTERS = 32;
+inline constexpr int AC_NUM_CLUSTERS = 32;
 
 // The complex-map layout retains the luma/chroma split, then partitions
 // non-zero predictions into four bands and coefficient density into twelve.
 // This yields 2*4 + 2*12 clusters with direct O(1) lookup.
-CUJPEGXL_ACC_HD inline int ac_fine_cluster(std::uint32_t ctx) {
+CUJPEGXL_ACC_HD inline int ac_cluster(std::uint32_t ctx) {
     const std::uint32_t count_contexts{AC_NUM_BLOCK_CTX * AC_NON_ZERO_BUCKETS};
     if (ctx < count_contexts) {
         const std::uint32_t nonzero_bucket{ctx / AC_NUM_BLOCK_CTX};

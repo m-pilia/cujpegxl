@@ -25,8 +25,8 @@ void write_prefix_histograms(BitWriter& w, const std::uint32_t* histogram, std::
 
 // Clustered variant: emits the histogram description for `num_clusters`
 // prefix-coded histograms selected per context by `context_map` (`num_contexts`
-// entries, each a cluster id in [0, num_clusters)), using the JXL simple
-// context-map form (so `num_clusters` must be <= 8). `cluster_histograms` and the
+// entries, each a cluster id in [0, num_clusters)). The context map is selected
+// from the legal simple and complex forms by encoded size. `cluster_histograms` and the
 // output `depth`/`bits` are laid out as `num_clusters * stride` (row c is cluster
 // c); each cluster's alphabet is trailing-trimmed independently. Every cluster id
 // in [0, num_clusters) must appear in `context_map`. Mirrors libjxl

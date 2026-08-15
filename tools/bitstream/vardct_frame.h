@@ -58,7 +58,7 @@ std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc,
                                                   bool clustered_ac = false);
 
 // The host reference for the device AC entropy encoder, using the real per-token
-// contexts clustered into AC_NUM_CLUSTERS (8) histograms. `histogram` and
+// contexts clustered into AC_NUM_CLUSTERS histograms. `histogram` and
 // `depth`/`bits` are laid out per cluster (cluster * 256 + symbol); each AC
 // group's byte-aligned token stream (one AcGroup TOC section per group, raster
 // order) codes each token with its cluster's prefix code. This is exactly what
