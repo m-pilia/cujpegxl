@@ -164,6 +164,26 @@ cc_library(
     deps = [":entropy"],
 )
 
+cc_library(
+    name = "ac_histogram_cluster",
+    srcs = ["ac_histogram_cluster.cc"],
+    hdrs = ["ac_histogram_cluster.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":ac_precluster",
+        "//src/bitstream",
+    ],
+)
+
+cc_test(
+    name = "ac_histogram_cluster_test",
+    srcs = ["ac_histogram_cluster_test.cc"],
+    deps = [
+        ":ac_histogram_cluster",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "ac_precluster_test",
     srcs = ["ac_precluster_test.cc"],
