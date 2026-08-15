@@ -24,6 +24,8 @@ pybind_extension(
         ":nv12_host_encode",
         "//:cujpegxl_headers",
         "//src:cujpegxl_lib",
+        "//src:frame_encoder",
+        "@cuda//:cuda_runtime_static",
     ],
 )
 

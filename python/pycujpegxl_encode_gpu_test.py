@@ -41,6 +41,18 @@ class PyCujpegxlEncodeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pycujpegxl.encode(self.nv12[:-1], WIDTH, HEIGHT)
 
+    def test_pipelined_encode_preserves_sequence(self):
+        encoder = pycujpegxl.Encoder(WIDTH, HEIGHT, pipeline_depth=2)
+        first = encoder.submit(self.nv12, sequence=17)
+        second = encoder.submit(self.nv12, sequence=18)
+
+        self.assertEqual(first.sequence, 17)
+        self.assertEqual(second.sequence, 18)
+        self.assertTrue(first.result(timeout=60).startswith(JXL_CONTAINER_PREFIX))
+        self.assertTrue(second.result(timeout=60).startswith(JXL_CONTAINER_PREFIX))
+        self.assertTrue(first.ready)
+        self.assertTrue(second.ready)
+
     def test_determinism_via_runner(self):
         a = dr.RunArtifact(data=pycujpegxl.encode(self.nv12, WIDTH, HEIGHT))
         b = dr.RunArtifact(data=pycujpegxl.encode(self.nv12, WIDTH, HEIGHT))

@@ -8,11 +8,15 @@ import pycujpegxl
 
 class PyCujpegxlTest(unittest.TestCase):
     def test_api_version(self):
-        self.assertEqual(pycujpegxl.api_version(), 1)
-        self.assertEqual(pycujpegxl.API_VERSION, 1)
+        self.assertEqual(pycujpegxl.api_version(), 2)
+        self.assertEqual(pycujpegxl.API_VERSION, 2)
 
     def test_query_backend_is_exposed(self):
         self.assertTrue(callable(pycujpegxl.query_backend))
+
+    def test_pipelined_api_is_exposed(self):
+        self.assertTrue(hasattr(pycujpegxl, "Encoder"))
+        self.assertTrue(hasattr(pycujpegxl, "EncodeFuture"))
 
     def test_query_backend_missing_device_raises(self):
         with self.assertRaises(RuntimeError):

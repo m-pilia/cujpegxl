@@ -21,7 +21,7 @@ extern "C" {
  * intentionally diverge from the C++ naming rules. */
 /* NOLINTBEGIN(modernize-use-using,readability-identifier-naming) */
 
-#define CUJPEGXL_API_VERSION 1u
+#define CUJPEGXL_API_VERSION 2u
 
 typedef enum cujpegxl_status {
     CUJPEGXL_OK = 0,
@@ -30,7 +30,10 @@ typedef enum cujpegxl_status {
     CUJPEGXL_UNSUPPORTED_RESOLUTION = 3,
     CUJPEGXL_NO_DEVICE = 4,
     CUJPEGXL_INTERNAL_ERROR = 5,
-    CUJPEGXL_BUFFER_TOO_SMALL = 6
+    CUJPEGXL_BUFFER_TOO_SMALL = 6,
+    CUJPEGXL_WOULD_BLOCK = 7,
+    CUJPEGXL_NOT_READY = 8,
+    CUJPEGXL_TIMEOUT = 9
 } cujpegxl_status;
 
 typedef enum cujpegxl_backend {
@@ -40,6 +43,7 @@ typedef enum cujpegxl_backend {
 } cujpegxl_backend;
 
 typedef struct cujpegxl_encoder cujpegxl_encoder;
+typedef struct cujpegxl_future cujpegxl_future;
 
 typedef struct cujpegxl_config {
     uint32_t width;
@@ -47,6 +51,11 @@ typedef struct cujpegxl_config {
     float distance;
     int32_t device_ordinal;
 } cujpegxl_config;
+
+typedef struct cujpegxl_async_config {
+    cujpegxl_config frame;
+    size_t pipeline_depth;
+} cujpegxl_async_config;
 
 /* NV12 (BT.709 full range) device input. `luma`/`chroma` are raw device
  * addresses held as integers to keep this header CUDA-free. */
@@ -80,6 +89,29 @@ cujpegxl_status cujpegxl_encoder_configure(cujpegxl_encoder* encoder,
 cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegxl_nv12_input* input,
                                         cujpegxl_output* output);
 void cujpegxl_encoder_destroy(cujpegxl_encoder* encoder);
+
+/* Creates a bounded asynchronous encoder. Input device pointers must remain
+ * valid until the corresponding future is ready. */
+cujpegxl_status cujpegxl_async_encoder_create(const cujpegxl_async_config* config,
+                                              cujpegxl_encoder** out_encoder);
+
+/* Non-blocking submission returns CUJPEGXL_WOULD_BLOCK when the pipeline is
+ * full. The blocking variant waits only for submission capacity. */
+cujpegxl_status cujpegxl_encoder_try_submit(cujpegxl_encoder* encoder,
+                                            const cujpegxl_nv12_input* input,
+                                            uint64_t sequence,
+                                            cujpegxl_future** out_future);
+cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder,
+                                        const cujpegxl_nv12_input* input,
+                                        uint64_t sequence,
+                                        cujpegxl_future** out_future);
+void cujpegxl_encoder_flush(cujpegxl_encoder* encoder);
+
+cujpegxl_status cujpegxl_future_ready(const cujpegxl_future* future, int* out_ready);
+cujpegxl_status cujpegxl_future_wait(cujpegxl_future* future, uint64_t timeout_ns);
+cujpegxl_status cujpegxl_future_get(cujpegxl_future* future, cujpegxl_output* output,
+                                    uint64_t* out_sequence);
+void cujpegxl_future_destroy(cujpegxl_future* future);
 
 /* NOLINTEND(modernize-use-using,readability-identifier-naming) */
 
