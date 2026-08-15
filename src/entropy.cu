@@ -178,7 +178,7 @@ __device__ void for_each_token_ctx(const std::int16_t* blk, int c, std::uint32_t
     }
     std::uint32_t symbol{}, nbits{}, bits{};
     hybrid_encode(nzeros, symbol, nbits, bits);
-    emit(symbol, nbits, bits, ac_cluster(ac_nonzero_context(predicted, block_ctx)));
+    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
 
     const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
     std::uint32_t remaining{nzeros};
@@ -189,7 +189,7 @@ __device__ void for_each_token_ctx(const std::int16_t* blk, int c, std::uint32_t
                                                                     static_cast<std::uint32_t>(k),
                                                                     1u, 0u, prev)};
         hybrid_encode(pack_signed(v), symbol, nbits, bits);
-        emit(symbol, nbits, bits, ac_cluster(ctx));
+        emit(symbol, nbits, bits, ctx);
         prev = v != 0 ? 1u : 0u;
         remaining -= prev;
     }
@@ -236,7 +236,9 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_
                                 block * AC_COEFFS_PER_BLOCK};
         const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
         for_each_token_ctx(blk, c, predicted,
-                           [&](std::uint32_t symbol, std::uint32_t, std::uint32_t, int cluster) {
+                           [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                               std::uint32_t context) {
+                               const int cluster{ac_cluster(context)};
                                atomicAdd(&sh[static_cast<std::size_t>(cluster) * AC_HISTOGRAM_SIZE +
                                              symbol],
                                          1u);
@@ -249,6 +251,31 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_
             atomicAdd(&histogram[i], sh[i]);
         }
     }
+}
+
+__global__ void context_histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
+                                         std::size_t bw, std::size_t bh, std::size_t nblocks,
+                                         std::uint32_t* histograms) {
+    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
+    const std::size_t total{3 * bw * bh};
+    if (idx >= total) {
+        return;
+    }
+    const std::size_t block{idx / 3};
+    const int c{CHANNEL_ORDER[static_cast<int>(idx % 3)]};
+    const std::size_t bx{block % bw};
+    const std::size_t by{block / bw};
+    const std::int16_t* blk{ac + static_cast<std::size_t>(c) * nblocks * AC_COEFFS_PER_BLOCK +
+                            block * AC_COEFFS_PER_BLOCK};
+    const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
+    for_each_token_ctx(blk, c, predicted,
+                       [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                           std::uint32_t context) {
+                           atomicAdd(&histograms[static_cast<std::size_t>(context) *
+                                                     AC_HISTOGRAM_SIZE +
+                                                 symbol],
+                                     1u);
+                       });
 }
 
 __device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_t bh,
@@ -581,7 +608,9 @@ __device__ std::uint32_t ac_item_bits(const AcGroupCtx& c, std::size_t i) {
     const std::int16_t* blk{ac_item_info(c, i, ch, predicted)};
     std::uint32_t total{0};
     for_each_token_ctx(blk, ch, predicted,
-                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t, int cl) {
+                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t,
+                           std::uint32_t context) {
+                           const int cl{ac_cluster(context)};
                            total += c.depth[static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE + sym] +
                                     nbits;
                        });
@@ -593,7 +622,9 @@ __device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, AtomicBitWriter
     std::uint32_t predicted{};
     const std::int16_t* blk{ac_item_info(c, i, ch, predicted)};
     for_each_token_ctx(blk, ch, predicted,
-                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw, int cl) {
+                       [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw,
+                           std::uint32_t context) {
+                           const int cl{ac_cluster(context)};
                            const std::size_t idx{static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE +
                                                  sym};
                            w.put(c.depth[idx], c.bits[idx]);
@@ -877,7 +908,7 @@ __device__ void m3_for_each_token_ctx(const std::int16_t* plane, std::size_t bx,
     }
     std::uint32_t symbol{}, nbits{}, bits{};
     hybrid_encode(nzeros, symbol, nbits, bits);
-    emit(symbol, nbits, bits, ac_cluster(ac_nonzero_context(predicted, block_ctx)));
+    emit(symbol, nbits, bits, ac_nonzero_context(predicted, block_ctx));
 
     const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
     std::uint32_t remaining{nzeros};
@@ -886,7 +917,7 @@ __device__ void m3_for_each_token_ctx(const std::int16_t* plane, std::size_t bx,
         const std::int32_t v{plane[covered_plane_slot(side, bx, by, bw, order[k])]};
         const std::uint32_t ctx{histo_off + ac_zero_density_context(remaining, k, covered, l2, prev)};
         hybrid_encode(pack_signed(v), symbol, nbits, bits);
-        emit(symbol, nbits, bits, ac_cluster(ctx));
+        emit(symbol, nbits, bits, ctx);
         prev = v != 0 ? 1u : 0u;
         remaining -= prev;
     }
@@ -955,7 +986,8 @@ __global__ void histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* a
             const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
             m3_for_each_token_ctx(plane, bx, by, side, bw, c, predicted,
                                   [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
-                                      int cluster) {
+                                      std::uint32_t context) {
+                                      const int cluster{ac_cluster(context)};
                                       atomicAdd(&sh[static_cast<std::size_t>(cluster) *
                                                         AC_HISTOGRAM_SIZE +
                                                     symbol],
@@ -970,6 +1002,35 @@ __global__ void histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* a
             atomicAdd(&histogram[i], sh[i]);
         }
     }
+}
+
+__global__ void context_histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
+                                            const std::int32_t* nz_grid, std::size_t bw,
+                                            std::size_t bh, std::size_t nblocks,
+                                            std::uint32_t* histograms) {
+    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
+    const std::size_t total{3 * bw * bh};
+    if (idx >= total) {
+        return;
+    }
+    const std::size_t block{idx / 3};
+    const int side{acs == nullptr ? 8 : acs[block]};
+    if (side == ACS_COVERED) {
+        return;
+    }
+    const int c{CHANNEL_ORDER[static_cast<int>(idx % 3)]};
+    const std::size_t bx{block % bw};
+    const std::size_t by{block / bw};
+    const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
+    const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
+    m3_for_each_token_ctx(plane, bx, by, side, bw, c, predicted,
+                          [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
+                              std::uint32_t context) {
+                              atomicAdd(&histograms[static_cast<std::size_t>(context) *
+                                                        AC_HISTOGRAM_SIZE +
+                                                    symbol],
+                                        1u);
+                          });
 }
 
 struct AcGroupCtxM3 {
@@ -1030,7 +1091,9 @@ __device__ std::uint32_t ac_item_bits_m3(const AcGroupCtxM3& c, std::size_t i) {
     }
     std::uint32_t total{0};
     m3_for_each_token_ctx(plane, bx, by, side, c.bw, ch, predicted,
-                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t, int cl) {
+                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t,
+                              std::uint32_t context) {
+                              const int cl{ac_cluster(context)};
                               total += c.depth[static_cast<std::size_t>(cl) * AC_HISTOGRAM_SIZE +
                                                sym] +
                                        nbits;
@@ -1048,7 +1111,9 @@ __device__ void ac_item_emit_m3(const AcGroupCtxM3& c, std::size_t i, AtomicBitW
         return;
     }
     m3_for_each_token_ctx(plane, bx, by, side, c.bw, ch, predicted,
-                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw, int cl) {
+                          [&](std::uint32_t sym, std::uint32_t nbits, std::uint32_t raw,
+                              std::uint32_t context) {
+                              const int cl{ac_cluster(context)};
                               const std::size_t idx{static_cast<std::size_t>(cl) *
                                                         AC_HISTOGRAM_SIZE +
                                                     sym};
@@ -1136,6 +1201,30 @@ bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t h
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     ac_nzeros_grid_kernel<<<blocks, threads>>>(ac, bw, bh, nblocks, nz_grid);
     histogram_kernel<<<blocks, threads>>>(ac, nz_grid, bw, bh, nblocks, histogram);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    cudaFree(nz_grid);
+    return ok;
+}
+
+bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
+                                 std::uint32_t* histograms) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    if (cudaMemset(histograms, 0,
+                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
+        return false;
+    }
+    std::int32_t* nz_grid{nullptr};
+    if (cudaMalloc(&nz_grid, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
+        return false;
+    }
+    const std::size_t total{3 * bw * bh};
+    const unsigned int threads{256};
+    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
+    ac_nzeros_grid_kernel<<<blocks, threads>>>(ac, bw, bh, nblocks, nz_grid);
+    context_histogram_kernel<<<blocks, threads>>>(ac, nz_grid, bw, bh, nblocks, histograms);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
@@ -1250,6 +1339,35 @@ bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks, histogram);
+    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    cudaFree(nz_grid);
+    return ok;
+}
+
+bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
+                                    std::size_t width, std::size_t height,
+                                    std::uint32_t* histograms) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    if (cudaMemset(histograms, 0,
+                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
+        return false;
+    }
+    std::int32_t* nz_grid{nullptr};
+    if (cudaMalloc(&nz_grid, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
+        return false;
+    }
+    const unsigned int grid_threads{256};
+    ac_nzeros_grid_m3_kernel<<<
+        static_cast<unsigned int>((bw * bh + grid_threads - 1) / grid_threads), grid_threads>>>(
+        ac, acs, bw, bh, nblocks, nz_grid);
+    const std::size_t total{3 * bw * bh};
+    const unsigned int threads{256};
+    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
+    context_histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks,
+                                                     histograms);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;

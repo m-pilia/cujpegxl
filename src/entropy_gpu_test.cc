@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "entropy.h"
 #include "entropy_roundtrip.h"
 #include "src/vardct_layout.h"
 #include "tools/bitstream/vardct_frame.h"
@@ -198,6 +199,50 @@ TEST(EntropyGpuM3, MixedSingleGroupMatchesReference) {
 
 TEST(EntropyGpuM3, MixedMultiGroupMatchesReference) {
     check_matches_reference_m3(make_mixed_frame(512, 384));
+}
+
+void check_context_histograms(const FrameCoefficients& fc, bool mixed) {
+    const std::vector<std::uint32_t> expected{bitstream::reference_ac_context_histogram(fc)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    std::vector<std::uint32_t> actual{};
+    const bool ok{mixed ? ac_context_histogram_device_m3(q, fc.acs, fc.width, fc.height, actual)
+                        : ac_context_histogram_device(q, fc.width, fc.height, actual)};
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(actual.size(), expected.size());
+    for (std::size_t i{0}; i < expected.size(); ++i) {
+        if (actual[i] != expected[i]) {
+            ADD_FAILURE() << "context histogram bin " << i << ": device=" << actual[i]
+                          << " host=" << expected[i];
+            return;
+        }
+    }
+
+    std::vector<std::uint32_t> repeated{};
+    ASSERT_TRUE(mixed ? ac_context_histogram_device_m3(q, fc.acs, fc.width, fc.height, repeated)
+                      : ac_context_histogram_device(q, fc.width, fc.height, repeated));
+    EXPECT_EQ(repeated, actual);
+
+    const AcReference clustered{reference_ac_encode(fc)};
+    std::vector<std::uint32_t> collapsed(clustered.histogram.size(), 0);
+    for (std::size_t context{0}; context < AC_NUM_CONTEXTS; ++context) {
+        const std::size_t cluster{static_cast<std::size_t>(
+            ac_cluster(static_cast<std::uint32_t>(context)))};
+        for (std::size_t symbol{0}; symbol < AC_HISTOGRAM_SIZE; ++symbol) {
+            collapsed[cluster * AC_HISTOGRAM_SIZE + symbol] +=
+                actual[context * AC_HISTOGRAM_SIZE + symbol];
+        }
+    }
+    EXPECT_EQ(collapsed, clustered.histogram);
+}
+
+TEST(EntropyGpu, PerContextHistogramMatchesHost) {
+    FrameCoefficients fc{make_frame(256, 256)};
+    fill_ac_pattern(fc);
+    check_context_histograms(fc, false);
+}
+
+TEST(EntropyGpuM3, PerContextHistogramMatchesHost) {
+    check_context_histograms(make_mixed_frame(256, 256), true);
 }
 
 TEST(EntropyGpu, Deterministic) {

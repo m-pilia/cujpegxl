@@ -153,4 +153,62 @@ bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<s
     return ok;
 }
 
+bool ac_context_histogram_device(const std::vector<std::int32_t>& q, std::size_t width,
+                                 std::size_t height, std::vector<std::uint32_t>& out) {
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    const std::size_t plane{width * height};
+    std::vector<std::int16_t> ac(3 * blocks * AC_COEFFS_PER_BLOCK, 0);
+    for (std::size_t c{0}; c < 3; ++c) {
+        for (std::size_t b{0}; b < blocks; ++b) {
+            for (std::size_t k{1}; k < 64; ++k) {
+                ac[c * blocks * AC_COEFFS_PER_BLOCK + b * AC_COEFFS_PER_BLOCK + (k - 1)] =
+                    static_cast<std::int16_t>(q[c * plane + b * 64 + k]);
+            }
+        }
+    }
+
+    std::int16_t* d_ac{nullptr};
+    std::uint32_t* d_histograms{nullptr};
+    bool ok{upload(ac, &d_ac) &&
+            cudaMalloc(&d_histograms, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) ==
+                cudaSuccess};
+    ok = ok && ac_build_context_histograms(d_ac, width, height, d_histograms);
+    if (ok) {
+        out.assign(AC_CONTEXT_HISTOGRAM_ENTRIES, 0);
+        ok = cudaMemcpy(out.data(), d_histograms,
+                        AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t),
+                        cudaMemcpyDeviceToHost) == cudaSuccess;
+    }
+    cudaFree(d_ac);
+    cudaFree(d_histograms);
+    return ok;
+}
+
+bool ac_context_histogram_device_m3(const std::vector<std::int32_t>& q,
+                                    const std::vector<std::int8_t>& acs, std::size_t width,
+                                    std::size_t height, std::vector<std::uint32_t>& out) {
+    std::vector<std::int16_t> ac(q.size());
+    for (std::size_t i{0}; i < q.size(); ++i) {
+        ac[i] = static_cast<std::int16_t>(q[i]);
+    }
+
+    std::int16_t* d_ac{nullptr};
+    std::int8_t* d_acs{nullptr};
+    std::uint32_t* d_histograms{nullptr};
+    bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) &&
+            cudaMalloc(&d_histograms, AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) ==
+                cudaSuccess};
+    ok = ok && ac_build_context_histograms_m3(d_ac, d_acs, width, height, d_histograms);
+    if (ok) {
+        out.assign(AC_CONTEXT_HISTOGRAM_ENTRIES, 0);
+        ok = cudaMemcpy(out.data(), d_histograms,
+                        AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t),
+                        cudaMemcpyDeviceToHost) == cudaSuccess;
+    }
+    cudaFree(d_ac);
+    cudaFree(d_acs);
+    cudaFree(d_histograms);
+    return ok;
+}
+
 }  // namespace cujpegxl

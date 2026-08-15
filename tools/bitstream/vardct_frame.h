@@ -53,7 +53,7 @@ struct FrameCoefficients {
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
 // freshly allocated byte buffer. The output is decodable by libjxl/djxl. With
 // `clustered_ac`, the AC coefficients are coded with libjxl's real per-token
-// contexts split across 8 entropy clusters instead of a single shared histogram.
+// contexts split across AC_NUM_CLUSTERS histograms instead of one shared histogram.
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc,
                                                   bool clustered_ac = false);
 
@@ -71,6 +71,8 @@ struct AcReference {
     std::vector<std::vector<std::uint8_t>> group_streams{};
 };
 AcReference reference_ac_encode(const FrameCoefficients& fc);
+
+std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc);
 
 // The natural (scan) coefficient order for an 8x8 DCT block: order[k] is the
 // libjxl-raster index of the k-th coefficient in scan order (order[0] == 0, the

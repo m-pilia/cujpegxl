@@ -7,11 +7,14 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "ac_context.h"
+
 namespace cujpegxl {
 
 // Upper bound on the AC token alphabet: hybrid-uint tokens of 32-bit values stay
 // below this, so a fixed histogram of this size covers every symbol.
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
+constexpr std::size_t AC_CONTEXT_HISTOGRAM_ENTRIES = AC_NUM_CONTEXTS * AC_HISTOGRAM_SIZE;
 
 // AC coefficients stored per block (the 63 non-DC libjxl-raster slots). The DC
 // slot lives in the separate int32 DC buffer, so it is elided from AC storage.
@@ -30,6 +33,12 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 // a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t height,
                         std::uint32_t* histogram);
+
+// Alternate phase-1 path for data-driven clustering. Accumulates one symbol
+// histogram for each AC context directly on the device. `histograms` has
+// AC_CONTEXT_HISTOGRAM_ENTRIES entries and is zeroed by the call.
+bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
+                                 std::uint32_t* histograms);
 
 // Phase 2: emit each AC group's token bitstream (byte-aligned, one AcGroup TOC
 // section per group) concatenated into `out`, mirroring the host bitstream
@@ -54,6 +63,10 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
 // mixed-block reference. Deterministic. Returns false on a CUDA error.
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                            std::size_t height, std::uint32_t* histogram);
+
+bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
+                                    std::size_t width, std::size_t height,
+                                    std::uint32_t* histograms);
 
 // Mixed-block (M3) AC group emit: as ac_encode_groups, over the covered-block
 // layout under `acs`. `depth`/`bits` are the shared prefix code from the phase-1

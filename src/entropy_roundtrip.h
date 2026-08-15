@@ -33,6 +33,13 @@ bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<s
                          const std::vector<std::uint8_t>& depth,
                          const std::vector<std::uint16_t>& bits, AcDeviceResult& out);
 
+bool ac_context_histogram_device(const std::vector<std::int32_t>& q, std::size_t width,
+                                 std::size_t height, std::vector<std::uint32_t>& out);
+
+bool ac_context_histogram_device_m3(const std::vector<std::int32_t>& q,
+                                    const std::vector<std::int8_t>& acs, std::size_t width,
+                                    std::size_t height, std::vector<std::uint32_t>& out);
+
 }  // namespace cujpegxl
 
 #endif  // CUJPEGXL_SRC_ENTROPY_ROUNDTRIP_H_
