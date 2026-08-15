@@ -25,13 +25,16 @@ bool upload(const std::vector<T>& host, T** device) {
 
 }  // namespace
 
-bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
-                      const std::vector<std::uint8_t>& depth,
-                      const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
+static bool ac_encode_device_impl(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<std::uint8_t>* context_map, std::size_t num_clusters,
+    const std::vector<std::uint8_t>& depth,
+    const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
     const std::size_t blocks{(width / 8) * (height / 8)};
     const std::size_t plane{width * height};
     const std::size_t capacity{q.size() * 8 + 4096};
+    const std::size_t histogram_span{num_clusters * AC_HISTOGRAM_SIZE};
 
     // Adapt the combined int32 coefficient layout into the packed int16 AC buffer
     // the device kernels now consume (DC slot elided; coefficient index k in
@@ -53,24 +56,41 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     std::uint32_t* d_sizes{nullptr};
     std::uint32_t* d_offsets{nullptr};
     std::uint8_t* d_out{nullptr};
+    std::uint8_t* d_context_map{nullptr};
+    std::uint32_t* d_context_hist{nullptr};
 
     bool ok{upload(ac, &d_ac) && upload(depth, &d_depth) && upload(bits, &d_bits) &&
-            cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_hist, histogram_span * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
+    if (ok && context_map != nullptr) {
+        ok = upload(*context_map, &d_context_map) &&
+             cudaMalloc(&d_context_hist,
+                        AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) == cudaSuccess;
+    }
 
     std::size_t total_bytes{0};
-    ok = ok && ac_build_histogram(d_ac, width, height, d_hist);
-    ok = ok && ac_encode_groups(d_ac, width, height, d_depth, d_bits, depth.size(), d_out, capacity,
-                                d_sizes, d_offsets, &total_bytes);
+    if (ok && context_map == nullptr) {
+        ok = ac_build_histogram(d_ac, width, height, d_hist) &&
+             ac_encode_groups(d_ac, width, height, d_depth, d_bits, depth.size(),
+                              d_out, capacity, d_sizes, d_offsets, &total_bytes);
+    } else if (ok) {
+        ok = ac_build_context_histograms(d_ac, width, height, d_context_hist) &&
+             ac_collapse_context_histograms(d_context_hist, d_context_map,
+                                            num_clusters, d_hist) &&
+             ac_encode_groups_runtime_map(
+                 d_ac, width, height, d_context_map, d_depth, d_bits, num_clusters,
+                 d_out, capacity, d_sizes, d_offsets, &total_bytes);
+    }
 
     if (ok) {
-        out.histogram.assign(AC_HIST_SPAN, 0);
+        out.histogram.assign(histogram_span, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
         out.stream.assign(total_bytes, 0);
-        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HIST_SPAN * sizeof(std::uint32_t),
+        ok = cudaMemcpy(out.histogram.data(), d_hist,
+                        histogram_span * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
@@ -87,7 +107,36 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std
     cudaFree(d_sizes);
     cudaFree(d_offsets);
     cudaFree(d_out);
+    cudaFree(d_context_map);
+    cudaFree(d_context_hist);
     return ok;
+}
+
+bool ac_encode_device(const std::vector<std::int32_t>& q, std::size_t width,
+                      std::size_t height, const std::vector<std::uint8_t>& depth,
+                      const std::vector<std::uint16_t>& bits,
+                      AcDeviceResult& out) {
+    return ac_encode_device_impl(q, width, height, nullptr, AC_NUM_CLUSTERS,
+                                 depth, bits, out);
+}
+
+bool ac_encode_device_runtime_map(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<std::uint8_t>& context_map, std::size_t num_clusters,
+    const std::vector<std::uint8_t>& depth,
+    const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
+    if (context_map.size() != AC_NUM_CONTEXTS || num_clusters == 0 ||
+        num_clusters > 256 || depth.size() != num_clusters * AC_HISTOGRAM_SIZE ||
+        bits.size() != depth.size()) {
+        return false;
+    }
+    for (std::uint8_t cluster : context_map) {
+        if (cluster >= num_clusters) {
+            return false;
+        }
+    }
+    return ac_encode_device_impl(q, width, height, &context_map, num_clusters,
+                                 depth, bits, out);
 }
 
 bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,

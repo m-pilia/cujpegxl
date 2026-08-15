@@ -40,6 +40,14 @@ bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t h
 bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
                                  std::uint32_t* histograms);
 
+// Collapses per-context histograms into runtime-selected clusters. All buffers
+// are device-visible; `context_map` has AC_NUM_CONTEXTS entries and every entry
+// must be below `num_clusters`.
+bool ac_collapse_context_histograms(const std::uint32_t* context_histograms,
+                                    const std::uint8_t* context_map,
+                                    std::size_t num_clusters,
+                                    std::uint32_t* cluster_histograms);
+
 // Phase 2: emit each AC group's token bitstream (byte-aligned, one AcGroup TOC
 // section per group) concatenated into `out`, mirroring the host bitstream
 // writer byte-for-byte. `ac` is the packed int16 AC buffer (see
@@ -54,6 +62,13 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
                       std::size_t alphabet_size, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                       std::size_t* total_bytes);
+
+bool ac_encode_groups_runtime_map(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const std::uint8_t* depth,
+    const std::uint16_t* bits, std::size_t num_clusters, std::uint8_t* out,
+    std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes);
 
 // Mixed-block (M3) AC histogram: as ac_build_histogram, but `ac` is the
 // covered-block layout (three channel planes of (width/8 * height/8) *
@@ -76,6 +91,14 @@ bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::si
                          std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
                          std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
                          std::uint32_t* group_offsets, std::size_t* total_bytes);
+
+bool ac_encode_groups_m3_runtime_map(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const std::uint8_t* depth, const std::uint16_t* bits,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

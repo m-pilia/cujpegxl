@@ -71,6 +71,9 @@ struct AcReference {
     std::vector<std::vector<std::uint8_t>> group_streams{};
 };
 AcReference reference_ac_encode(const FrameCoefficients& fc);
+AcReference reference_ac_encode(const FrameCoefficients& fc,
+                                const std::vector<std::uint8_t>& context_map,
+                                std::size_t num_clusters);
 
 std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc);
 

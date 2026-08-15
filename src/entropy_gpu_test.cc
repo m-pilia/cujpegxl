@@ -241,6 +241,34 @@ TEST(EntropyGpu, PerContextHistogramMatchesHost) {
     check_context_histograms(fc, false);
 }
 
+TEST(EntropyGpu, RuntimeContextMapMatchesHostBytes) {
+    FrameCoefficients fc{make_frame(512, 384)};
+    fill_ac_pattern(fc);
+    constexpr std::size_t num_clusters{7};
+    std::vector<std::uint8_t> context_map(AC_NUM_CONTEXTS);
+    for (std::size_t context{0}; context < context_map.size(); ++context) {
+        context_map[context] = static_cast<std::uint8_t>(
+            (context * 5 + context / 17) % num_clusters);
+    }
+
+    const AcReference ref{reference_ac_encode(fc, context_map, num_clusters)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult dev{};
+    ASSERT_TRUE(ac_encode_device_runtime_map(q, fc.width, fc.height, context_map,
+                                             num_clusters, ref.depth, ref.bits, dev));
+    EXPECT_EQ(dev.histogram, ref.histogram);
+    ASSERT_EQ(dev.group_sizes.size(), ref.group_streams.size());
+    for (std::size_t group{0}; group < ref.group_streams.size(); ++group) {
+        EXPECT_EQ(dev.group_sizes[group], ref.group_streams[group].size());
+        const std::size_t offset{dev.group_offsets[group]};
+        ASSERT_LE(offset + ref.group_streams[group].size(), dev.stream.size());
+        for (std::size_t byte{0}; byte < ref.group_streams[group].size(); ++byte) {
+            EXPECT_EQ(dev.stream[offset + byte], ref.group_streams[group][byte])
+                << "group " << group << " byte " << byte;
+        }
+    }
+}
+
 TEST(EntropyGpuM3, PerContextHistogramMatchesHost) {
     check_context_histograms(make_mixed_frame(256, 256), true);
 }

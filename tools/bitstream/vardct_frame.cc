@@ -258,7 +258,9 @@ std::size_t log2_covered(int side) { return side == 16 ? 2 : (side == 32 ? 4 : 0
 // each coefficient's zero-density context follows the scan.
 void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
                                  std::size_t by0, std::size_t gbw, std::size_t gbh,
-                                 std::vector<std::uint32_t>& cluster_hist, std::vector<AcTok>& out) {
+                                 std::vector<std::uint32_t>& cluster_hist,
+                                 std::vector<AcTok>& out,
+                                 const std::uint8_t* context_map = nullptr) {
     const int channel_order[3]{1, 0, 2};  // physical planes Y, X, B
     const HybridUintConfig config{};
 
@@ -297,11 +299,14 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
     }
 
     const auto emit = [&](std::uint32_t value, std::uint32_t context) {
-        const int cluster{ac_cluster(context)};
+        const std::uint8_t cluster{
+            context_map == nullptr
+                ? static_cast<std::uint8_t>(ac_cluster(context))
+                : context_map[context]};
         std::uint32_t symbol{}, nbits{}, bits{};
         config.encode(value, symbol, nbits, bits);
         ++cluster_hist[static_cast<std::size_t>(cluster) * AC_STRIDE + symbol];
-        out.push_back({static_cast<std::uint8_t>(cluster), context, symbol, nbits, bits});
+        out.push_back({cluster, context, symbol, nbits, bits});
     };
 
     // Pass 2: contexts + tokens in decoder order.
@@ -543,14 +548,25 @@ const std::array<std::uint32_t, 64>& dct8_natural_order() {
 }
 
 AcReference reference_ac_encode(const FrameCoefficients& fc) {
+    return reference_ac_encode(fc, ac_context_map(), AC_NUM_CLUSTERS);
+}
+
+AcReference reference_ac_encode(const FrameCoefficients& fc,
+                                const std::vector<std::uint8_t>& context_map,
+                                std::size_t num_clusters) {
     assert(fc.width % 8 == 0 && fc.height % 8 == 0);
+    assert(context_map.size() == AC_NUM_CONTEXTS);
+    assert(num_clusters > 0 && num_clusters <= 256);
+    for (std::uint8_t cluster : context_map) {
+        assert(cluster < num_clusters);
+    }
     const std::size_t bw{fc.width / 8};
     const std::size_t bh{fc.height / 8};
     const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
     const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
     const std::size_t num_groups{xg * yg};
 
-    std::vector<std::uint32_t> cluster_hist(AC_NUM_CLUSTERS * AC_STRIDE, 0);
+    std::vector<std::uint32_t> cluster_hist(num_clusters * AC_STRIDE, 0);
     std::vector<AcTok> toks{};
     std::vector<std::pair<std::size_t, std::size_t>> ranges(num_groups);
     for (std::size_t g{0}; g < num_groups; ++g) {
@@ -559,19 +575,20 @@ AcReference reference_ac_encode(const FrameCoefficients& fc) {
         const std::size_t gbw{std::min(AC_GROUP_BLOCKS, bw - bx0)};
         const std::size_t gbh{std::min(AC_GROUP_BLOCKS, bh - by0)};
         const std::size_t begin{toks.size()};
-        tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, cluster_hist, toks);
+        tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, cluster_hist, toks,
+                                    context_map.data());
         ranges[g] = {begin, toks.size()};
     }
 
     AcReference ref{};
     ref.histogram = cluster_hist;
 
-    const std::vector<std::uint8_t> cmap{ac_context_map()};
-    ref.depth.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
-    ref.bits.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
+    ref.depth.assign(num_clusters * AC_STRIDE, 0);
+    ref.bits.assign(num_clusters * AC_STRIDE, 0);
     BitWriter histograms{};
-    write_clustered_prefix_histograms(histograms, cmap.data(), AC_NUM_CONTEXTS, AC_NUM_CLUSTERS,
-                                      cluster_hist.data(), AC_STRIDE, HybridUintConfig{},
+    write_clustered_prefix_histograms(histograms, context_map.data(), AC_NUM_CONTEXTS,
+                                      num_clusters, cluster_hist.data(), AC_STRIDE,
+                                      HybridUintConfig{},
                                       ref.depth.data(), ref.bits.data());
 
     ref.group_streams.reserve(num_groups);
