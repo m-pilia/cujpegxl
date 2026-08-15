@@ -19,8 +19,10 @@ namespace cujpegxl {
 namespace {
 
 using bitstream::AcReference;
+using bitstream::AcAnsReference;
 using bitstream::FrameCoefficients;
 using bitstream::reference_ac_encode;
+using bitstream::reference_ac_ans_encode;
 
 // Flattens fc.ac into the device coefficient layout (plane-major over channels
 // X, Y, B; blocks in raster order; 64 coefficients each).
@@ -264,6 +266,91 @@ TEST(EntropyGpu, RuntimeContextMapMatchesHostBytes) {
         ASSERT_LE(offset + ref.group_streams[group].size(), dev.stream.size());
         for (std::size_t byte{0}; byte < ref.group_streams[group].size(); ++byte) {
             EXPECT_EQ(dev.stream[offset + byte], ref.group_streams[group][byte])
+                << "group " << group << " byte " << byte;
+        }
+    }
+}
+
+void check_ans_streams(const FrameCoefficients& fc,
+                       const std::vector<std::uint8_t>& context_map,
+                       std::size_t num_clusters) {
+    const AcAnsReference reference{
+        reference_ac_ans_encode(fc, context_map, num_clusters)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult device{};
+    ASSERT_TRUE(ac_encode_device_ans_runtime_map(
+        q, fc.width, fc.height, context_map, reference.tables, device));
+    AcDeviceResult repeated{};
+    ASSERT_TRUE(ac_encode_device_ans_runtime_map(
+        q, fc.width, fc.height, context_map, reference.tables, repeated));
+    EXPECT_EQ(repeated.group_sizes, device.group_sizes);
+    EXPECT_EQ(repeated.group_offsets, device.group_offsets);
+    EXPECT_EQ(repeated.stream, device.stream);
+    ASSERT_EQ(device.group_sizes.size(), reference.group_streams.size());
+    std::uint32_t expected_offset{0};
+    for (std::size_t group{0}; group < reference.group_streams.size(); ++group) {
+        EXPECT_EQ(device.group_offsets[group], expected_offset);
+        EXPECT_EQ(device.group_sizes[group], reference.group_streams[group].size());
+        expected_offset += device.group_sizes[group];
+        ASSERT_LE(device.group_offsets[group] + reference.group_streams[group].size(),
+                  device.stream.size());
+        for (std::size_t byte{0}; byte < reference.group_streams[group].size(); ++byte) {
+            EXPECT_EQ(device.stream[device.group_offsets[group] + byte],
+                      reference.group_streams[group][byte])
+                << "group " << group << " byte " << byte;
+        }
+    }
+    EXPECT_EQ(device.stream.size(), expected_offset);
+}
+
+TEST(EntropyGpuAns, FixedContextMapMatchesHostBytes) {
+    FrameCoefficients fc{make_frame(512, 384)};
+    fill_ac_pattern(fc);
+    const AcAnsReference reference{reference_ac_ans_encode(fc)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult device{};
+    ASSERT_TRUE(ac_encode_device_ans(q, fc.width, fc.height, reference.tables,
+                                     device));
+    ASSERT_EQ(device.group_sizes.size(), reference.group_streams.size());
+    for (std::size_t group{0}; group < reference.group_streams.size(); ++group) {
+        EXPECT_EQ(device.group_sizes[group], reference.group_streams[group].size());
+        ASSERT_LE(device.group_offsets[group] + reference.group_streams[group].size(),
+                  device.stream.size());
+        for (std::size_t byte{0}; byte < reference.group_streams[group].size(); ++byte) {
+            EXPECT_EQ(device.stream[device.group_offsets[group] + byte],
+                      reference.group_streams[group][byte])
+                << "group " << group << " byte " << byte;
+        }
+    }
+}
+
+TEST(EntropyGpuAns, RuntimeContextMapMatchesHostBytes) {
+    FrameCoefficients fc{make_frame(512, 384)};
+    fill_ac_pattern(fc);
+    constexpr std::size_t NUM_CLUSTERS = 7;
+    std::vector<std::uint8_t> context_map(AC_NUM_CONTEXTS);
+    for (std::size_t context{0}; context < context_map.size(); ++context) {
+        context_map[context] = static_cast<std::uint8_t>(
+            (context * 5 + context / 17) % NUM_CLUSTERS);
+    }
+    check_ans_streams(fc, context_map, NUM_CLUSTERS);
+}
+
+TEST(EntropyGpuAns, MixedBlocksMatchHostBytes) {
+    const FrameCoefficients fc{make_mixed_frame(256, 256)};
+    const AcAnsReference reference{reference_ac_ans_encode(fc)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult device{};
+    ASSERT_TRUE(ac_encode_device_m3_ans(q, fc.acs, fc.width, fc.height,
+                                        reference.tables, device));
+    ASSERT_EQ(device.group_sizes.size(), reference.group_streams.size());
+    for (std::size_t group{0}; group < reference.group_streams.size(); ++group) {
+        EXPECT_EQ(device.group_sizes[group], reference.group_streams[group].size());
+        ASSERT_LE(device.group_offsets[group] + reference.group_streams[group].size(),
+                  device.stream.size());
+        for (std::size_t byte{0}; byte < reference.group_streams[group].size(); ++byte) {
+            EXPECT_EQ(device.stream[device.group_offsets[group] + byte],
+                      reference.group_streams[group][byte])
                 << "group " << group << " byte " << byte;
         }
     }

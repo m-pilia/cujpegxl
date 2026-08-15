@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "bitstream/ans_encoder.h"
+
 namespace cujpegxl {
 
 // Test-only host-vector wrapper around the device AC entropy kernels: uploads
@@ -31,6 +33,15 @@ bool ac_encode_device_runtime_map(
     const std::vector<std::uint8_t>& depth,
     const std::vector<std::uint16_t>& bits, AcDeviceResult& out);
 
+bool ac_encode_device_ans(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<bitstream::AnsEncodingTable>& tables, AcDeviceResult& out);
+
+bool ac_encode_device_ans_runtime_map(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<std::uint8_t>& context_map,
+    const std::vector<bitstream::AnsEncodingTable>& tables, AcDeviceResult& out);
+
 // Mixed-block variant: `q` is the covered-block coefficient layout (three planes
 // of (width/8 * height/8) * 64 int32) and `acs` the per-8x8 transform signal;
 // runs ac_build_histogram_m3 / ac_encode_groups_m3.
@@ -38,6 +49,11 @@ bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<s
                          std::size_t width, std::size_t height,
                          const std::vector<std::uint8_t>& depth,
                          const std::vector<std::uint16_t>& bits, AcDeviceResult& out);
+
+bool ac_encode_device_m3_ans(
+    const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
+    std::size_t width, std::size_t height,
+    const std::vector<bitstream::AnsEncodingTable>& tables, AcDeviceResult& out);
 
 bool ac_context_histogram_device(const std::vector<std::int32_t>& q, std::size_t width,
                                  std::size_t height, std::vector<std::uint32_t>& out);

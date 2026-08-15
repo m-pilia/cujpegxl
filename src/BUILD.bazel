@@ -421,6 +421,7 @@ cuda_library(
     deps = [
         ":ac_context",
         ":entropy",
+        "//src/bitstream",
     ],
 )
 

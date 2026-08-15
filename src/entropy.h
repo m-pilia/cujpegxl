@@ -16,6 +16,12 @@ namespace cujpegxl {
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
 constexpr std::size_t AC_CONTEXT_HISTOGRAM_ENTRIES = AC_NUM_CONTEXTS * AC_HISTOGRAM_SIZE;
 
+struct AcAnsEncodingTable {
+    std::uint16_t frequencies[AC_HISTOGRAM_SIZE];
+    std::uint16_t offsets[AC_HISTOGRAM_SIZE + 1];
+    std::uint16_t reverse_map[4096];
+};
+
 // AC coefficients stored per block (the 63 non-DC libjxl-raster slots). The DC
 // slot lives in the separate int32 DC buffer, so it is elided from AC storage.
 constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
@@ -70,6 +76,19 @@ bool ac_encode_groups_runtime_map(
     std::size_t out_capacity, std::uint32_t* group_sizes,
     std::uint32_t* group_offsets, std::size_t* total_bytes);
 
+bool ac_encode_groups_ans(const std::int16_t* ac, std::size_t width,
+                          std::size_t height, const AcAnsEncodingTable* tables,
+                          std::size_t num_clusters, std::uint8_t* out,
+                          std::size_t out_capacity, std::uint32_t* group_sizes,
+                          std::uint32_t* group_offsets, std::size_t* total_bytes);
+
+bool ac_encode_groups_ans_runtime_map(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes);
+
 // Mixed-block (M3) AC histogram: as ac_build_histogram, but `ac` is the
 // covered-block layout (three channel planes of (width/8 * height/8) *
 // COEFFS_PER_BLOCK int16) and `acs` the per-8x8 transform signal (nullptr = all
@@ -99,6 +118,20 @@ bool ac_encode_groups_m3_runtime_map(
     std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
     std::uint32_t* group_sizes, std::uint32_t* group_offsets,
     std::size_t* total_bytes);
+
+bool ac_encode_groups_m3_ans(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const AcAnsEncodingTable* tables,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes);
+
+bool ac_encode_groups_m3_ans_runtime_map(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::size_t num_clusters,
+    std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

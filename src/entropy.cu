@@ -722,6 +722,125 @@ __global__ void group_emit_kernel(const std::int16_t* ac, const std::int32_t* nz
     }
 }
 
+struct AcAnsToken {
+    std::uint8_t symbol;
+    std::uint8_t cluster;
+    std::uint8_t nbits;
+    std::uint32_t bits;
+};
+
+struct DeviceAnsTransition {
+    std::uint32_t state;
+    std::uint16_t bits;
+    bool renormalized;
+};
+
+__device__ DeviceAnsTransition ac_ans_put(std::uint32_t state,
+                                         const AcAnsEncodingTable& table,
+                                         std::uint8_t symbol) {
+    const std::uint32_t frequency{table.frequencies[symbol]};
+    DeviceAnsTransition transition{state, 0, false};
+    if ((transition.state >> 20) >= frequency) {
+        transition.bits = static_cast<std::uint16_t>(transition.state);
+        transition.state >>= 16;
+        transition.renormalized = true;
+    }
+    const std::uint32_t quotient{transition.state / frequency};
+    const std::uint32_t remainder{transition.state % frequency};
+    transition.state =
+        (quotient << 12) + table.reverse_map[table.offsets[symbol] + remainder];
+    return transition;
+}
+
+__device__ std::size_t collect_ac_ans_tokens(const AcGroupCtx& c, std::size_t item,
+                                             AcAnsToken* tokens) {
+    int ch{};
+    std::uint32_t predicted{};
+    const std::int16_t* blk{ac_item_info(c, item, ch, predicted)};
+    std::size_t count{0};
+    for_each_token_ctx(blk, ch, predicted,
+                       [&](std::uint32_t symbol, std::uint32_t nbits,
+                           std::uint32_t bits, std::uint32_t context) {
+                           tokens[count] = {
+                               static_cast<std::uint8_t>(symbol),
+                               runtime_ac_cluster(c.context_map, context),
+                               static_cast<std::uint8_t>(nbits), bits};
+                           ++count;
+                       });
+    return count;
+}
+
+__global__ void group_ans_size_kernel(
+    const std::int16_t* ac, const std::int32_t* nz_grid, std::size_t bw,
+    std::size_t bh, std::size_t nblocks, std::size_t xg,
+    std::size_t num_groups, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::uint32_t* group_bits,
+    std::uint32_t* group_sizes) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups || threadIdx.x != 0) {
+        return;
+    }
+    const AcGroupCtx c{build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg,
+                                    nullptr, nullptr, context_map)};
+    std::uint32_t state{0x13u << 16};
+    std::uint32_t payload_bits{0};
+    AcAnsToken tokens[64];
+    for (std::size_t item{c.n_items}; item > 0; --item) {
+        const std::size_t count{collect_ac_ans_tokens(c, item - 1, tokens)};
+        for (std::size_t i{count}; i > 0; --i) {
+            const AcAnsToken& token{tokens[i - 1]};
+            const DeviceAnsTransition transition{
+                ac_ans_put(state, tables[token.cluster], token.symbol)};
+            state = transition.state;
+            payload_bits += token.nbits + (transition.renormalized ? 16 : 0);
+        }
+    }
+    group_bits[g] = 32 + payload_bits;
+    group_sizes[g] = (group_bits[g] + 7) / 8;
+}
+
+__global__ void group_ans_emit_kernel(
+    const std::int16_t* ac, const std::int32_t* nz_grid, std::size_t bw,
+    std::size_t bh, std::size_t nblocks, std::size_t xg,
+    std::size_t num_groups, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, const std::uint32_t* group_bits,
+    std::uint8_t* out, const std::uint32_t* group_offsets) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups || threadIdx.x != 0) {
+        return;
+    }
+    const AcGroupCtx c{build_ac_ctx(g, ac, nz_grid, bw, bh, nblocks, xg,
+                                    nullptr, nullptr, context_map)};
+    const unsigned long long base{
+        static_cast<unsigned long long>(group_offsets[g]) << 3};
+    std::uint32_t cursor{group_bits[g] - 32};
+    std::uint32_t state{0x13u << 16};
+    AcAnsToken tokens[64];
+    for (std::size_t item{c.n_items}; item > 0; --item) {
+        const std::size_t count{collect_ac_ans_tokens(c, item - 1, tokens)};
+        for (std::size_t i{count}; i > 0; --i) {
+            const AcAnsToken& token{tokens[i - 1]};
+            const DeviceAnsTransition transition{
+                ac_ans_put(state, tables[token.cluster], token.symbol)};
+            state = transition.state;
+            const std::uint32_t token_bits{
+                token.nbits + (transition.renormalized ? 16u : 0u)};
+            cursor -= token_bits;
+            AtomicBitWriter writer{reinterpret_cast<unsigned int*>(out),
+                                   base + 32 + cursor};
+            if (transition.renormalized) {
+                writer.put(16, transition.bits);
+            }
+            if (token.nbits != 0) {
+                writer.put(token.nbits, token.bits);
+            }
+        }
+    }
+    AtomicBitWriter state_writer{reinterpret_cast<unsigned int*>(out), base};
+    state_writer.put(16, state & 0xffffu);
+    state_writer.put(16, state >> 16);
+}
+
 __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, std::size_t bh,
                                     std::size_t nblocks, std::size_t xdg,
                                     std::uint32_t* histograms) {
@@ -1218,6 +1337,102 @@ __global__ void group_emit_m3_kernel(const std::int16_t* ac, const std::int8_t* 
     }
 }
 
+__device__ std::size_t collect_ac_ans_tokens_m3(const AcGroupCtxM3& c,
+                                                std::size_t item,
+                                                AcAnsToken* tokens) {
+    std::size_t bx{}, by{};
+    int ch{};
+    std::uint32_t predicted{};
+    const std::int16_t* plane{};
+    const int side{ac_item_m3(c, item, bx, by, ch, predicted, plane)};
+    if (side == ACS_COVERED) {
+        return 0;
+    }
+    std::size_t count{0};
+    m3_for_each_token_ctx(plane, bx, by, side, c.bw, ch, predicted,
+                          [&](std::uint32_t symbol, std::uint32_t nbits,
+                              std::uint32_t bits, std::uint32_t context) {
+                              tokens[count] = {
+                                  static_cast<std::uint8_t>(symbol),
+                                  runtime_ac_cluster(c.context_map, context),
+                                  static_cast<std::uint8_t>(nbits), bits};
+                              ++count;
+                          });
+    return count;
+}
+
+__global__ void group_ans_size_m3_kernel(
+    const std::int16_t* ac, const std::int8_t* acs,
+    const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
+    std::size_t nblocks, std::size_t xg, std::size_t num_groups,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables,
+    std::uint32_t* group_bits, std::uint32_t* group_sizes) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups || threadIdx.x != 0) {
+        return;
+    }
+    const AcGroupCtxM3 c{build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks,
+                                         xg, nullptr, nullptr, context_map)};
+    std::uint32_t state{0x13u << 16};
+    std::uint32_t payload_bits{0};
+    AcAnsToken tokens[1024];
+    for (std::size_t item{c.n_items}; item > 0; --item) {
+        const std::size_t count{collect_ac_ans_tokens_m3(c, item - 1, tokens)};
+        for (std::size_t i{count}; i > 0; --i) {
+            const AcAnsToken& token{tokens[i - 1]};
+            const DeviceAnsTransition transition{
+                ac_ans_put(state, tables[token.cluster], token.symbol)};
+            state = transition.state;
+            payload_bits += token.nbits + (transition.renormalized ? 16 : 0);
+        }
+    }
+    group_bits[g] = 32 + payload_bits;
+    group_sizes[g] = (group_bits[g] + 7) / 8;
+}
+
+__global__ void group_ans_emit_m3_kernel(
+    const std::int16_t* ac, const std::int8_t* acs,
+    const std::int32_t* nz_grid, std::size_t bw, std::size_t bh,
+    std::size_t nblocks, std::size_t xg, std::size_t num_groups,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables,
+    const std::uint32_t* group_bits, std::uint8_t* out,
+    const std::uint32_t* group_offsets) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups || threadIdx.x != 0) {
+        return;
+    }
+    const AcGroupCtxM3 c{build_ac_ctx_m3(g, ac, acs, nz_grid, bw, bh, nblocks,
+                                         xg, nullptr, nullptr, context_map)};
+    const unsigned long long base{
+        static_cast<unsigned long long>(group_offsets[g]) << 3};
+    std::uint32_t cursor{group_bits[g] - 32};
+    std::uint32_t state{0x13u << 16};
+    AcAnsToken tokens[1024];
+    for (std::size_t item{c.n_items}; item > 0; --item) {
+        const std::size_t count{collect_ac_ans_tokens_m3(c, item - 1, tokens)};
+        for (std::size_t i{count}; i > 0; --i) {
+            const AcAnsToken& token{tokens[i - 1]};
+            const DeviceAnsTransition transition{
+                ac_ans_put(state, tables[token.cluster], token.symbol)};
+            state = transition.state;
+            const std::uint32_t token_bits{
+                token.nbits + (transition.renormalized ? 16u : 0u)};
+            cursor -= token_bits;
+            AtomicBitWriter writer{reinterpret_cast<unsigned int*>(out),
+                                   base + 32 + cursor};
+            if (transition.renormalized) {
+                writer.put(16, transition.bits);
+            }
+            if (token.nbits != 0) {
+                writer.put(token.nbits, token.bits);
+            }
+        }
+    }
+    AtomicBitWriter state_writer{reinterpret_cast<unsigned int*>(out), base};
+    state_writer.put(16, state & 0xffffu);
+    state_writer.put(16, state >> 16);
+}
+
 }  // namespace
 
 std::size_t ac_num_groups(std::size_t width, std::size_t height) {
@@ -1410,6 +1625,124 @@ bool ac_encode_groups_runtime_map(
                                  group_offsets, total_bytes);
 }
 
+static bool ac_encode_groups_ans_impl(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes) {
+    ensure_constants();
+    if (tables == nullptr || num_clusters == 0 || num_clusters > 256) {
+        return false;
+    }
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
+    const std::size_t num_groups{ac_num_groups(width, height)};
+
+    std::int32_t* nz_grid{nullptr};
+    std::uint32_t* group_bits{nullptr};
+    if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) !=
+            cudaSuccess ||
+        cudaMallocAsync(&group_bits, num_groups * sizeof(std::uint32_t), 0) !=
+            cudaSuccess) {
+        cudaFreeAsync(nz_grid, 0);
+        cudaFreeAsync(group_bits, 0);
+        return false;
+    }
+    const auto free_scratch = [&] {
+        cudaFreeAsync(nz_grid, 0);
+        cudaFreeAsync(group_bits, 0);
+    };
+
+    const std::size_t total_items{3 * bw * bh};
+    constexpr unsigned int threads{256};
+    ac_nzeros_grid_kernel<<<
+        static_cast<unsigned int>((total_items + threads - 1) / threads),
+        threads>>>(ac, bw, bh, nblocks, nz_grid);
+    const unsigned int grid{static_cast<unsigned int>(num_groups)};
+    group_ans_size_kernel<<<grid, 1>>>(ac, nz_grid, bw, bh, nblocks, xg,
+                                      num_groups, context_map, tables,
+                                      group_bits, group_sizes);
+    if (cudaGetLastError() != cudaSuccess ||
+        cudaDeviceSynchronize() != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+
+    void* scan_temp{nullptr};
+    std::size_t scan_temp_bytes{0};
+    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes,
+                                  group_offsets,
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes,
+                                  group_offsets,
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(scan_temp, 0);
+    if (scan_status != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+
+    std::uint32_t last_offset{0};
+    std::uint32_t last_size{0};
+    if (cudaMemcpy(&last_offset, group_offsets + num_groups - 1,
+                   sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + num_groups - 1,
+                   sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
+    if (*total_bytes > out_capacity) {
+        free_scratch();
+        return false;
+    }
+    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+
+    group_ans_emit_kernel<<<grid, 1>>>(ac, nz_grid, bw, bh, nblocks, xg,
+                                      num_groups, context_map, tables,
+                                      group_bits, out, group_offsets);
+    const bool ok{cudaGetLastError() == cudaSuccess &&
+                  cudaDeviceSynchronize() == cudaSuccess};
+    free_scratch();
+    return ok;
+}
+
+bool ac_encode_groups_ans(const std::int16_t* ac, std::size_t width,
+                          std::size_t height, const AcAnsEncodingTable* tables,
+                          std::size_t num_clusters, std::uint8_t* out,
+                          std::size_t out_capacity, std::uint32_t* group_sizes,
+                          std::uint32_t* group_offsets, std::size_t* total_bytes) {
+    return ac_encode_groups_ans_impl(ac, width, height, nullptr, tables,
+                                     num_clusters, out, out_capacity,
+                                     group_sizes, group_offsets, total_bytes);
+}
+
+bool ac_encode_groups_ans_runtime_map(
+    const std::int16_t* ac, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes) {
+    if (context_map == nullptr) {
+        return false;
+    }
+    return ac_encode_groups_ans_impl(ac, width, height, context_map, tables,
+                                     num_clusters, out, out_capacity,
+                                     group_sizes, group_offsets, total_bytes);
+}
+
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                            std::size_t height, std::uint32_t* histogram) {
     ensure_constants();
@@ -1578,6 +1911,120 @@ bool ac_encode_groups_m3_runtime_map(
     return ac_encode_groups_m3_impl(ac, acs, width, height, context_map, depth,
                                     bits, num_clusters, out, out_capacity,
                                     group_sizes, group_offsets, total_bytes);
+}
+
+static bool ac_encode_groups_m3_ans_impl(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::size_t num_clusters,
+    std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes) {
+    ensure_constants();
+    if (tables == nullptr || num_clusters == 0 || num_clusters > 256) {
+        return false;
+    }
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
+    const std::size_t num_groups{ac_num_groups(width, height)};
+    std::int32_t* nz_grid{nullptr};
+    std::uint32_t* group_bits{nullptr};
+    if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) !=
+            cudaSuccess ||
+        cudaMallocAsync(&group_bits, num_groups * sizeof(std::uint32_t), 0) !=
+            cudaSuccess) {
+        cudaFreeAsync(nz_grid, 0);
+        cudaFreeAsync(group_bits, 0);
+        return false;
+    }
+    const auto free_scratch = [&] {
+        cudaFreeAsync(nz_grid, 0);
+        cudaFreeAsync(group_bits, 0);
+    };
+    constexpr unsigned int threads{256};
+    ac_nzeros_grid_m3_kernel<<<
+        static_cast<unsigned int>((bw * bh + threads - 1) / threads), threads>>>(
+        ac, acs, bw, bh, nblocks, nz_grid);
+    const unsigned int grid{static_cast<unsigned int>(num_groups)};
+    group_ans_size_m3_kernel<<<grid, 1>>>(
+        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables,
+        group_bits, group_sizes);
+    if (cudaGetLastError() != cudaSuccess ||
+        cudaDeviceSynchronize() != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+
+    void* scan_temp{nullptr};
+    std::size_t scan_temp_bytes{0};
+    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes,
+                                  group_offsets,
+                                  static_cast<int>(num_groups));
+    if (cudaMallocAsync(&scan_temp, scan_temp_bytes, 0) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    cub::DeviceScan::ExclusiveSum(scan_temp, scan_temp_bytes, group_sizes,
+                                  group_offsets,
+                                  static_cast<int>(num_groups));
+    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    cudaFreeAsync(scan_temp, 0);
+    if (scan_status != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    std::uint32_t last_offset{0};
+    std::uint32_t last_size{0};
+    if (cudaMemcpy(&last_offset, group_offsets + num_groups - 1,
+                   sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(&last_size, group_sizes + num_groups - 1,
+                   sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
+    if (*total_bytes > out_capacity) {
+        free_scratch();
+        return false;
+    }
+    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
+    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
+        free_scratch();
+        return false;
+    }
+    group_ans_emit_m3_kernel<<<grid, 1>>>(
+        ac, acs, nz_grid, bw, bh, nblocks, xg, num_groups, context_map, tables,
+        group_bits, out, group_offsets);
+    const bool ok{cudaGetLastError() == cudaSuccess &&
+                  cudaDeviceSynchronize() == cudaSuccess};
+    free_scratch();
+    return ok;
+}
+
+bool ac_encode_groups_m3_ans(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const AcAnsEncodingTable* tables,
+    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+    std::size_t* total_bytes) {
+    return ac_encode_groups_m3_ans_impl(
+        ac, acs, width, height, nullptr, tables, num_clusters, out,
+        out_capacity, group_sizes, group_offsets, total_bytes);
+}
+
+bool ac_encode_groups_m3_ans_runtime_map(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+    std::size_t height, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::size_t num_clusters,
+    std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes) {
+    if (context_map == nullptr) {
+        return false;
+    }
+    return ac_encode_groups_m3_ans_impl(
+        ac, acs, width, height, context_map, tables, num_clusters, out,
+        out_capacity, group_sizes, group_offsets, total_bytes);
 }
 
 std::size_t dc_num_groups(std::size_t width, std::size_t height) {
