@@ -358,6 +358,60 @@ TEST(EntropyGpuAns, MixedBlocksMatchHostBytes) {
     }
 }
 
+TEST(EntropyGpuAns, MaximumExtraBitsFitScratchBound) {
+    FrameCoefficients fc{make_frame(256, 256)};
+    for (std::size_t channel{0}; channel < 3; ++channel) {
+        for (std::size_t coefficient{1}; coefficient < fc.ac[channel].size(); ++coefficient) {
+            if ((coefficient & 63) != 0) {
+                fc.ac[channel][coefficient] = -32768;
+            }
+        }
+    }
+    const AcAnsReference reference{reference_ac_ans_encode(fc)};
+    ASSERT_EQ(reference.group_streams.size(), 1u);
+    EXPECT_LE(reference.group_streams[0].size(), ac_ans_group_scratch_bound(32 * 32) - 4);
+
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult device{};
+    ASSERT_TRUE(ac_encode_device_ans(q, fc.width, fc.height, reference.tables, device));
+    ASSERT_EQ(device.group_sizes.size(), 1u);
+    EXPECT_EQ(device.group_sizes[0], reference.group_streams[0].size());
+    EXPECT_EQ(device.stream, reference.group_streams[0]);
+
+    AcDeviceResult insufficient{};
+    ASSERT_GT(device.stream.size(), 0u);
+    EXPECT_FALSE(ac_encode_device_ans_with_capacity(q, fc.width, fc.height, reference.tables,
+                                                    device.stream.size() - 1, insufficient));
+}
+
+TEST(EntropyGpuAns, MaximumMixedTransformExtraBitsFitScratchBound) {
+    FrameCoefficients fc{make_frame(256, 256)};
+    constexpr std::size_t block_width{32};
+    fc.acs.assign(block_width * block_width, 8);
+    for (std::size_t by{0}; by < block_width; by += 4) {
+        for (std::size_t bx{0}; bx < block_width; bx += 4) {
+            set_first_block(fc, block_width, 32, bx, by);
+        }
+    }
+    for (std::size_t channel{0}; channel < 3; ++channel) {
+        for (std::size_t coefficient{1}; coefficient < fc.ac[channel].size(); ++coefficient) {
+            if ((coefficient & 63) != 0) {
+                fc.ac[channel][coefficient] = -32768;
+            }
+        }
+    }
+    const AcAnsReference reference{reference_ac_ans_encode(fc)};
+    ASSERT_EQ(reference.group_streams.size(), 1u);
+    EXPECT_LE(reference.group_streams[0].size(), ac_ans_group_scratch_bound(32 * 32) - 4);
+
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+    AcDeviceResult device{};
+    ASSERT_TRUE(ac_encode_device_m3_ans(q, fc.acs, fc.width, fc.height, reference.tables, device));
+    ASSERT_EQ(device.group_sizes.size(), 1u);
+    EXPECT_EQ(device.group_sizes[0], reference.group_streams[0].size());
+    EXPECT_EQ(device.stream, reference.group_streams[0]);
+}
+
 TEST(EntropyGpuM3, PerContextHistogramMatchesHost) {
     check_context_histograms(make_mixed_frame(256, 256), true);
 }

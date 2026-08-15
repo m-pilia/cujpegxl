@@ -143,11 +143,10 @@ static bool ac_encode_device_ans_impl(
     const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
     const std::vector<std::uint8_t>* context_map,
     const std::vector<bitstream::AnsEncodingTable>& host_tables,
-    AcDeviceResult& out) {
+    std::size_t capacity, AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
     const std::size_t blocks{(width / 8) * (height / 8)};
     const std::size_t plane{width * height};
-    const std::size_t capacity{q.size() * 8 + 4096};
     const std::size_t num_clusters{host_tables.size()};
     if (num_clusters == 0 || num_clusters > 256) {
         return false;
@@ -229,7 +228,15 @@ bool ac_encode_device_ans(
     const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
     const std::vector<bitstream::AnsEncodingTable>& tables,
     AcDeviceResult& out) {
-    return ac_encode_device_ans_impl(q, width, height, nullptr, tables, out);
+    return ac_encode_device_ans_impl(q, width, height, nullptr, tables,
+                                     q.size() * 8 + 4096, out);
+}
+
+bool ac_encode_device_ans_with_capacity(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<bitstream::AnsEncodingTable>& tables, std::size_t capacity,
+    AcDeviceResult& out) {
+    return ac_encode_device_ans_impl(q, width, height, nullptr, tables, capacity, out);
 }
 
 bool ac_encode_device_ans_runtime_map(
@@ -245,7 +252,8 @@ bool ac_encode_device_ans_runtime_map(
             return false;
         }
     }
-    return ac_encode_device_ans_impl(q, width, height, &context_map, tables, out);
+    return ac_encode_device_ans_impl(q, width, height, &context_map, tables,
+                                     q.size() * 8 + 4096, out);
 }
 
 bool ac_encode_device_m3(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,

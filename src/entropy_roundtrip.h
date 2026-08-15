@@ -37,6 +37,11 @@ bool ac_encode_device_ans(
     const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
     const std::vector<bitstream::AnsEncodingTable>& tables, AcDeviceResult& out);
 
+bool ac_encode_device_ans_with_capacity(
+    const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
+    const std::vector<bitstream::AnsEncodingTable>& tables, std::size_t capacity,
+    AcDeviceResult& out);
+
 bool ac_encode_device_ans_runtime_map(
     const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
     const std::vector<std::uint8_t>& context_map,

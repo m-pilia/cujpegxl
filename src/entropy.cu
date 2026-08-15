@@ -781,7 +781,8 @@ struct DeviceAnsTransition {
 };
 
 constexpr unsigned int AC_ANS_GROUP_THREADS = 1;
-constexpr std::size_t AC_ANS_GROUP_SLOT_BYTES = 3 * AC_GROUP_BLOCKS * AC_GROUP_BLOCKS * 64 * 6 + 64;
+constexpr std::size_t AC_ANS_GROUP_SLOT_BYTES =
+    ac_ans_group_scratch_bound(AC_GROUP_BLOCKS * AC_GROUP_BLOCKS);
 constexpr unsigned long long AC_ANS_GROUP_SLOT_BITS =
     static_cast<unsigned long long>(AC_ANS_GROUP_SLOT_BYTES) * 8;
 constexpr std::size_t AC_ANS_GROUP_ITEMS = 3 * AC_GROUP_BLOCKS * AC_GROUP_BLOCKS;

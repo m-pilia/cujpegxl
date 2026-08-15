@@ -16,6 +16,16 @@ namespace cujpegxl {
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
 constexpr std::size_t AC_CONTEXT_HISTOGRAM_ENTRIES = AC_NUM_CONTEXTS * AC_HISTOGRAM_SIZE;
 
+constexpr std::size_t ac_ans_group_scratch_bound(std::size_t block_count) {
+    constexpr std::size_t channels{3};
+    constexpr std::size_t tokens_per_block{64};
+    constexpr std::size_t bits_per_token{13 + 16};
+    constexpr std::size_t state_bits{32};
+    constexpr std::size_t writer_guard_bytes{4};
+    const std::size_t bits{state_bits + channels * block_count * tokens_per_block * bits_per_token};
+    return ((bits + 31) / 32) * 4 + writer_guard_bytes;
+}
+
 struct AcAnsEncodingTable {
     std::uint16_t frequencies[AC_HISTOGRAM_SIZE];
     std::uint16_t offsets[AC_HISTOGRAM_SIZE + 1];
