@@ -356,6 +356,27 @@ cuda_library(
 )
 
 cuda_library(
+    name = "ac_histogram_exchange",
+    srcs = ["ac_histogram_exchange.cu"],
+    hdrs = ["ac_histogram_exchange.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":entropy"],
+)
+
+cc_test(
+    name = "ac_histogram_exchange_gpu_test",
+    srcs = ["ac_histogram_exchange_gpu_test.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":ac_histogram_exchange",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cuda_library(
     name = "entropy_roundtrip",
     testonly = True,
     srcs = ["entropy_roundtrip.cu"],
