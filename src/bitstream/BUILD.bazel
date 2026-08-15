@@ -14,6 +14,7 @@ RUNTIME_COPTS = [
 cc_library(
     name = "bitstream",
     srcs = [
+        "ans_histogram.cc",
         "codestream.cc",
         "container.cc",
         "context_map.cc",
@@ -21,6 +22,7 @@ cc_library(
         "prefix_code.cc",
     ],
     hdrs = [
+        "ans_histogram.h",
         "bit_writer.h",
         "codestream.h",
         "container.h",
@@ -31,6 +33,16 @@ cc_library(
         "prefix_code.h",
     ],
     copts = RUNTIME_COPTS,
+)
+
+cc_test(
+    name = "ans_histogram_test",
+    srcs = ["ans_histogram_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
