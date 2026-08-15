@@ -19,6 +19,7 @@ cc_library(
         "codestream.cc",
         "container.cc",
         "context_map.cc",
+        "entropy_selector.cc",
         "histogram_writer.cc",
         "prefix_code.cc",
     ],
@@ -29,6 +30,7 @@ cc_library(
         "codestream.h",
         "container.h",
         "context_map.h",
+        "entropy_selector.h",
         "field_coder.h",
         "histogram_writer.h",
         "hybrid_uint.h",
@@ -76,6 +78,16 @@ cc_library(
         ":bitstream",
         "//src:ac_context",
         "//src:dc_predict",
+    ],
+)
+
+cc_test(
+    name = "entropy_selector_test",
+    srcs = ["entropy_selector_test.cc"],
+    deps = [
+        ":bitstream",
+        "@libjxl//:jxl",
+        "@googletest//:gtest_main",
     ],
 )
 
