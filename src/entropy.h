@@ -64,11 +64,20 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t height,
                         std::uint32_t* histogram);
 
+bool ac_build_histogram_with_nonzero_grid(const std::int16_t* ac, std::size_t width,
+                                          std::size_t height, const std::int32_t* nonzero_grid,
+                                          std::uint32_t* histogram);
+
 // Alternate phase-1 path for data-driven clustering. Accumulates one symbol
 // histogram for each AC context directly on the device. `histograms` has
 // AC_CONTEXT_HISTOGRAM_ENTRIES entries and is zeroed by the call.
 bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
                                  std::uint32_t* histograms);
+
+bool ac_build_context_histograms_with_nonzero_grid(const std::int16_t* ac, std::size_t width,
+                                                   std::size_t height,
+                                                   const std::int32_t* nonzero_grid,
+                                                   std::uint32_t* histograms);
 
 // Collapses per-context histograms into runtime-selected clusters. All buffers
 // are device-visible; `context_map` has AC_NUM_CONTEXTS entries and every entry
@@ -99,6 +108,31 @@ bool ac_encode_groups_runtime_map(const std::int16_t* ac, std::size_t width, std
                                   std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                                   std::size_t* total_bytes, AcEntropyTiming* timing = nullptr);
 
+std::size_t ac_prefix_run_count(std::size_t width, std::size_t height);
+
+bool ac_build_nonzero_grid(const std::int16_t* ac, std::size_t width, std::size_t height,
+                           std::int32_t* nonzero_grid, AcEntropyTiming* timing = nullptr);
+
+bool ac_size_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
+                    const std::uint8_t* context_map, const std::uint8_t* depth,
+                    std::size_t num_clusters, const std::int32_t* nonzero_grid,
+                    unsigned long long* run_offsets, std::size_t out_capacity,
+                    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                    std::size_t* total_bytes, AcEntropyTiming* timing = nullptr);
+
+bool ac_emit_groups(const std::int16_t* ac, std::size_t width, std::size_t height,
+                    const std::uint8_t* context_map, const std::uint8_t* depth,
+                    const std::uint16_t* bits, const std::int32_t* nonzero_grid,
+                    const unsigned long long* run_offsets, std::uint8_t* out,
+                    std::size_t out_capacity, const std::uint32_t* group_offsets,
+                    std::size_t total_bytes, AcEntropyTiming* timing = nullptr);
+
+bool ac_encode_groups_ans_with_nonzero_grid(
+    const std::int16_t* ac, std::size_t width, std::size_t height, const std::uint8_t* context_map,
+    const AcAnsEncodingTable* tables, std::size_t num_clusters, const std::int32_t* nonzero_grid,
+    std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+    std::uint32_t* group_offsets, std::size_t* total_bytes, AcEntropyTiming* timing = nullptr);
+
 bool ac_encode_groups_ans(const std::int16_t* ac, std::size_t width, std::size_t height,
                           const AcAnsEncodingTable* tables, std::size_t num_clusters,
                           std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
@@ -121,9 +155,20 @@ bool ac_encode_groups_ans_runtime_map(const std::int16_t* ac, std::size_t width,
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                            std::size_t height, std::uint32_t* histogram);
 
+bool ac_build_histogram_m3_with_nonzero_grid(const std::int16_t* ac, const std::int8_t* acs,
+                                             std::size_t width, std::size_t height,
+                                             const std::int32_t* nonzero_grid,
+                                             std::uint32_t* histogram);
+
 bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
                                     std::size_t width, std::size_t height,
                                     std::uint32_t* histograms);
+
+bool ac_build_context_histograms_m3_with_nonzero_grid(const std::int16_t* ac,
+                                                      const std::int8_t* acs, std::size_t width,
+                                                      std::size_t height,
+                                                      const std::int32_t* nonzero_grid,
+                                                      std::uint32_t* histograms);
 
 // Mixed-block (M3) AC group emit: as ac_encode_groups, over the covered-block
 // layout under `acs`. `depth`/`bits` are the shared prefix code from the phase-1
@@ -142,6 +187,33 @@ bool ac_encode_groups_m3_runtime_map(const std::int16_t* ac, const std::int8_t* 
                                      std::uint8_t* out, std::size_t out_capacity,
                                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                                      std::size_t* total_bytes, AcEntropyTiming* timing = nullptr);
+
+bool ac_build_nonzero_grid_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                              std::size_t height, std::int32_t* nonzero_grid,
+                              AcEntropyTiming* timing = nullptr);
+
+bool ac_size_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                       std::size_t height, const std::uint8_t* context_map,
+                       const std::uint8_t* depth, std::size_t num_clusters,
+                       const std::int32_t* nonzero_grid, unsigned long long* run_offsets,
+                       std::size_t out_capacity, std::uint32_t* group_sizes,
+                       std::uint32_t* group_offsets, std::size_t* total_bytes,
+                       AcEntropyTiming* timing = nullptr);
+
+bool ac_emit_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                       std::size_t height, const std::uint8_t* context_map,
+                       const std::uint8_t* depth, const std::uint16_t* bits,
+                       const std::int32_t* nonzero_grid, const unsigned long long* run_offsets,
+                       std::uint8_t* out, std::size_t out_capacity,
+                       const std::uint32_t* group_offsets, std::size_t total_bytes,
+                       AcEntropyTiming* timing = nullptr);
+
+bool ac_encode_groups_m3_ans_with_nonzero_grid(
+    const std::int16_t* ac, const std::int8_t* acs, std::size_t width, std::size_t height,
+    const std::uint8_t* context_map, const AcAnsEncodingTable* tables, std::size_t num_clusters,
+    const std::int32_t* nonzero_grid, std::uint8_t* out, std::size_t out_capacity,
+    std::uint32_t* group_sizes, std::uint32_t* group_offsets, std::size_t* total_bytes,
+    AcEntropyTiming* timing = nullptr);
 
 bool ac_encode_groups_m3_ans(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                              std::size_t height, const AcAnsEncodingTable* tables,

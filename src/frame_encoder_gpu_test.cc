@@ -133,7 +133,8 @@ FrameCoefficients make_frame(std::size_t w, std::size_t h) {
 
 bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out,
                       AcClusteringMode clustering =
-                          AcClusteringMode::DATA_DRIVEN) {
+                          AcClusteringMode::DATA_DRIVEN,
+                      std::vector<StageTiming>* stats = nullptr) {
     const std::vector<std::int16_t> ac{flatten_ac(fc)};
     const std::vector<std::int32_t> dc{flatten_dc(fc)};
     const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
@@ -154,11 +155,27 @@ bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& ou
                 cudaSuccess};
     ok = ok && encode_frame(d_ac, d_dc, fc.width, fc.height,
                             QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out,
-                            nullptr, clustering);
+                            stats, clustering);
     cudaFree(d_ac);
     cudaFree(d_dc);
     cudaFree(d_qf);
     return ok;
+}
+
+TEST(FrameEncoderGpu, PrefixSelectedFrameEmitsPrefixOnly) {
+    FrameCoefficients fc{make_frame(512, 256)};
+    for (std::vector<std::int32_t>& channel : fc.ac) {
+        std::fill(channel.begin(), channel.end(), 0);
+    }
+    std::vector<std::uint8_t> encoded{};
+    std::vector<StageTiming> stats{};
+    ASSERT_TRUE(encode_on_device(fc, encoded, AcClusteringMode::FIXED, &stats));
+    EXPECT_EQ(encoded, reference_file(fc));
+    ASSERT_EQ(stats.size(), 2u);
+    ASSERT_GE(stats[0].phases.size(), 15u);
+    ASSERT_GE(stats[0].metrics.size(), 9u);
+    EXPECT_GT(stats[0].phases[6].gpu_us, 0.0);
+    EXPECT_EQ(stats[0].metrics[8].value, 0.0);
 }
 
 testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std::uint32_t& xs,

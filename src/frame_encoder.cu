@@ -161,8 +161,8 @@ struct CachedHistogramExchange {
 
 bool build_data_driven_ac_plan(const std::int16_t* ac_device, const std::int8_t* acs,
                                std::size_t width, std::size_t height, std::size_t num_ac_groups,
-                               std::int32_t device, AcEntropyPlan& plan, double& gpu_us,
-                               double& cpu_us) {
+                               const std::int32_t* nonzero_grid, std::int32_t device,
+                               AcEntropyPlan& plan, double& gpu_us, double& cpu_us) {
     static thread_local CachedHistogramExchange cached{};
     if (!cached.ensure(device)) {
         return false;
@@ -171,9 +171,10 @@ bool build_data_driven_ac_plan(const std::int16_t* ac_device, const std::int8_t*
     AcHistogramExchange& exchange{cached.exchange};
     const Clock::time_point gpu_start{Clock::now()};
     const bool histogram_ok{
-        acs == nullptr
-            ? ac_build_context_histograms(ac_device, width, height, exchange.gpu_data())
-            : ac_build_context_histograms_m3(ac_device, acs, width, height, exchange.gpu_data())};
+        acs == nullptr ? ac_build_context_histograms_with_nonzero_grid(
+                             ac_device, width, height, nonzero_grid, exchange.gpu_data())
+                       : ac_build_context_histograms_m3_with_nonzero_grid(
+                             ac_device, acs, width, height, nonzero_grid, exchange.gpu_data())};
     if (!histogram_ok || !exchange.release_to_cpu(nullptr) || !exchange.acquire_for_cpu()) {
         exchange.shutdown();
         cached.device = -1;
@@ -246,11 +247,20 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     DeviceScope scope{};
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
+    AcEntropyTiming prefix_timing{};
+    AcEntropyTiming ans_timing{};
+    AcEntropyTiming* prefix_timing_out{stats != nullptr ? &prefix_timing : nullptr};
+    AcEntropyTiming* ans_timing_out{stats != nullptr ? &ans_timing : nullptr};
+    std::int32_t* d_ac_nonzero_grid{scope.alloc<std::int32_t>(3 * bw * bh)};
+    if (d_ac_nonzero_grid == nullptr ||
+        !ac_build_nonzero_grid(ac_device, width, height, d_ac_nonzero_grid, prefix_timing_out)) {
+        return false;
+    }
 
     AcEntropyPlan ac_plan{};
     if (clustering == AcClusteringMode::DATA_DRIVEN) {
-        build_data_driven_ac_plan(ac_device, nullptr, width, height, num_ac, device, ac_plan,
-                                  entropy.gpu_us, entropy.cpu_us);
+        build_data_driven_ac_plan(ac_device, nullptr, width, height, num_ac, d_ac_nonzero_grid,
+                                  device, ac_plan, entropy.gpu_us, entropy.cpu_us);
     }
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
@@ -262,7 +272,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     if ((!ac_plan.ready && !d_ac_hist) || !d_dc_hist || !d_am_hist) {
         return false;
     }
-    if ((!ac_plan.ready && !ac_build_histogram(ac_device, width, height, d_ac_hist)) ||
+    if ((!ac_plan.ready && !ac_build_histogram_with_nonzero_grid(
+                               ac_device, width, height, d_ac_nonzero_grid, d_ac_hist)) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, nullptr, nullptr, nullptr, width, height,
                                  d_am_hist)) {
@@ -347,8 +358,9 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
     const std::size_t dc_capacity{48 * bw * bh + blobs.blob_pre.size() + blobs.blob_mid.size() +
                                   num_dc * 64 + 4096};
-    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_ac_ans_body{scope.alloc<std::uint8_t>(ac_capacity)};
+    unsigned long long* d_ac_run_offsets{
+        scope.alloc<unsigned long long>(ac_prefix_run_count(width, height))};
     std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
     std::uint32_t* d_ac_sizes{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
@@ -356,39 +368,25 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::uint32_t* d_ac_ans_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_ac_ans_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets ||
-        !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes || !d_dc_offsets) {
+    if (!d_ac_ans_body || !d_ac_nonzero_grid || !d_ac_run_offsets || !d_dc_body || !d_ac_sizes ||
+        !d_ac_offsets || !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes || !d_dc_offsets) {
         return false;
     }
 
     std::size_t ac_total{0};
     std::size_t ac_ans_total{0};
     std::size_t dc_total{0};
-    AcEntropyTiming prefix_timing{};
-    AcEntropyTiming ans_timing{};
-    AcEntropyTiming* prefix_timing_out{stats != nullptr ? &prefix_timing : nullptr};
-    AcEntropyTiming* ans_timing_out{stats != nullptr ? &ans_timing : nullptr};
-    const bool ac_encoded{
-        ac_plan.data_driven
-            ? ac_encode_groups_runtime_map(
-                  ac_device, width, height, d_ac_context_map, d_ac_depth, d_ac_bits,
-                  ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE, d_ac_body, ac_capacity,
-                  d_ac_sizes, d_ac_offsets, &ac_total, prefix_timing_out)
-            : ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits,
-                               ac_plan.global.depth.size(), d_ac_body, ac_capacity, d_ac_sizes,
-                               d_ac_offsets, &ac_total, prefix_timing_out)};
-    if (!ac_encoded) {
+    if (!ac_size_groups(ac_device, width, height,
+                        ac_plan.data_driven ? d_ac_context_map : nullptr, d_ac_depth,
+                        ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE, d_ac_nonzero_grid,
+                        d_ac_run_offsets, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total,
+                        prefix_timing_out)) {
         return false;
     }
-    const bool ac_ans_encoded{
-        ac_plan.data_driven ? ac_encode_groups_ans_runtime_map(
-                                  ac_device, width, height, d_ac_context_map, d_ac_ans_tables,
-                                  ac_plan.ans_global.tables.size(), d_ac_ans_body, ac_capacity,
-                                  d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total, ans_timing_out)
-                            : ac_encode_groups_ans(ac_device, width, height, d_ac_ans_tables,
-                                                   ac_plan.ans_global.tables.size(), d_ac_ans_body,
-                                                   ac_capacity, d_ac_ans_sizes, d_ac_ans_offsets,
-                                                   &ac_ans_total, ans_timing_out)};
+    const bool ac_ans_encoded{ac_encode_groups_ans_with_nonzero_grid(
+        ac_device, width, height, ac_plan.data_driven ? d_ac_context_map : nullptr,
+        d_ac_ans_tables, ac_plan.ans_global.tables.size(), d_ac_nonzero_grid, d_ac_ans_body,
+        ac_capacity, d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total, ans_timing_out)};
     if (!dc_encode_groups(dc_device, width, height, quant_field, nullptr, nullptr, nullptr,
                           d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
@@ -410,6 +408,17 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     }
     const bool use_ans{ac_ans_encoded && ac_plan.ans_global.section.size() + ac_ans_total <
                                              ac_plan.global.section.size() + ac_total};
+    std::uint8_t* d_ac_body{nullptr};
+    if (!use_ans) {
+        d_ac_body = scope.alloc<std::uint8_t>(ac_capacity);
+        if (d_ac_body == nullptr ||
+            !ac_emit_groups(ac_device, width, height,
+                            ac_plan.data_driven ? d_ac_context_map : nullptr, d_ac_depth,
+                            d_ac_bits, d_ac_nonzero_grid, d_ac_run_offsets, d_ac_body, ac_capacity,
+                            d_ac_offsets, ac_total, prefix_timing_out)) {
+            return false;
+        }
+    }
     if (stats != nullptr) {
         append_ac_timing(entropy, prefix_timing, false);
         append_ac_timing(entropy, ans_timing, true);
@@ -521,10 +530,20 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     DeviceScope scope{};
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
+    AcEntropyTiming prefix_timing{};
+    AcEntropyTiming ans_timing{};
+    AcEntropyTiming* prefix_timing_out{stats != nullptr ? &prefix_timing : nullptr};
+    AcEntropyTiming* ans_timing_out{stats != nullptr ? &ans_timing : nullptr};
+    std::int32_t* d_ac_nonzero_grid{scope.alloc<std::int32_t>(3 * bw * bh)};
+    if (d_ac_nonzero_grid == nullptr ||
+        !ac_build_nonzero_grid_m3(ac_device, acs, width, height, d_ac_nonzero_grid,
+                                  prefix_timing_out)) {
+        return false;
+    }
     AcEntropyPlan ac_plan{};
     if (clustering == AcClusteringMode::DATA_DRIVEN) {
-        build_data_driven_ac_plan(ac_device, acs, width, height, num_ac, device, ac_plan,
-                                  entropy.gpu_us, entropy.cpu_us);
+        build_data_driven_ac_plan(ac_device, acs, width, height, num_ac, d_ac_nonzero_grid, device,
+                                  ac_plan, entropy.gpu_us, entropy.cpu_us);
     }
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
@@ -535,7 +554,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     if ((!ac_plan.ready && !d_ac_hist) || !d_dc_hist || !d_am_hist) {
         return false;
     }
-    if ((!ac_plan.ready && !ac_build_histogram_m3(ac_device, acs, width, height, d_ac_hist)) ||
+    if ((!ac_plan.ready && !ac_build_histogram_m3_with_nonzero_grid(
+                               ac_device, acs, width, height, d_ac_nonzero_grid, d_ac_hist)) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist)) {
         return false;
@@ -633,8 +653,9 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
     const std::size_t dc_capacity{48 * bw * bh + blobs.blob_pre.size() + blobs.blob_mid.size() +
                                   num_dc * 64 + 4096};
-    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_ac_ans_body{scope.alloc<std::uint8_t>(ac_capacity)};
+    unsigned long long* d_ac_run_offsets{
+        scope.alloc<unsigned long long>(ac_prefix_run_count(width, height))};
     std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
     std::uint32_t* d_ac_sizes{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
@@ -642,39 +663,25 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::uint32_t* d_ac_ans_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_ac_ans_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets ||
-        !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes || !d_dc_offsets) {
+    if (!d_ac_ans_body || !d_ac_nonzero_grid || !d_ac_run_offsets || !d_dc_body || !d_ac_sizes ||
+        !d_ac_offsets || !d_ac_ans_sizes || !d_ac_ans_offsets || !d_dc_sizes || !d_dc_offsets) {
         return false;
     }
 
     std::size_t ac_total{0};
     std::size_t ac_ans_total{0};
     std::size_t dc_total{0};
-    AcEntropyTiming prefix_timing{};
-    AcEntropyTiming ans_timing{};
-    AcEntropyTiming* prefix_timing_out{stats != nullptr ? &prefix_timing : nullptr};
-    AcEntropyTiming* ans_timing_out{stats != nullptr ? &ans_timing : nullptr};
-    const bool ac_encoded{ac_plan.data_driven
-                              ? ac_encode_groups_m3_runtime_map(
-                                    ac_device, acs, width, height, d_ac_context_map, d_ac_depth,
-                                    d_ac_bits, ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE,
-                                    d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total,
-                                    prefix_timing_out)
-                              : ac_encode_groups_m3(ac_device, acs, width, height, d_ac_depth,
-                                                    d_ac_bits, d_ac_body, ac_capacity, d_ac_sizes,
-                                                    d_ac_offsets, &ac_total, prefix_timing_out)};
-    if (!ac_encoded) {
+    if (!ac_size_groups_m3(
+            ac_device, acs, width, height, ac_plan.data_driven ? d_ac_context_map : nullptr,
+            d_ac_depth, ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE, d_ac_nonzero_grid,
+            d_ac_run_offsets, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total,
+            prefix_timing_out)) {
         return false;
     }
-    const bool ac_ans_encoded{
-        ac_plan.data_driven ? ac_encode_groups_m3_ans_runtime_map(
-                                  ac_device, acs, width, height, d_ac_context_map, d_ac_ans_tables,
-                                  ac_plan.ans_global.tables.size(), d_ac_ans_body, ac_capacity,
-                                  d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total, ans_timing_out)
-                            : ac_encode_groups_m3_ans(
-                                  ac_device, acs, width, height, d_ac_ans_tables,
-                                  ac_plan.ans_global.tables.size(), d_ac_ans_body, ac_capacity,
-                                  d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total, ans_timing_out)};
+    const bool ac_ans_encoded{ac_encode_groups_m3_ans_with_nonzero_grid(
+        ac_device, acs, width, height, ac_plan.data_driven ? d_ac_context_map : nullptr,
+        d_ac_ans_tables, ac_plan.ans_global.tables.size(), d_ac_nonzero_grid, d_ac_ans_body,
+        ac_capacity, d_ac_ans_sizes, d_ac_ans_offsets, &ac_ans_total, ans_timing_out)};
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map,
                           d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
@@ -696,6 +703,18 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     }
     const bool use_ans{ac_ans_encoded && ac_plan.ans_global.section.size() + ac_ans_total <
                                              ac_plan.global.section.size() + ac_total};
+    std::uint8_t* d_ac_body{nullptr};
+    if (!use_ans) {
+        d_ac_body = scope.alloc<std::uint8_t>(ac_capacity);
+        if (d_ac_body == nullptr ||
+            !ac_emit_groups_m3(
+                ac_device, acs, width, height,
+                ac_plan.data_driven ? d_ac_context_map : nullptr, d_ac_depth, d_ac_bits,
+                d_ac_nonzero_grid, d_ac_run_offsets, d_ac_body, ac_capacity, d_ac_offsets,
+                ac_total, prefix_timing_out)) {
+            return false;
+        }
+    }
     if (stats != nullptr && entropy.phases.empty()) {
         append_ac_timing(entropy, prefix_timing, false);
         append_ac_timing(entropy, ans_timing, true);

@@ -89,9 +89,9 @@ TEST(EncoderSessionGpu, DepthOneMatchesSynchronousInterface) {
     EXPECT_EQ(output.stats[1].metrics.size(), 11u);
     EXPECT_GT(output.stats[1].phases[1].gpu_us, 0.0);
     EXPECT_GT(output.stats[1].phases[2].gpu_us, 0.0);
-    EXPECT_GT(output.stats[1].phases[6].gpu_us, 0.0);
-    EXPECT_EQ(output.stats[1].metrics[0].value, 3.0);
-    EXPECT_EQ(output.stats[1].metrics[1].value, 3.0);
+    EXPECT_EQ(output.stats[1].phases[6].gpu_us, 0.0);
+    EXPECT_EQ(output.stats[1].metrics[0].value, 1.0);
+    EXPECT_EQ(output.stats[1].metrics[1].value, 2.0);
     EXPECT_FALSE(future.get(output));
 }
 
