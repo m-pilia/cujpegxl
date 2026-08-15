@@ -6,6 +6,11 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
 
+cc_library(
+    name = "device_allocation_cache",
+    hdrs = ["device_allocation_cache.h"],
+)
+
 RUNTIME_COPTS = [
     "-O3",
     "-fno-exceptions",
@@ -39,7 +44,10 @@ cuda_library(
     srcs = ["xyb.cu"],
     hdrs = ["xyb.h"],
     copts = RUNTIME_COPTS,
-    deps = [":xyb_impl"],
+    deps = [
+        ":device_allocation_cache",
+        ":xyb_impl",
+    ],
 )
 
 cuda_library(
@@ -89,6 +97,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        ":device_allocation_cache",
         ":quant_consts",
         ":vardct_layout",
     ],
@@ -117,6 +126,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        ":device_allocation_cache",
         ":transform_select",
         ":vardct_layout",
         ":xyb",
@@ -223,6 +233,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":cfl",
+        ":device_allocation_cache",
         ":quant_consts",
         ":vardct_layout",
     ],
@@ -351,6 +362,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        ":device_allocation_cache",
         ":entropy",
         ":quant_consts",
         ":xyb_impl",
@@ -386,6 +398,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_context",
+        ":device_allocation_cache",
         ":coeff_order",
         ":dc_predict",
         ":vardct_layout",
@@ -456,6 +469,7 @@ cuda_library(
         ":ac_histogram_cluster",
         ":ac_histogram_exchange",
         ":ac_precluster",
+        ":device_allocation_cache",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

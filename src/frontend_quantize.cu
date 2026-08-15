@@ -3,6 +3,8 @@
 
 #include "frontend_quantize.h"
 
+#include "device_allocation_cache.h"
+
 #include <cmath>
 
 #include <cuda_runtime.h>
@@ -187,10 +189,10 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
     const std::size_t cmh{ceil_div(bh, 8)};
     const unsigned int threads{128};
     const unsigned int blocks{static_cast<unsigned int>((cmw * cmh + threads - 1) / threads)};
-    estimate_cfl_covered_kernel<<<blocks, threads>>>(coeffs, acs, bw, bh, cmw, cmh, ytox_map,
-                                                     ytob_map);
+    estimate_cfl_covered_kernel<<<blocks, threads, 0, encoder_stream()>>>(
+        coeffs, acs, bw, bh, cmw, cmh, ytox_map, ytob_map);
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{cudaDeviceSynchronize()};
+    const cudaError_t sync{encoder_stream_synchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 
@@ -217,10 +219,10 @@ bool quantize_residual_m3(const __half* coeffs, const std::int8_t* acs,
     const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
     const unsigned int threads{128};
     const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    quantize_residual_kernel<<<blocks, threads>>>(coeffs, acs, ytox_map, ytob_map, quant_field, bw,
-                                                  bh, cmw, gsf, dc_scale, ac, dc);
+    quantize_residual_kernel<<<blocks, threads, 0, encoder_stream()>>>(
+        coeffs, acs, ytox_map, ytob_map, quant_field, bw, bh, cmw, gsf, dc_scale, ac, dc);
     const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{cudaDeviceSynchronize()};
+    const cudaError_t sync{encoder_stream_synchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 

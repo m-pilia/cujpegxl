@@ -92,7 +92,16 @@ TEST(EncoderSessionGpu, DepthOneMatchesSynchronousInterface) {
     EXPECT_EQ(output.stats[1].phases[6].gpu_us, 0.0);
     EXPECT_EQ(output.stats[1].metrics[0].value, 1.0);
     EXPECT_EQ(output.stats[1].metrics[1].value, 2.0);
+    const double retained_allocations{output.stats[1].metrics[5].value};
     EXPECT_FALSE(future.get(output));
+
+    EncodedFrameFuture repeated_future{};
+    input.sequence = 18;
+    ASSERT_TRUE(session->try_encode(input, repeated_future));
+    EncodedFrame repeated{};
+    ASSERT_TRUE(repeated_future.get(repeated));
+    EXPECT_EQ(repeated.bytes, synchronous);
+    EXPECT_EQ(repeated.stats[1].metrics[5].value, retained_allocations);
 }
 
 TEST(EncoderSessionGpu, BoundedPipelineCompletesDeterministically) {
@@ -126,6 +135,32 @@ TEST(EncoderSessionGpu, BoundedPipelineCompletesDeterministically) {
         EXPECT_EQ(outputs[i].bytes, outputs[0].bytes);
     }
     session->flush();
+}
+
+TEST(EncoderSessionGpu, MixedPipelineSlotsOwnIndependentScratch) {
+    constexpr std::size_t width{640};
+    constexpr std::size_t height{384};
+    constexpr std::size_t depth{2};
+    DeviceNv12 frame{};
+    ASSERT_TRUE(upload_frame(width, height, frame));
+    std::unique_ptr<EncoderSession> session{
+        EncoderSession::create(EncoderConfig{.device_ordinal = 0,
+                                             .max_width = width,
+                                             .max_height = height,
+                                             .pipeline_depth = depth,
+                                             .pipeline = EncoderPipeline::MIXED})};
+    ASSERT_NE(session, nullptr);
+    EncodedFrameFuture first{};
+    EncodedFrameFuture second{};
+    ASSERT_TRUE(session->try_encode(input_for(frame, width, height, 1), first));
+    ASSERT_TRUE(session->try_encode(input_for(frame, width, height, 2), second));
+    EncodedFrame first_output{};
+    EncodedFrame second_output{};
+    ASSERT_TRUE(first.get(first_output));
+    ASSERT_TRUE(second.get(second_output));
+    EXPECT_EQ(first_output.sequence, 1u);
+    EXPECT_EQ(second_output.sequence, 2u);
+    EXPECT_EQ(first_output.bytes, second_output.bytes);
 }
 
 }  // namespace

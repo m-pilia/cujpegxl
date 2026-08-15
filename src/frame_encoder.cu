@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "frame_encoder.h"
+#include "device_allocation_cache.h"
 
 #include <algorithm>
 #include <chrono>
@@ -81,10 +82,10 @@ bool upload(const std::vector<T>& host, T** device) {
         *device = nullptr;
         return true;
     }
-    if (cudaMallocAsync(device, host.size() * sizeof(T), 0) != cudaSuccess) {
+    if (cached_device_allocate(device, host.size() * sizeof(T), 0) != cudaSuccess) {
         return false;
     }
-    return cudaMemcpy(*device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice) ==
+    return encoder_memcpy(*device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice) ==
            cudaSuccess;
 }
 
@@ -96,7 +97,7 @@ struct DeviceScope {
     template <typename T>
     T* alloc(std::size_t count) {
         void* p{nullptr};
-        if (cudaMallocAsync(&p, count * sizeof(T), 0) != cudaSuccess) {
+        if (cached_device_allocate(&p, count * sizeof(T), 0) != cudaSuccess) {
             return nullptr;
         }
         ptrs.push_back(p);
@@ -105,7 +106,7 @@ struct DeviceScope {
     void track(void* p) { ptrs.push_back(p); }
     ~DeviceScope() {
         for (void* p : ptrs) {
-            cudaFreeAsync(p, 0);
+            cached_device_release(p, 0);
         }
     }
 };
@@ -175,7 +176,8 @@ bool build_data_driven_ac_plan(const std::int16_t* ac_device, const std::int8_t*
                              ac_device, width, height, nonzero_grid, exchange.gpu_data())
                        : ac_build_context_histograms_m3_with_nonzero_grid(
                              ac_device, acs, width, height, nonzero_grid, exchange.gpu_data())};
-    if (!histogram_ok || !exchange.release_to_cpu(nullptr) || !exchange.acquire_for_cpu()) {
+    if (!histogram_ok || !exchange.release_to_cpu(encoder_stream()) ||
+        !exchange.acquire_for_cpu()) {
         exchange.shutdown();
         cached.device = -1;
         return false;
@@ -286,11 +288,11 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     if ((!ac_plan.ready &&
-         cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
+         encoder_memcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess) ||
-        cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
+        encoder_memcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
+        encoder_memcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
@@ -394,20 +396,16 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
         return false;
     }
 
-    std::vector<std::uint32_t> ac_sizes(num_ac, 0);
-    std::vector<std::uint32_t> ac_ans_sizes(num_ac, 0);
-    std::vector<std::uint32_t> dc_sizes(num_dc, 0);
-    if (cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        (ac_ans_encoded &&
-         cudaMemcpy(ac_ans_sizes.data(), d_ac_ans_sizes, num_ac * sizeof(std::uint32_t),
-                    cudaMemcpyDeviceToHost) != cudaSuccess)) {
-        return false;
-    }
     const bool use_ans{ac_ans_encoded && ac_plan.ans_global.section.size() + ac_ans_total <
                                              ac_plan.global.section.size() + ac_total};
+    std::vector<std::uint32_t> selected_ac_sizes(num_ac, 0);
+    std::vector<std::uint32_t> dc_sizes(num_dc, 0);
+    if (encoder_memcpy(selected_ac_sizes.data(), use_ans ? d_ac_ans_sizes : d_ac_sizes,
+                       num_ac * sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        encoder_memcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
     std::uint8_t* d_ac_body{nullptr};
     if (!use_ans) {
         d_ac_body = scope.alloc<std::uint8_t>(ac_capacity);
@@ -430,14 +428,14 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
              {"ans synchronizations", static_cast<double>(ans_timing.synchronization_count)},
              {"size-copy bytes",
               static_cast<double>(prefix_timing.copied_bytes + ans_timing.copied_bytes)},
-             {"frame device allocations", static_cast<double>(scope.ptrs.size())},
+             {"retained device allocations",
+              static_cast<double>(retained_device_allocation_count())},
              {"prefix body bytes", static_cast<double>(ac_total)},
              {"ans body bytes", static_cast<double>(ac_ans_total)},
              {"ans selected", use_ans ? 1.0 : 0.0}});
     }
     const std::vector<std::uint8_t>& ac_global{use_ans ? ac_plan.ans_global.section
                                                        : ac_plan.global.section};
-    const std::vector<std::uint32_t>& selected_ac_sizes{use_ans ? ac_ans_sizes : ac_sizes};
     std::uint8_t* selected_ac_body{use_ans ? d_ac_ans_body : d_ac_body};
     const std::size_t selected_ac_total{use_ans ? ac_ans_total : ac_total};
     entropy.gpu_us += us_since(entropy_encode_start);
@@ -471,13 +469,14 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     }
     std::size_t at{0};
     const bool gathered{
-        cudaMemcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice) ==
+        encoder_memcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice) ==
             cudaSuccess &&
         (at += dc_global.size(),
-         cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
-        (at += dc_total, cudaMemcpy(d_body + at, ac_global.data(), ac_global.size(),
+         encoder_memcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) ==
+             cudaSuccess) &&
+        (at += dc_total, encoder_memcpy(d_body + at, ac_global.data(), ac_global.size(),
                                     cudaMemcpyHostToDevice) == cudaSuccess) &&
-        (at += ac_global.size(), cudaMemcpy(d_body + at, selected_ac_body, selected_ac_total,
+        (at += ac_global.size(), encoder_memcpy(d_body + at, selected_ac_body, selected_ac_total,
                                             cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
         return false;
@@ -493,7 +492,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     assembly.cpu_us += us_since(assembly_finish_start);
 
     const Clock::time_point assembly_d2h_start{Clock::now()};
-    if (cudaMemcpy(file.data() + framing + head.size(), d_body, body_size,
+    if (encoder_memcpy(file.data() + framing + head.size(), d_body, body_size,
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
@@ -501,6 +500,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     assembly.bytes_moved = 2 * body_size;
 
     if (stats != nullptr) {
+        entropy.metrics[5].value = static_cast<double>(retained_device_allocation_count());
         reconcile_entropy_phases(entropy);
         stats->push_back(entropy);
         stats->push_back(assembly);
@@ -568,13 +568,13 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::int8_t> acs_host(bw * bh, 8);
     if ((!ac_plan.ready &&
-         cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
+         encoder_memcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess) ||
-        cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
+        encoder_memcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
+        encoder_memcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(acs_host.data(), acs, bw * bh, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        encoder_memcpy(acs_host.data(), acs, bw * bh, cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
     entropy.gpu_us += us_since(entropy_gpu_start);
@@ -689,20 +689,16 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         return false;
     }
 
-    std::vector<std::uint32_t> ac_sizes(num_ac, 0);
-    std::vector<std::uint32_t> ac_ans_sizes(num_ac, 0);
-    std::vector<std::uint32_t> dc_sizes(num_dc, 0);
-    if (cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        (ac_ans_encoded &&
-         cudaMemcpy(ac_ans_sizes.data(), d_ac_ans_sizes, num_ac * sizeof(std::uint32_t),
-                    cudaMemcpyDeviceToHost) != cudaSuccess)) {
-        return false;
-    }
     const bool use_ans{ac_ans_encoded && ac_plan.ans_global.section.size() + ac_ans_total <
                                              ac_plan.global.section.size() + ac_total};
+    std::vector<std::uint32_t> selected_ac_sizes(num_ac, 0);
+    std::vector<std::uint32_t> dc_sizes(num_dc, 0);
+    if (encoder_memcpy(selected_ac_sizes.data(), use_ans ? d_ac_ans_sizes : d_ac_sizes,
+                       num_ac * sizeof(std::uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        encoder_memcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
     std::uint8_t* d_ac_body{nullptr};
     if (!use_ans) {
         d_ac_body = scope.alloc<std::uint8_t>(ac_capacity);
@@ -726,14 +722,14 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
              {"ans synchronizations", static_cast<double>(ans_timing.synchronization_count)},
              {"size-copy bytes",
               static_cast<double>(prefix_timing.copied_bytes + ans_timing.copied_bytes)},
-             {"frame device allocations", static_cast<double>(scope.ptrs.size())},
+             {"retained device allocations",
+              static_cast<double>(retained_device_allocation_count())},
              {"prefix body bytes", static_cast<double>(ac_total)},
              {"ans body bytes", static_cast<double>(ac_ans_total)},
              {"ans selected", use_ans ? 1.0 : 0.0}});
     }
     const std::vector<std::uint8_t>& ac_global{use_ans ? ac_plan.ans_global.section
                                                        : ac_plan.global.section};
-    const std::vector<std::uint32_t>& selected_ac_sizes{use_ans ? ac_ans_sizes : ac_sizes};
     std::uint8_t* selected_ac_body{use_ans ? d_ac_ans_body : d_ac_body};
     const std::size_t selected_ac_total{use_ans ? ac_ans_total : ac_total};
     entropy.gpu_us += us_since(entropy_encode_start);
@@ -761,13 +757,14 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     }
     std::size_t at{0};
     const bool gathered{
-        cudaMemcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice) ==
+        encoder_memcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice) ==
             cudaSuccess &&
         (at += dc_global.size(),
-         cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
-        (at += dc_total, cudaMemcpy(d_body + at, ac_global.data(), ac_global.size(),
+         encoder_memcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) ==
+             cudaSuccess) &&
+        (at += dc_total, encoder_memcpy(d_body + at, ac_global.data(), ac_global.size(),
                                     cudaMemcpyHostToDevice) == cudaSuccess) &&
-        (at += ac_global.size(), cudaMemcpy(d_body + at, selected_ac_body, selected_ac_total,
+        (at += ac_global.size(), encoder_memcpy(d_body + at, selected_ac_body, selected_ac_total,
                                             cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
         return false;
@@ -779,11 +776,12 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     const std::size_t framing{file.size()};
     file.resize(framing + codestream_size);
     std::copy(head.begin(), head.end(), file.begin() + framing);
-    if (cudaMemcpy(file.data() + framing + head.size(), d_body, body_size,
+    if (encoder_memcpy(file.data() + framing + head.size(), d_body, body_size,
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
     if (stats != nullptr) {
+        entropy.metrics[5].value = static_cast<double>(retained_device_allocation_count());
         reconcile_entropy_phases(entropy);
         stats->push_back(entropy);
         stats->push_back(assembly);
@@ -823,13 +821,13 @@ bool encode_nv12_direct(const std::uint8_t* luma, std::size_t luma_pitch,
     std::size_t chroma_src_pitch{chroma_pitch};
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
         // 512-byte row pitch satisfies any device's texture pitch alignment and
-        // keeps the buffer in the stream-ordered pool (freed with cudaFreeAsync).
+        // keeps the retained buffer reusable by this session slot.
         const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
         std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
         if (!aligned) {
             return false;
         }
-        if (cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width, height / 2,
+        if (encoder_memcpy_2d(aligned, aligned_pitch, chroma, chroma_pitch, width, height / 2,
                          cudaMemcpyDeviceToDevice) != cudaSuccess) {
             return false;
         }
@@ -891,7 +889,7 @@ bool encode_nv12_m3_direct(const std::uint8_t* luma, std::size_t luma_pitch,
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
         const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
         std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
-        if (!aligned || cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width,
+        if (!aligned || encoder_memcpy_2d(aligned, aligned_pitch, chroma, chroma_pitch, width,
                                      height / 2, cudaMemcpyDeviceToDevice) != cudaSuccess) {
             return false;
         }
