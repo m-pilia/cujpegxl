@@ -158,7 +158,11 @@ def _ensure_4k(rgb: np.ndarray, name: str) -> None:
         )
 
 
-def bench_image(source: pathlib.Path, cfg: BenchConfig) -> list[Row]:
+def bench_image(
+    source: pathlib.Path,
+    cfg: BenchConfig,
+    cached: dict[tuple[str, str, str], Row] | None = None,
+) -> list[Row]:
     name = source.name
     rgb = cp.load_rgb(source)
     _ensure_4k(rgb, name)
@@ -176,17 +180,21 @@ def bench_image(source: pathlib.Path, cfg: BenchConfig) -> list[Row]:
         rows.append(_row(name, "cujpegxl", f"d={distance}", len(jxl), width, height,
                          reference, decoded))
 
-    for distance in cfg.distances:
-        jxl = pylibjxl.encode(reference, distance)
-        decoded = pylibjxl.decode(jxl)
-        rows.append(_row(name, "libjxl", f"d={distance}", len(jxl), width, height,
-                         reference, decoded))
+    if cached is None:
+        for distance in cfg.distances:
+            jxl = pylibjxl.encode(reference, distance)
+            decoded = pylibjxl.decode(jxl)
+            rows.append(_row(name, "libjxl", f"d={distance}", len(jxl), width, height,
+                             reference, decoded))
 
-    for quality in cfg.qualities:
-        jpg = pynvjpeg.encode(nv12_arr, width, height, quality, cfg.device)
-        decoded = _decode_jpeg(jpg)
-        rows.append(_row(name, "nvjpeg", f"q={quality}", len(jpg), width, height,
-                         reference, decoded))
+        for quality in cfg.qualities:
+            jpg = pynvjpeg.encode(nv12_arr, width, height, quality, cfg.device)
+            decoded = _decode_jpeg(jpg)
+            rows.append(_row(name, "nvjpeg", f"q={quality}", len(jpg), width, height,
+                             reference, decoded))
+    else:
+        rows.extend(cached[(name, "libjxl", f"d={d}")] for d in cfg.distances)
+        rows.extend(cached[(name, "nvjpeg", f"q={q}")] for q in cfg.qualities)
 
     return rows
 
@@ -203,6 +211,31 @@ def _row(image: str, codec: str, param: str, coded_bytes: int, width: int, heigh
         ratio=compression_ratio(coded_bytes, width, height),
         **scores,
     )
+
+
+def _load_cached_rows(
+    path: pathlib.Path, frames: list[pathlib.Path], cfg: BenchConfig
+) -> dict[tuple[str, str, str], Row]:
+    cache = {
+        (row["image"], row["codec"], row["param"]): Row(**row)
+        for row in json.loads(path.read_text())
+        if row["codec"] != "cujpegxl"
+    }
+    missing = [
+        f"{frame.name} {codec} {param}"
+        for frame in frames
+        for codec, param in [
+            *(("libjxl", f"d={distance}") for distance in cfg.distances),
+            *(("nvjpeg", f"q={quality}") for quality in cfg.qualities),
+        ]
+        if (frame.name, codec, param) not in cache
+    ]
+    if missing:
+        raise ValueError(
+            f"{path} has no reference rows for: {', '.join(missing)}. "
+            "Regenerate the cache without --cached-input."
+        )
+    return cache
 
 
 def _format_table(rows: list[Row]) -> str:
@@ -256,6 +289,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Write the results as JSON to this path.",
     )
+    parser.add_argument(
+        "--cached-input",
+        type=pathlib.Path,
+        default=None,
+        help="JSON file previously written with --output; reuse its libjxl and "
+        "nvJPEG rows (must cover the requested images, distances, and "
+        "qualities) and only recompute cujpegxl.",
+    )
     args = parser.parse_args(argv)
 
     cfg = BenchConfig(
@@ -264,10 +305,15 @@ def main(argv: list[str] | None = None) -> int:
         device=args.device,
     )
     frames = _data_frames(args.data_dir)
+    cached = (
+        _load_cached_rows(args.cached_input, frames, cfg)
+        if args.cached_input is not None
+        else None
+    )
 
     all_rows: list[Row] = []
     for source in frames:
-        all_rows.extend(bench_image(source, cfg))
+        all_rows.extend(bench_image(source, cfg, cached))
 
     print(_format_table(all_rows))
 

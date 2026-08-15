@@ -9,6 +9,12 @@ exercised. The codec encode paths (cujpegxl, nvJPEG) are not driven here.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import pathlib
+import tempfile
+from collections.abc import Iterator
+
 import numpy as np
 
 import corpus_prep as cp
@@ -71,3 +77,70 @@ def test_jxl_encode_decode_round_trips_through_libjxl() -> None:
     assert decoded.shape == img.shape
     assert decoded.dtype == np.uint8
     assert pylibjxl.psnr(img, decoded) > 30.0
+
+
+def _row_dict(image: str, codec: str, param: str) -> dict:
+    return {
+        "image": image,
+        "codec": codec,
+        "param": param,
+        "coded_bytes": 1_000,
+        "bpp": 1.0,
+        "ratio": 8.0,
+        "psnr": 40.0,
+        "butteraugli": 1.0,
+        "ssimulacra2": 90.0,
+    }
+
+
+@contextlib.contextmanager
+def _expect_value_error(*needles: str) -> Iterator[None]:
+    try:
+        yield
+    except ValueError as err:
+        for needle in needles:
+            assert needle in str(err)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_load_cached_rows_skips_cujpegxl_and_round_trips_fields() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = pathlib.Path(tmp) / "cache.json"
+        cache_path.write_text(
+            json.dumps([
+                _row_dict("a.png", "cujpegxl", "d=0.5"),
+                _row_dict("a.png", "libjxl", "d=0.5"),
+                _row_dict("a.png", "nvjpeg", "q=70"),
+            ])
+        )
+        cfg = qb.BenchConfig(distances=(0.5,), qualities=(70,))
+        cache = qb._load_cached_rows(cache_path, [pathlib.Path(tmp) / "a.png"], cfg)
+    assert set(cache) == {("a.png", "libjxl", "d=0.5"), ("a.png", "nvjpeg", "q=70")}
+    assert cache[("a.png", "libjxl", "d=0.5")] == qb.Row(
+        image="a.png",
+        codec="libjxl",
+        param="d=0.5",
+        coded_bytes=1_000,
+        bpp=1.0,
+        ratio=8.0,
+        psnr=40.0,
+        butteraugli=1.0,
+        ssimulacra2=90.0,
+    )
+
+
+def test_load_cached_rows_rejects_cache_missing_requested_entries() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_path = pathlib.Path(tmp) / "cache.json"
+        cache_path.write_text(
+            json.dumps([
+                _row_dict("a.png", "libjxl", "d=0.5"),
+                _row_dict("a.png", "nvjpeg", "q=70"),
+            ])
+        )
+        cfg = qb.BenchConfig(distances=(0.5, 1.0), qualities=(70,))
+        with _expect_value_error("d=1.0"):
+            qb._load_cached_rows(cache_path, [pathlib.Path(tmp) / "a.png"], cfg)
+        with _expect_value_error("b.png"):
+            qb._load_cached_rows(cache_path, [pathlib.Path(tmp) / "b.png"], cfg)
