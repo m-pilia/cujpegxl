@@ -6,6 +6,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
+#include <memory>
 #include <vector>
 
 #include "src/bitstream/frame_assembly.h"
@@ -27,6 +29,77 @@ struct StageTiming {
 enum class AcClusteringMode : std::uint8_t {
     DATA_DRIVEN = 0,
     FIXED = 1,
+};
+
+enum class EncoderPipeline : std::uint8_t {
+    DCT8 = 0,
+    MIXED = 1,
+};
+
+struct EncoderConfig {
+    std::int32_t device_ordinal{0};
+    std::size_t max_width{3840};
+    std::size_t max_height{2160};
+    // Depth 1 minimizes latency; deeper queues can increase throughput by
+    // overlapping CPU clustering with GPU work from another frame.
+    std::size_t pipeline_depth{2};
+    EncoderPipeline pipeline{EncoderPipeline::MIXED};
+};
+
+struct EncoderInput {
+    // Device pointers must remain valid until the returned future becomes ready.
+    const std::uint8_t* luma{nullptr};
+    std::size_t luma_pitch{0};
+    const std::uint8_t* chroma{nullptr};
+    std::size_t chroma_pitch{0};
+    std::size_t width{0};
+    std::size_t height{0};
+    float distance{1.0f};
+    bitstream::QuantParams quant_params{};
+    std::uint64_t sequence{0};
+    bool collect_stats{false};
+};
+
+struct EncodedFrame {
+    std::uint64_t sequence{0};
+    std::vector<std::uint8_t> bytes{};
+    std::vector<StageTiming> stats{};
+};
+
+class EncodedFrameFuture {
+public:
+    EncodedFrameFuture() = default;
+
+    bool valid() const;
+    bool ready() const;
+    bool wait_for(std::chrono::nanoseconds timeout) const;
+    bool get(EncodedFrame& output);
+
+private:
+    struct State;
+    explicit EncodedFrameFuture(std::shared_ptr<State> state);
+    std::shared_ptr<State> state_{};
+    friend class EncoderSession;
+};
+
+class EncoderSession {
+public:
+    static std::unique_ptr<EncoderSession> create(const EncoderConfig& config);
+    ~EncoderSession();
+
+    EncoderSession(const EncoderSession&) = delete;
+    EncoderSession& operator=(const EncoderSession&) = delete;
+
+    // `try_encode` reports backpressure without blocking. `encode` waits only
+    // for capacity; completion is observed through the returned future.
+    bool try_encode(const EncoderInput& input, EncodedFrameFuture& future);
+    bool encode(const EncoderInput& input, EncodedFrameFuture& future);
+    void flush();
+
+private:
+    struct Impl;
+    explicit EncoderSession(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
 };
 
 // Encodes device-resident quantized DCT8 coefficients into a complete ISOBMFF

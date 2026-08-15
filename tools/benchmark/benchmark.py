@@ -143,7 +143,8 @@ def generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
 
 def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
                   codec: str, iterations: int, warmup: int, device: int, distance: float = 1.0,
-                  quality: int = 90, profile: bool = False) -> list[str]:
+                  quality: int = 90, profile: bool = False,
+                  pipeline_depth: int = 1) -> list[str]:
     cmd = [
         str(bench),
         "--codec", codec,
@@ -153,6 +154,8 @@ def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.
         "--device", str(device),
     ]
     cmd += ["--distance", str(distance)] if codec == "cujpegxl" else ["--quality", str(quality)]
+    if codec == "cujpegxl":
+        cmd += ["--pipeline-depth", str(pipeline_depth)]
     if profile:
         cmd.append("--profile")
     cmd += [str(p) for p in nv12_files]
@@ -193,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quality", type=int, default=90, help="nvJPEG only.")
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
+        "--pipeline-depth",
+        type=int,
+        default=1,
+        help="cujpegxl only: maximum in-flight frames (default 1).",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="cujpegxl only: reduce iterations to 1, emit NVTX ranges, and print "
@@ -221,6 +230,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.profile and args.codec != "cujpegxl":
         parser.error("--profile is only supported with --codec=cujpegxl")
+    if args.pipeline_depth < 1:
+        parser.error("--pipeline-depth must be >= 1")
+    if args.codec != "cujpegxl" and args.pipeline_depth != 1:
+        parser.error("--pipeline-depth is only supported with --codec=cujpegxl")
 
     rung = next(r for r in cp.LADDER if r.name == args.rung)
     bench = args.encode_bench if args.encode_bench is not None else resolve_encode_bench()
@@ -241,7 +254,8 @@ def _invoke_bench(bench: pathlib.Path, nv12_files: list[pathlib.Path], args: arg
                   rung: cp.Rung) -> int:
     cmd = build_command(bench, nv12_files, rung, codec=args.codec, iterations=args.iterations,
                         warmup=args.warmup, device=args.device, distance=args.distance,
-                        quality=args.quality, profile=args.profile)
+                        quality=args.quality, profile=args.profile,
+                        pipeline_depth=args.pipeline_depth)
     print(f"running: {' '.join(cmd)}", file=sys.stderr)
     completed = subprocess.run(cmd, check=False)
     return completed.returncode

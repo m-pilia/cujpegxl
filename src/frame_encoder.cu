@@ -650,10 +650,13 @@ bitstream::QuantParams quant_params_for_distance(float distance) {
     return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
 }
 
-bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+bool encode_nv12_direct(const std::uint8_t* luma, std::size_t luma_pitch,
+                        const std::uint8_t* chroma, std::size_t chroma_pitch,
+                        std::size_t width, std::size_t height,
+                        std::int32_t device_ordinal, float distance,
+                        const bitstream::QuantParams& qp,
+                        std::vector<std::uint8_t>& out_file,
+                        std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
@@ -707,10 +710,13 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     return encode_frame(d_ac, d_dc, width, height, qp, d_qf, out_file, stats);
 }
 
-bool encode_nv12_m3(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                    std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                    std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                    std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+bool encode_nv12_m3_direct(const std::uint8_t* luma, std::size_t luma_pitch,
+                           const std::uint8_t* chroma,
+                           std::size_t chroma_pitch, std::size_t width,
+                           std::size_t height, std::int32_t device_ordinal,
+                           float distance, const bitstream::QuantParams& qp,
+                           std::vector<std::uint8_t>& out_file,
+                           std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
