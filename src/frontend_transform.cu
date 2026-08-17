@@ -48,63 +48,95 @@ __global__ void gaborish_kernel(const float* __restrict__ xyb, std::size_t width
                            static_cast<long>(p / width));
 }
 
-// One thread per 8x8 block position. A first-block computes its side*side DCT of
-// each XYB channel (separable, matching forward_dctN's transposed-raster layout
-// coeff[fx*N+fy]) and scatters the coefficients as FP16 across its covered
-// blocks' slots; covered blocks do nothing. Per-block serial, not fused into the
-// front end.
+// Block positions per 32x32 selection region, per side. Transform selection
+// (decide_region) partitions the frame into 4x4-block regions, each resolving to
+// a single 32-block or quads of 16/8-blocks whose covered blocks never cross the
+// region boundary, so one CUDA block per region owns a self-contained set of
+// first-blocks.
+constexpr int VDCT_REGION = 4;
+
+// One CUDA block per 32x32 selection region. Threads cooperate on each
+// first-block in the region: the separable DCT basis and the row-pass results
+// live in shared memory and are shared across all coefficients and channels,
+// replacing the former one-thread-per-block kernel's per-thread cosf basis
+// recompute and 8 KB of spilled local arrays. The per-coefficient arithmetic
+// (basis fill order, row/column summation order) is unchanged, so the emitted
+// coefficients are bit-identical. Coefficients match forward_dctN's transposed-
+// raster layout coeff[fx*N+fy] and scatter as FP16 across covered-block slots.
 __global__ void variable_forward_dct_kernel(const float* __restrict__ xyb, std::size_t width,
                                             std::size_t height, std::size_t bw, std::size_t bh,
+                                            std::size_t rbw, std::size_t rbh,
                                             const std::int8_t* __restrict__ acs,
                                             __half* __restrict__ coeffs) {
-    const std::size_t blk{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x};
-    if (blk >= bw * bh) {
+    const std::size_t region{static_cast<std::size_t>(blockIdx.x)};
+    if (region >= rbw * rbh) {
         return;
     }
-    const int side{acs == nullptr ? 8 : acs[blk]};
-    if (side == ACS_COVERED) {
-        return;
-    }
-    const std::size_t bx{blk % bw};
-    const std::size_t by{blk / bw};
-    const int n{side};
+    const std::size_t rbx{(region % rbw) * VDCT_REGION};
+    const std::size_t rby{(region / rbw) * VDCT_REGION};
 
-    float basis[32 * 32];
-    for (int k{0}; k < n; ++k) {
-        const float g{k == 0 ? 1.0f / n : 1.4142135623730951f / n};
-        for (int t{0}; t < n; ++t) {
-            basis[k * n + t] = g * cosf(3.14159265358979323846f * (t + 0.5f) * k / n);
-        }
-    }
+    __shared__ float basis[32 * 32];
+    __shared__ float rows[32 * 32];
 
+    const int tid{static_cast<int>(threadIdx.x)};
+    const int nthreads{static_cast<int>(blockDim.x)};
     const std::size_t plane{width * height};
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    const std::size_t px0{bx * 8};
-    const std::size_t py0{by * 8};
-    for (int c{0}; c < 3; ++c) {
-        const float* src{xyb + c * plane};
-        // Row pass: rows[fx*n + r] = sum_col basis[fx][col] * pixel[r][col].
-        float rows[32 * 32];
-        for (int fx{0}; fx < n; ++fx) {
-            for (int r{0}; r < n; ++r) {
+
+    int cur_basis_n{0};
+    for (int p{0}; p < VDCT_REGION * VDCT_REGION; ++p) {
+        const std::size_t bx{rbx + static_cast<std::size_t>(p % VDCT_REGION)};
+        const std::size_t by{rby + static_cast<std::size_t>(p / VDCT_REGION)};
+        if (bx >= bw || by >= bh) {
+            continue;
+        }
+        const int side{acs == nullptr ? 8 : acs[by * bw + bx]};
+        if (side == ACS_COVERED) {
+            continue;
+        }
+        const int n{side};
+
+        __syncthreads();
+        if (n != cur_basis_n) {
+            for (int e{tid}; e < n * n; e += nthreads) {
+                const int k{e / n};
+                const int t{e % n};
+                const float g{k == 0 ? 1.0f / n : 1.4142135623730951f / n};
+                basis[e] = g * cosf(3.14159265358979323846f * (t + 0.5f) * k / n);
+            }
+            cur_basis_n = n;
+            __syncthreads();
+        }
+
+        const std::size_t px0{bx * 8};
+        const std::size_t py0{by * 8};
+        for (int c{0}; c < 3; ++c) {
+            const float* src{xyb + c * plane};
+            __half* dst{coeffs + c * cplane};
+            // Row pass: rows[fx*n + r] = sum_col basis[fx][col] * pixel[r][col].
+            for (int e{tid}; e < n * n; e += nthreads) {
+                const int fx{e / n};
+                const int r{e % n};
                 float s{0.0f};
                 const float* prow{src + (py0 + r) * width + px0};
                 for (int col{0}; col < n; ++col) {
                     s += basis[fx * n + col] * prow[col];
                 }
-                rows[fx * n + r] = s;
+                rows[e] = s;
             }
-        }
-        __half* dst{coeffs + c * cplane};
-        for (int fx{0}; fx < n; ++fx) {
-            for (int fy{0}; fy < n; ++fy) {
+            __syncthreads();
+            // Column pass: coeff[fx*n + fy] = sum_r basis[fy][r] * rows[fx][r].
+            for (int e{tid}; e < n * n; e += nthreads) {
+                const int fx{e / n};
+                const int fy{e % n};
                 float coeff{0.0f};
                 for (int r{0}; r < n; ++r) {
                     coeff += basis[fy * n + r] * rows[fx * n + r];
                 }
-                const std::size_t raw{static_cast<std::size_t>(fx) * n + fy};
-                dst[covered_plane_slot(n, bx, by, bw, raw)] = __float2half(coeff);
+                dst[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(e))] =
+                    __float2half(coeff);
             }
+            __syncthreads();
         }
     }
 }
@@ -115,9 +147,12 @@ bool variable_forward_dct(const float* xyb, std::size_t width, std::size_t heigh
                           const std::int8_t* acs, __half* coeffs) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
-    const unsigned int threads{128};
-    const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    variable_forward_dct_kernel<<<blocks, threads>>>(xyb, width, height, bw, bh, acs, coeffs);
+    const std::size_t rbw{(bw + VDCT_REGION - 1) / VDCT_REGION};
+    const std::size_t rbh{(bh + VDCT_REGION - 1) / VDCT_REGION};
+    const unsigned int threads{256};
+    const unsigned int blocks{static_cast<unsigned int>(rbw * rbh)};
+    variable_forward_dct_kernel<<<blocks, threads>>>(xyb, width, height, bw, bh, rbw, rbh, acs,
+                                                     coeffs);
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
