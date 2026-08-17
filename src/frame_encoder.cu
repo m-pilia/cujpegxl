@@ -110,18 +110,16 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
 
     // Device histograms -> host.
     std::uint32_t* d_ac_hist{
-        ac_plan.ready
-            ? nullptr
-            : scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
+        ac_plan.ready ? nullptr : scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     if ((!ac_plan.ready && !d_ac_hist) || !d_dc_hist || !d_am_hist) {
         return false;
     }
-    if ((!ac_plan.ready &&
-         !ac_build_histogram(ac_device, width, height, d_ac_hist)) ||
+    if ((!ac_plan.ready && !ac_build_histogram(ac_device, width, height, d_ac_hist)) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
-        !acmeta_build_histograms(quant_field, nullptr, nullptr, nullptr, width, height, d_am_hist)) {
+        !acmeta_build_histograms(quant_field, nullptr, nullptr, nullptr, width, height,
+                                 d_am_hist)) {
         return false;
     }
     std::vector<std::uint32_t> ac_hist{};
@@ -131,8 +129,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     if ((!ac_plan.ready &&
-         cudaMemcpy(ac_hist.data(), d_ac_hist,
-                    ac_hist.size() * sizeof(std::uint32_t),
+         cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess) ||
         cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
@@ -146,8 +143,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     const Clock::time_point entropy_cpu_start{Clock::now()};
     if (!ac_plan.ready) {
         ac_plan.histograms = std::move(ac_hist);
-        ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(),
-                                                    num_ac);
+        ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(), num_ac);
         ac_plan.ready = true;
     }
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
@@ -169,8 +165,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::uint8_t* d_mid{nullptr};
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
-    if (!upload(ac_plan.global.depth, &d_ac_depth) ||
-        !upload(ac_plan.global.bits, &d_ac_bits) ||
+    if (!upload(ac_plan.global.depth, &d_ac_depth) || !upload(ac_plan.global.bits, &d_ac_bits) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
         !upload(blobs.blob_pre, &d_pre) || !upload(blobs.blob_pre_off, &d_pre_off) ||
@@ -207,17 +202,16 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    const bool ac_encoded{
-        ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits,
-                         ac_plan.global.depth.size(), d_ac_body, ac_capacity,
-                         d_ac_sizes, d_ac_offsets, &ac_total)};
+    const bool ac_encoded{ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits,
+                                           ac_plan.global.depth.size(), d_ac_body, ac_capacity,
+                                           d_ac_sizes, d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
         return false;
     }
     if (!dc_encode_groups(dc_device, width, height, quant_field, nullptr, nullptr, nullptr,
-                          d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
-                          d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes,
-                          d_dc_offsets, &dc_total)) {
+                          d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+                          d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
+                          d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;
     }
 
@@ -252,8 +246,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
 
     // Gather the body [DcGlobal | DcGroups | AcGlobal | AcGroups] into one device
     // buffer (byte-aligned sections -> byte concatenation), then a single D2H.
-    const std::size_t body_size{dc_global.size() + dc_total +
-                                ac_plan.global.section.size() + ac_total};
+    const std::size_t body_size{dc_global.size() + dc_total + ac_plan.global.section.size() +
+                                ac_total};
     const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
@@ -266,9 +260,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
         (at += dc_global.size(),
          cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
         (at += dc_total,
-         cudaMemcpy(d_body + at, ac_plan.global.section.data(),
-                    ac_plan.global.section.size(), cudaMemcpyHostToDevice) ==
-             cudaSuccess) &&
+         cudaMemcpy(d_body + at, ac_plan.global.section.data(), ac_plan.global.section.size(),
+                    cudaMemcpyHostToDevice) == cudaSuccess) &&
         (at += ac_plan.global.section.size(),
          cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
@@ -305,8 +298,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
                      const std::int8_t* acs, const std::int8_t* ytox_map,
                      const std::int8_t* ytob_map, std::size_t width, std::size_t height,
                      const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                     std::vector<std::uint8_t>& out_file,
-                     std::vector<StageTiming>* stats) {
+                     std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -325,16 +317,13 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
     std::uint32_t* d_ac_hist{
-        ac_plan.ready
-            ? nullptr
-            : scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
+        ac_plan.ready ? nullptr : scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     if ((!ac_plan.ready && !d_ac_hist) || !d_dc_hist || !d_am_hist) {
         return false;
     }
-    if ((!ac_plan.ready &&
-         !ac_build_histogram_m3(ac_device, acs, width, height, d_ac_hist)) ||
+    if ((!ac_plan.ready && !ac_build_histogram_m3(ac_device, acs, width, height, d_ac_hist)) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist)) {
         return false;
@@ -347,8 +336,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::int8_t> acs_host(bw * bh, 8);
     if ((!ac_plan.ready &&
-         cudaMemcpy(ac_hist.data(), d_ac_hist,
-                    ac_hist.size() * sizeof(std::uint32_t),
+         cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess) ||
         cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
@@ -379,13 +367,12 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     const Clock::time_point entropy_cpu_start{Clock::now()};
     if (!ac_plan.ready) {
         ac_plan.histograms = std::move(ac_hist);
-        ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(),
-                                                    num_ac);
+        ac_plan.global = bitstream::build_ac_global(ac_plan.histograms.data(), num_ac);
         ac_plan.ready = true;
     }
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
-    const bitstream::DcGroupBlobs blobs{bitstream::build_dc_group_blobs(
-        width, height, dc_hist.data(), am_hist.data(), fbc.data())};
+    const bitstream::DcGroupBlobs blobs{
+        bitstream::build_dc_group_blobs(width, height, dc_hist.data(), am_hist.data(), fbc.data())};
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     const Clock::time_point entropy_encode_start{Clock::now()};
@@ -401,8 +388,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::uint8_t* d_mid{nullptr};
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
-    if (!upload(ac_plan.global.depth, &d_ac_depth) ||
-        !upload(ac_plan.global.bits, &d_ac_bits) ||
+    if (!upload(ac_plan.global.depth, &d_ac_depth) || !upload(ac_plan.global.bits, &d_ac_bits) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
         !upload(blobs.blob_pre, &d_pre) || !upload(blobs.blob_pre_off, &d_pre_off) ||
@@ -436,17 +422,16 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    const bool ac_encoded{
-        ac_encode_groups_m3(ac_device, acs, width, height, d_ac_depth,
-                            d_ac_bits, d_ac_body, ac_capacity, d_ac_sizes,
-                            d_ac_offsets, &ac_total)};
+    const bool ac_encoded{ac_encode_groups_m3(ac_device, acs, width, height, d_ac_depth, d_ac_bits,
+                                              d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets,
+                                              &ac_total)};
     if (!ac_encoded) {
         return false;
     }
-    if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_dc_depth,
-                          d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid,
-                          d_mid_off, d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets,
-                          &dc_total)) {
+    if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map,
+                          d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+                          d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
+                          d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;
     }
 
@@ -475,8 +460,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), section_sizes)};
     assembly.cpu_us += us_since(assembly_head_start);
 
-    const std::size_t body_size{dc_global.size() + dc_total +
-                                ac_plan.global.section.size() + ac_total};
+    const std::size_t body_size{dc_global.size() + dc_total + ac_plan.global.section.size() +
+                                ac_total};
     const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
@@ -489,9 +474,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
         (at += dc_global.size(),
          cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
         (at += dc_total,
-         cudaMemcpy(d_body + at, ac_plan.global.section.data(),
-                    ac_plan.global.section.size(), cudaMemcpyHostToDevice) ==
-             cudaSuccess) &&
+         cudaMemcpy(d_body + at, ac_plan.global.section.data(), ac_plan.global.section.size(),
+                    cudaMemcpyHostToDevice) == cudaSuccess) &&
         (at += ac_plan.global.section.size(),
          cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
     if (!gathered) {
@@ -521,13 +505,10 @@ bitstream::QuantParams quant_params_for_distance(float distance) {
     return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
 }
 
-bool encode_nv12_direct(const std::uint8_t* luma, std::size_t luma_pitch,
-                        const std::uint8_t* chroma, std::size_t chroma_pitch,
-                        std::size_t width, std::size_t height,
-                        std::int32_t device_ordinal, float distance,
-                        const bitstream::QuantParams& qp,
-                        std::vector<std::uint8_t>& out_file,
-                        std::vector<StageTiming>* stats) {
+bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
@@ -581,13 +562,10 @@ bool encode_nv12_direct(const std::uint8_t* luma, std::size_t luma_pitch,
     return encode_frame(d_ac, d_dc, width, height, qp, d_qf, out_file, stats);
 }
 
-bool encode_nv12_m3_direct(const std::uint8_t* luma, std::size_t luma_pitch,
-                           const std::uint8_t* chroma,
-                           std::size_t chroma_pitch, std::size_t width,
-                           std::size_t height, std::int32_t device_ordinal,
-                           float distance, const bitstream::QuantParams& qp,
-                           std::vector<std::uint8_t>& out_file,
-                           std::vector<StageTiming>* stats) {
+bool encode_nv12_m3(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
+                    std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                    std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                    std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
@@ -619,8 +597,8 @@ bool encode_nv12_m3_direct(const std::uint8_t* luma, std::size_t luma_pitch,
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
         const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
         std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
-        if (!aligned || cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width, height / 2,
-                                     cudaMemcpyDeviceToDevice) != cudaSuccess) {
+        if (!aligned || cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width,
+                                     height / 2, cudaMemcpyDeviceToDevice) != cudaSuccess) {
             return false;
         }
         chroma_src = aligned;

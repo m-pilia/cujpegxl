@@ -146,45 +146,6 @@ TEST(CujpegxlEncodeGpu, TooSmallBufferReports) {
     cujpegxl_encoder_destroy(encoder);
 }
 
-TEST(CujpegxlEncodeGpu, AsyncFutureSupportsWaitAndOutputRetry) {
-    const cujpegxl_config frame_config{512, 512, 1.0f, 0};
-    const cujpegxl_async_config config{frame_config, 2};
-
-    DeviceNv12 nv12{};
-    ASSERT_TRUE(upload_nv12(frame_config.width, frame_config.height, nv12));
-
-    cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_async_encoder_create(&config, &encoder), CUJPEGXL_OK);
-    const cujpegxl_nv12_input input{reinterpret_cast<std::uintptr_t>(nv12.luma),
-                                    reinterpret_cast<std::uintptr_t>(nv12.chroma), nv12.luma_pitch,
-                                    nv12.chroma_pitch};
-
-    cujpegxl_future* future{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_submit(encoder, &input, 42, &future), CUJPEGXL_OK);
-    ASSERT_NE(future, nullptr);
-    ASSERT_EQ(cujpegxl_future_wait(future, 60'000'000'000), CUJPEGXL_OK);
-
-    int ready{0};
-    ASSERT_EQ(cujpegxl_future_ready(future, &ready), CUJPEGXL_OK);
-    EXPECT_EQ(ready, 1);
-
-    std::vector<std::uint8_t> buffer(16, 0);
-    cujpegxl_output output{buffer.data(), 0, buffer.size()};
-    EXPECT_EQ(cujpegxl_future_get(future, &output, nullptr), CUJPEGXL_BUFFER_TOO_SMALL);
-    ASSERT_GT(output.size, buffer.size());
-    buffer.resize(output.size);
-    output.data = buffer.data();
-    output.capacity = buffer.size();
-
-    std::uint64_t sequence{0};
-    ASSERT_EQ(cujpegxl_future_get(future, &output, &sequence), CUJPEGXL_OK);
-    EXPECT_EQ(sequence, 42u);
-    EXPECT_GT(output.size, 0u);
-
-    cujpegxl_future_destroy(future);
-    cujpegxl_encoder_destroy(encoder);
-}
-
 TEST(CujpegxlEncodeGpu, RejectsUnsupportedResolution) {
     const cujpegxl_config config{100, 100, 1.0f, 0};
     cujpegxl_encoder* encoder{nullptr};

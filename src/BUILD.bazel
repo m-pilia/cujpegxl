@@ -384,11 +384,9 @@ cc_test(
 cuda_library(
     name = "frame_encoder",
     srcs = [
-        "encoder_session.cc",
         "frame_encoder.cu",
     ],
     hdrs = [
-        "encoder_session_internal.h",
         "frame_encoder.h",
     ],
     copts = RUNTIME_COPTS,
@@ -419,19 +417,6 @@ cc_test(
         "//tools/bitstream:vardct_frame",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "encoder_session_gpu_test",
-    srcs = ["encoder_session_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
-    deps = [
-        ":frame_encoder",
         "@googletest//:gtest_main",
     ],
 )
