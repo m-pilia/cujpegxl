@@ -25,19 +25,15 @@ struct DcDeviceResult {
     std::vector<std::uint8_t> stream{};  // concatenated byte-aligned DcGroup sections
 };
 
-bool dc_encode_device(const std::vector<std::int32_t>& q, std::size_t width, std::size_t height,
-                      std::uint32_t raw_quant_field, const bitstream::DcReference& ref,
-                      DcDeviceResult& out);
-
-// Mixed-block variant: `dc` is the compact per-block DC (3*blocks, channel-major
-// X, Y, B), `acs`/`ytox_map`/`ytob_map` the transform + CfL signals, `quant_field`
-// the per-block quant field. Runs dc_build_histograms, acmeta_build_histograms,
-// and dc_encode_groups over the mixed model.
-bool dc_encode_device_m3(const std::vector<std::int32_t>& dc, const std::vector<std::int8_t>& acs,
-                         const std::vector<std::int8_t>& ytox_map,
-                         const std::vector<std::int8_t>& ytob_map,
-                         const std::vector<std::int32_t>& quant_field, std::size_t width,
-                         std::size_t height, const bitstream::DcReference& ref, DcDeviceResult& out);
+// `dc` is the compact per-block DC (3*blocks, channel-major X, Y, B),
+// `acs`/`ytox_map`/`ytob_map` the transform + CfL signals, `quant_field` the
+// per-block quant field. Runs dc_build_histograms, acmeta_build_histograms, and
+// dc_encode_groups.
+bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std::int8_t>& acs,
+                      const std::vector<std::int8_t>& ytox_map,
+                      const std::vector<std::int8_t>& ytob_map,
+                      const std::vector<std::int32_t>& quant_field, std::size_t width,
+                      std::size_t height, const bitstream::DcReference& ref, DcDeviceResult& out);
 
 }  // namespace cujpegxl
 

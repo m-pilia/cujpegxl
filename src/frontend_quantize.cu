@@ -17,7 +17,9 @@
 namespace cujpegxl {
 namespace {
 
-std::size_t ceil_div(std::size_t a, std::size_t b) { return (a + b - 1) / b; }
+std::size_t ceil_div(std::size_t a, std::size_t b) {
+    return (a + b - 1) / b;
+}
 
 // A coefficient raw index (fx*N+fy) belongs to the low-frequency corner (carried
 // as DC, excluded from AC) when both frequencies are below the covered side.
@@ -36,7 +38,7 @@ __device__ inline float dequant_weight(int side, int channel, int raw) {
     return DCT8_DEQUANT_WEIGHTS[channel][raw];
 }
 
-// K2: one thread per 64x64 color tile accumulates its first-blocks' AC-coefficient
+// One thread per 64x64 color tile accumulates its first-blocks' AC-coefficient
 // regression sums and quantizes them to the color map. Shared by device and host.
 __host__ __device__ inline void estimate_tile(const __half* coeffs, const std::int8_t* acs,
                                               std::size_t bw, std::size_t bh, std::size_t cmw,
@@ -60,8 +62,8 @@ __host__ __device__ inline void estimate_tile(const __half* coeffs, const std::i
                 if (raw_is_llf(raw, side)) {
                     continue;
                 }
-                const std::size_t slot{covered_plane_slot(side, bx, by, bw,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
                 const double xr{__half2float(coeffs[slot])};
                 const double yr{__half2float(coeffs[cplane + slot])};
                 const double br{__half2float(coeffs[2 * cplane + slot])};
@@ -90,17 +92,14 @@ __global__ void estimate_cfl_covered_kernel(const __half* __restrict__ coeffs,
     estimate_tile(coeffs, acs, bw, bh, cmw, tile, ytox_map, ytob_map);
 }
 
-// K3: one thread per first-block. Gathers the block's raw coefficients, quantizes
+// One thread per first-block. Gathers the block's raw coefficients, quantizes
 // the AC with per-tile CfL residuals (Y roundtrip drives X/B), and derives the DC
 // from the low frequencies with the base correlation.
-__global__ void quantize_residual_kernel(const __half* __restrict__ coeffs,
-                                         const std::int8_t* __restrict__ acs,
-                                         const std::int8_t* __restrict__ ytox_map,
-                                         const std::int8_t* __restrict__ ytob_map,
-                                         const std::int32_t* __restrict__ quant_field,
-                                         std::size_t bw, std::size_t bh, std::size_t cmw, float gsf,
-                                         float dc_scale, std::int16_t* __restrict__ ac,
-                                         std::int32_t* __restrict__ dc) {
+__global__ void quantize_residual_kernel(
+    const __half* __restrict__ coeffs, const std::int8_t* __restrict__ acs,
+    const std::int8_t* __restrict__ ytox_map, const std::int8_t* __restrict__ ytob_map,
+    const std::int32_t* __restrict__ quant_field, std::size_t bw, std::size_t bh, std::size_t cmw,
+    float gsf, float dc_scale, std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc) {
     const std::size_t blk{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x};
     if (blk >= bw * bh) {
         return;
@@ -147,11 +146,10 @@ __global__ void quantize_residual_kernel(const __half* __restrict__ coeffs,
         ac[cplane + slot] = static_cast<std::int16_t>(qy);
 
         const float wx{dequant_weight(n, 0, raw)};
-        ac[slot] = static_cast<std::int16_t>(
-            lrintf((xs[raw] - ytox * y_round[raw]) * qgsf / wx));
+        ac[slot] = static_cast<std::int16_t>(lrintf((xs[raw] - ytox * y_round[raw]) * qgsf / wx));
         const float wb{dequant_weight(n, 2, raw)};
-        ac[2 * cplane + slot] = static_cast<std::int16_t>(
-            lrintf((bs[raw] - ytob * y_round[raw]) * qgsf / wb));
+        ac[2 * cplane + slot] =
+            static_cast<std::int16_t>(lrintf((bs[raw] - ytob * y_round[raw]) * qgsf / wb));
     }
 
     float dc_x[16];
@@ -205,10 +203,10 @@ void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std
     }
 }
 
-bool quantize_residual_m3(const __half* coeffs, const std::int8_t* acs,
-                          const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                          const std::int32_t* quant_field, std::size_t width, std::size_t height,
-                          float distance, std::int16_t* ac, std::int32_t* dc) {
+bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::int8_t* ytox_map,
+                       const std::int8_t* ytob_map, const std::int32_t* quant_field,
+                       std::size_t width, std::size_t height, float distance, std::int16_t* ac,
+                       std::int32_t* dc) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t cmw{ceil_div(bw, 8)};

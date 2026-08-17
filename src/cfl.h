@@ -10,7 +10,7 @@
 
 namespace cujpegxl {
 
-// Chroma-from-luma (T4) color model and per-tile estimation, matching libjxl's
+// Chroma-from-luma color model and per-tile estimation, matching libjxl's
 // ColorCorrelation. The X and B AC coefficients are decorrelated against Y:
 // the decoder reconstructs X = dq_x + ytox_ratio(m) * dq_y and
 // B = dq_b + ytob_ratio(m) * dq_y, so the encoder subtracts the same multiple of
@@ -23,11 +23,11 @@ namespace cujpegxl {
 #define CUJPEGXL_CFL_HD
 #endif
 
-inline constexpr int CFL_COLOR_FACTOR = 84;      // libjxl kDefaultColorFactor
+inline constexpr int CFL_COLOR_FACTOR = 84;                        // libjxl kDefaultColorFactor
 inline constexpr float CFL_COLOR_SCALE = 1.0f / CFL_COLOR_FACTOR;  // libjxl color_scale_
-inline constexpr float CFL_BASE_X = 0.0f;        // base_correlation_x
-inline constexpr float CFL_BASE_B = 1.0f;        // base_correlation_b (kYToBRatio)
-inline constexpr int CFL_MAP_MIN = -128;         // ImageSB (signed int8) range
+inline constexpr float CFL_BASE_X = 0.0f;                          // base_correlation_x
+inline constexpr float CFL_BASE_B = 1.0f;  // base_correlation_b (kYToBRatio)
+inline constexpr int CFL_MAP_MIN = -128;   // ImageSB (signed int8) range
 inline constexpr int CFL_MAP_MAX = 127;
 inline constexpr std::size_t CFL_COLOR_TILE_BLOCKS = 8;  // kColorTileDimInBlocks (64px)
 
@@ -82,7 +82,7 @@ CUJPEGXL_CFL_HD inline void cfl_estimate(const float* x, const float* y, const f
     cfl_maps_from_sums(sxy, syy, sby, ytox_map, ytob_map);
 }
 
-// Per-tile CfL estimation (K2). `x`/`y`/`b` hold `num_tiles * coeffs_per_tile`
+// Per-tile CfL estimation. `x`/`y`/`b` hold `num_tiles * coeffs_per_tile`
 // AC coefficients grouped by tile (each tile's coefficients contiguous); `ytox_map`
 // and `ytob_map` receive one signed-int8 factor per tile. Deterministic. The
 // device entry returns false on a CUDA error; the host entry runs the identical

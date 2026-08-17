@@ -16,11 +16,11 @@ namespace cujpegxl::bitstream {
 // Prefix-code (Huffman) entropy container mirroring libjxl's DecodeHistograms +
 // prefix ANSSymbolReader wire format. LZ77 is disabled and all contexts are
 // clustered to a single histogram (context map = simple, all zeros), which is
-// spec-legal and keeps the M1 context model simple. Tokens are collected across
+// spec-legal and keeps the context model simple. Tokens are collected across
 // contexts, then a length-limited prefix code is built over the pooled symbol
 // histogram and the token stream is emitted.
 class EntropyEncoder {
-  public:
+public:
     EntropyEncoder(std::size_t num_contexts, HybridUintConfig config)
         : num_contexts_{num_contexts}, config_{config} {}
 
@@ -58,7 +58,7 @@ class EntropyEncoder {
     const std::vector<std::uint8_t>& code_depth() const { return depth_; }
     const std::vector<std::uint16_t>& code_bits() const { return bits_; }
 
-  private:
+private:
     struct Token {
         std::uint32_t symbol;
         std::uint32_t nbits;

@@ -51,8 +51,8 @@ __global__ void gaborish_kernel(const float* __restrict__ xyb, std::size_t width
 // One thread per 8x8 block position. A first-block computes its side*side DCT of
 // each XYB channel (separable, matching forward_dctN's transposed-raster layout
 // coeff[fx*N+fy]) and scatters the coefficients as FP16 across its covered
-// blocks' slots; covered blocks do nothing. Correctness-first (per-block serial);
-// fusion and parallelism within a block are T9.
+// blocks' slots; covered blocks do nothing. Per-block serial, not fused into the
+// front end.
 __global__ void variable_forward_dct_kernel(const float* __restrict__ xyb, std::size_t width,
                                             std::size_t height, std::size_t bw, std::size_t bh,
                                             const std::int8_t* __restrict__ acs,
@@ -123,9 +123,9 @@ bool variable_forward_dct(const float* xyb, std::size_t width, std::size_t heigh
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 
-bool frontend_transform_m3(const std::uint8_t* luma, std::size_t luma_pitch,
-                           const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                           std::size_t height, float distance, __half* coeffs, std::int8_t* acs) {
+bool frontend_transform(const std::uint8_t* luma, std::size_t luma_pitch,
+                        const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
+                        std::size_t height, float distance, __half* coeffs, std::int8_t* acs) {
     const std::size_t plane{width * height};
     float* xyb{nullptr};
     float* sharp{nullptr};
@@ -142,8 +142,7 @@ bool frontend_transform_m3(const std::uint8_t* luma, std::size_t luma_pitch,
         // Gaborish-inverse pre-sharpen the opsin before selection and the DCT,
         // cancelling the decoder's default gaborish smoothing.
         const unsigned int threads{256};
-        const unsigned int blocks{
-            static_cast<unsigned int>((3 * plane + threads - 1) / threads)};
+        const unsigned int blocks{static_cast<unsigned int>((3 * plane + threads - 1) / threads)};
         gaborish_kernel<<<blocks, threads>>>(xyb, width, height, sharp);
         ok = cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
     }

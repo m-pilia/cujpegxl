@@ -4,9 +4,9 @@
 """Run a command twice and byte-compare a designated output.
 
 The runner is codec-agnostic: it executes an arbitrary command line two times
-and compares either its stdout or a file it produces. This is the M0 harness
-used to enforce the per-device byte-identical determinism requirement in CI,
-before any encoder exists to exercise it.
+and compares either its stdout or a file it produces. This is the determinism
+harness used to enforce the per-device byte-identical determinism requirement in
+CI.
 """
 
 from __future__ import annotations

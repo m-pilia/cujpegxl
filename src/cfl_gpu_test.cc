@@ -126,8 +126,8 @@ TEST(Cfl, DegenerateTileMapsToBase) {
 }
 
 // The residual/quantize/reconstruct chain round-trips each chroma coefficient to
-// within half a quant step of the original, with CfL correctly inverted (DCT8
-// weights; large-block matrices are integrated at T5/T6).
+// within half a quant step of the original, with CfL correctly inverted (using
+// the 8x8 dequant weights).
 TEST(Cfl, QuantizeReconstructWithinHalfStep) {
     const QuantCalibration cal{calibrate_quant(1.0f)};
     const float qgsf{static_cast<float>(cal.raw_quant_field) * cal.global_scale_float};

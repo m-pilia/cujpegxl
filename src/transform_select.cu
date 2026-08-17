@@ -11,12 +11,13 @@
 namespace cujpegxl {
 namespace {
 
-std::size_t region_grid(std::size_t blocks) { return (blocks + 3) / 4; }
+std::size_t region_grid(std::size_t blocks) {
+    return (blocks + 3) / 4;
+}
 
 // One thread per 32x32 region. The per-region decision is self-contained (no
 // cross-thread reduction), so device and host produce byte-identical ACS. This
-// is the correctness-first T3 kernel; fusion into the front-end and parallelism
-// within a region are deferred to T6/T9.
+// is a standalone kernel, not fused into the front end.
 __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_t width,
                                          std::size_t bw, std::size_t bh, std::size_t rbw,
                                          std::size_t rbh, double qgsf, double lambda,

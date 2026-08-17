@@ -461,7 +461,7 @@ int main(int argc, char** argv) {
 
     auto encode_cujpegxl = [&](const BenchImage& img) -> double {
         const auto t0{std::chrono::steady_clock::now()};
-        const bool ok{cujpegxl::encode_nv12_m3(
+        const bool ok{cujpegxl::encode_nv12(
             img.d_luma, args.width, img.d_chroma, args.width, args.width, args.height, args.device,
             args.distance, qp, cujpegxl_out, args.profile ? &cujpegxl_stages : nullptr)};
         const auto t1{std::chrono::steady_clock::now()};

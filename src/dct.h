@@ -11,8 +11,8 @@ namespace cujpegxl {
 // Forward NxN DCT of a planar XYB float image, matching libjxl's VarDCT square
 // transforms: the orthonormal 2D DCT-II divided by N, laid out per block in
 // libjxl's transposed raster order (coefficient index = horizontal_freq * N +
-// vertical_freq), the same convention libjxl's TransformFromPixels emits and the
-// DCT8 path already uses.
+// vertical_freq), the same convention libjxl's TransformFromPixels emits and
+// forward_dct8 uses.
 //
 // `xyb` is three tightly packed width*height float planes. `coeffs` receives, per
 // plane, NxN blocks in raster order with N*N coefficients each:

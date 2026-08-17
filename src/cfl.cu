@@ -9,8 +9,8 @@ namespace cujpegxl {
 namespace {
 
 // One thread per 64x64 color tile. Each tile's regression is self-contained, so
-// device and host produce identical maps. Correctness-first (T4); gathering the
-// tile coefficients from the covered-block layout and fusing this is T6/T9.
+// device and host produce identical maps. This standalone kernel gathers the tile
+// coefficients from the covered-block layout rather than fusing into the front end.
 __global__ void estimate_cfl_kernel(const float* __restrict__ x, const float* __restrict__ y,
                                     const float* __restrict__ b, std::size_t num_tiles,
                                     std::size_t coeffs_per_tile, std::int8_t* __restrict__ ytox_map,

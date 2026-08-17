@@ -69,59 +69,6 @@ void fill_ac_pattern(FrameCoefficients& fc) {
     }
 }
 
-void check_matches_reference(const FrameCoefficients& fc) {
-    const AcReference ref{reference_ac_encode(fc)};
-    const std::vector<std::int32_t> q{flatten_ac(fc)};
-
-    AcDeviceResult dev{};
-    ASSERT_TRUE(ac_encode_device(q, fc.width, fc.height, ref.depth, ref.bits, dev));
-
-    ASSERT_EQ(dev.group_sizes.size(), ref.group_streams.size());
-
-    for (std::size_t s{0}; s < ref.histogram.size(); ++s) {
-        EXPECT_EQ(dev.histogram[s], ref.histogram[s]) << "histogram symbol " << s;
-    }
-    for (std::size_t s{ref.histogram.size()}; s < dev.histogram.size(); ++s) {
-        EXPECT_EQ(dev.histogram[s], 0u) << "unexpected histogram symbol " << s;
-    }
-
-    std::uint32_t offset{0};
-    for (std::size_t g{0}; g < ref.group_streams.size(); ++g) {
-        const std::vector<std::uint8_t>& expected{ref.group_streams[g]};
-        EXPECT_EQ(dev.group_sizes[g], expected.size()) << "group " << g << " size";
-        EXPECT_EQ(dev.group_offsets[g], offset) << "group " << g << " offset";
-        offset += dev.group_sizes[g];
-        ASSERT_LE(dev.group_offsets[g] + expected.size(), dev.stream.size());
-        for (std::size_t i{0}; i < expected.size(); ++i) {
-            EXPECT_EQ(dev.stream[dev.group_offsets[g] + i], expected[i])
-                << "group " << g << " byte " << i;
-        }
-    }
-    EXPECT_EQ(dev.stream.size(), offset);
-}
-
-TEST(EntropyGpu, SingleGroupAllZero) {
-    check_matches_reference(make_frame(256, 256));
-}
-
-TEST(EntropyGpu, SingleGroupPattern) {
-    FrameCoefficients fc{make_frame(256, 256)};
-    fill_ac_pattern(fc);
-    check_matches_reference(fc);
-}
-
-TEST(EntropyGpu, MultiGroupPattern) {
-    FrameCoefficients fc{make_frame(512, 512)};
-    fill_ac_pattern(fc);
-    check_matches_reference(fc);
-}
-
-TEST(EntropyGpu, MultiGroupPartialEdges) {
-    FrameCoefficients fc{make_frame(640, 384)};
-    fill_ac_pattern(fc);
-    check_matches_reference(fc);
-}
-
 // Marks a first-block of `side` and its covered interior in fc.acs.
 void set_first_block(FrameCoefficients& fc, std::size_t bw, int side, std::size_t bx,
                      std::size_t by) {
@@ -163,11 +110,11 @@ FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
     return fc;
 }
 
-void check_matches_reference_m3(const FrameCoefficients& fc) {
+void check_matches_reference(const FrameCoefficients& fc) {
     const AcReference ref{reference_ac_encode(fc)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult dev{};
-    ASSERT_TRUE(ac_encode_device_m3(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, dev));
+    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, dev));
 
     for (std::size_t s{0}; s < ref.histogram.size(); ++s) {
         EXPECT_EQ(dev.histogram[s], ref.histogram[s]) << "histogram symbol " << s;
@@ -186,31 +133,30 @@ void check_matches_reference_m3(const FrameCoefficients& fc) {
     EXPECT_EQ(dev.stream.size(), offset);
 }
 
-TEST(EntropyGpuM3, Dct8OnlyMatchesReference) {
+TEST(EntropyGpu, Dct8OnlyMatchesReference) {
     FrameCoefficients fc{make_frame(256, 256)};
     fill_ac_pattern(fc);
     fc.acs.assign((256 / 8) * (256 / 8), 8);  // explicit all-DCT8
-    check_matches_reference_m3(fc);
+    check_matches_reference(fc);
 }
 
-TEST(EntropyGpuM3, MixedSingleGroupMatchesReference) {
-    check_matches_reference_m3(make_mixed_frame(256, 256));
+TEST(EntropyGpu, MixedSingleGroupMatchesReference) {
+    check_matches_reference(make_mixed_frame(256, 256));
 }
 
-TEST(EntropyGpuM3, MixedMultiGroupMatchesReference) {
-    check_matches_reference_m3(make_mixed_frame(512, 384));
+TEST(EntropyGpu, MixedMultiGroupMatchesReference) {
+    check_matches_reference(make_mixed_frame(512, 384));
 }
 
 TEST(EntropyGpu, Deterministic) {
-    FrameCoefficients fc{make_frame(512, 384)};
-    fill_ac_pattern(fc);
+    FrameCoefficients fc{make_mixed_frame(512, 384)};
     const AcReference ref{reference_ac_encode(fc)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
 
     AcDeviceResult a{};
     AcDeviceResult b{};
-    ASSERT_TRUE(ac_encode_device(q, fc.width, fc.height, ref.depth, ref.bits, a));
-    ASSERT_TRUE(ac_encode_device(q, fc.width, fc.height, ref.depth, ref.bits, b));
+    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, a));
+    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, b));
     EXPECT_EQ(a.stream, b.stream);
     EXPECT_EQ(a.group_sizes, b.group_sizes);
     EXPECT_EQ(a.group_offsets, b.group_offsets);

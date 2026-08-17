@@ -15,8 +15,7 @@ namespace cujpegxl {
 
 // Provisional Lagrange weight (pixel-domain SSE per estimated bit) for the
 // selection RD proxy. Chosen so smooth regions coalesce into large blocks while
-// localized detail splits; final calibration against coded size/quality is
-// deferred to T6/T8.
+// localized detail splits; it is not yet calibrated against coded size/quality.
 inline constexpr double TRANSFORM_SELECT_LAMBDA = 6.0e-4;
 
 // Minimum proxy-cost reduction required to prefer a split over the larger block.

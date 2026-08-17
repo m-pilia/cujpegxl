@@ -9,7 +9,7 @@
 
 namespace cujpegxl {
 
-// Bounded transform-type selection (T3): a quadtree over the square candidate
+// Bounded transform-type selection: a quadtree over the square candidate
 // set {8x8, 16x16, 32x32}, driven by a rate/distortion proxy on the XYB Y plane.
 // Each 32x32 region (4x4 blocks) either keeps one 32x32 or splits into four
 // 16x16 quadrants; each quadrant keeps one 16x16 or splits into four 8x8. The

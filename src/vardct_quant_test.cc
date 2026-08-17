@@ -27,10 +27,10 @@ const float* weights_for(int side, int channel) {
     return DCT32_DEQUANT_WEIGHTS[channel];
 }
 
-// K3 for large blocks: the CfL residual + quantize + dequantize + re-correlate
-// chain round-trips each AC chroma coefficient to within half a quant step,
-// using the baked DCT16/DCT32 dequant matrices. Mirrors the DCT8 check in
-// cfl_gpu_test for the sizes T4 could not yet exercise.
+// Residual + quantize for large blocks: the CfL residual + quantize + dequantize
+// + re-correlate chain round-trips each AC chroma coefficient to within half a
+// quant step, using the baked DCT16/DCT32 dequant matrices. Mirrors the 8x8 check
+// in cfl_gpu_test for the larger transform sizes.
 TEST(VardctQuant, LargeBlockCflResidualWithinHalfStep) {
     const QuantCalibration cal{calibrate_quant(1.0f)};
     const float qgsf{static_cast<float>(cal.raw_quant_field) * cal.global_scale_float};

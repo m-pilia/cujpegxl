@@ -79,11 +79,11 @@ Frame make_frame() {
                 continue;
             }
             for (int raw{0}; raw < side * side; ++raw) {
-                const std::size_t slot{covered_plane_slot(side, bx, by, BW,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
                 const float yv{nd(rng)};
-                f.coeffs[CPLANE + slot] = __float2half(yv);              // Y
-                f.coeffs[slot] = __float2half(0.4f * yv + 0.3f * nd(rng));       // X ~ corr
+                f.coeffs[CPLANE + slot] = __float2half(yv);                       // Y
+                f.coeffs[slot] = __float2half(0.4f * yv + 0.3f * nd(rng));        // X ~ corr
                 f.coeffs[2 * CPLANE + slot] = __float2half(yv + 0.2f * nd(rng));  // B ~ base+corr
             }
         }
@@ -136,9 +136,9 @@ TEST(FrontendQuantize, CflEstimateDeviceMatchesHost) {
     cudaFree(d_mb);
 }
 
-// K3 round-trips each AC chroma coefficient to within half a quant step with CfL
-// correctly inverted, and reconstructs the LLF DC within half a DC step, across
-// the mixed tiling.
+// The residual+quantize kernel round-trips each AC chroma coefficient to within
+// half a quant step with CfL correctly inverted, and reconstructs the LLF DC
+// within half a DC step, across the mixed tiling.
 TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
     const Frame f{make_frame()};
     const std::size_t cmw{(BW + 7) / 8};
@@ -164,8 +164,8 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
     cudaMemcpy(d_mb, mb.data(), mb.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice);
 
-    ASSERT_TRUE(quantize_residual_m3(d_coeffs, d_acs, d_mx, d_mb, d_qf, WIDTH, HEIGHT, 1.0f, d_ac,
-                                     d_dc));
+    ASSERT_TRUE(
+        quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, WIDTH, HEIGHT, 1.0f, d_ac, d_dc));
     std::vector<std::int16_t> ac(3 * CPLANE);
     std::vector<std::int32_t> dc(3 * NBLK);
     cudaMemcpy(ac.data(), d_ac, ac.size() * sizeof(std::int16_t), cudaMemcpyDeviceToHost);
@@ -188,8 +188,8 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
                 if (is_llf(raw, side)) {
                     continue;
                 }
-                const std::size_t slot{covered_plane_slot(side, bx, by, BW,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
                 const float xv{__half2float(f.coeffs[slot])};
                 const float yv{__half2float(f.coeffs[CPLANE + slot])};
                 const float bv{__half2float(f.coeffs[2 * CPLANE + slot])};
@@ -208,8 +208,8 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
             std::vector<float> raw_y(side * side);
             std::vector<float> raw_b(side * side);
             for (int raw{0}; raw < side * side; ++raw) {
-                const std::size_t slot{covered_plane_slot(side, bx, by, BW,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
                 raw_y[raw] = __half2float(f.coeffs[CPLANE + slot]);
                 raw_b[raw] = __half2float(f.coeffs[2 * CPLANE + slot]);
             }

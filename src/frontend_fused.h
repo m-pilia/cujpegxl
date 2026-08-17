@@ -10,7 +10,7 @@
 namespace cujpegxl {
 
 // Fused front-end megakernel: collapses NV12 -> XYB -> forward DCT8 ->
-// Tier-0 adaptive quant -> quantize into one tile-resident kernel. Each CUDA
+// masking-based adaptive quant -> quantize into one tile-resident kernel. Each CUDA
 // block processes a tile of blocks, loads the tile's NV12 pixels (plus a one-
 // pixel halo) once, computes XYB into shared memory, derives the per-block
 // adaptive quant field (libjxl masking transcription; the pre-erosion/erosion

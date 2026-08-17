@@ -170,7 +170,7 @@ cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegx
     }
 
     std::vector<std::uint8_t> bytes{};
-    const bool ok{cujpegxl::encode_nv12_m3(
+    const bool ok{cujpegxl::encode_nv12(
         reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
         reinterpret_cast<const std::uint8_t*>(input->chroma), input->chroma_pitch, config.width,
         config.height, config.device_ordinal, config.distance,

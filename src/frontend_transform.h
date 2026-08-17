@@ -11,10 +11,9 @@
 
 namespace cujpegxl {
 
-// K1 (M3 front-end, 5(a) follow-on structure), correctness-first. Runs the
-// forward variable-size DCT of a planar XYB float image under a per-block
-// transform decision, writing the unquantized coefficients as FP16 in the
-// covered-block layout (src/vardct_layout): for each first-block of side N its
+// Runs the forward variable-size DCT of a planar XYB float image under a
+// per-block transform decision, writing the unquantized coefficients as FP16 in
+// the covered-block layout (src/vardct_layout): for each first-block of side N its
 // N*N coefficients (forward_dctN transposed-raster layout) scatter across its
 // covered 8x8 positions' 64-slot regions; covered blocks own no coefficients.
 //
@@ -26,16 +25,16 @@ namespace cujpegxl {
 bool variable_forward_dct(const float* xyb, std::size_t width, std::size_t height,
                           const std::int8_t* acs, __half* coeffs);
 
-// K1 driver: NV12 -> XYB -> bounded transform selection (select_transforms) ->
+// Driver: NV12 -> XYB -> bounded transform selection (select_transforms) ->
 // variable forward DCT. `luma`/`chroma` are device NV12 planes (see nv12_to_xyb);
 // `distance` drives the selection RD proxy. `coeffs` (three FP16 covered-block
 // planes) and `acs` (width/8 * height/8 int8) receive the outputs. The XYB
 // scratch is allocated internally. Gaborish-inverse pre-sharpening and the
-// adaptive-quant field attach in later K1/K3 steps. Deterministic. Returns false
-// on a CUDA error.
-bool frontend_transform_m3(const std::uint8_t* luma, std::size_t luma_pitch,
-                           const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                           std::size_t height, float distance, __half* coeffs, std::int8_t* acs);
+// adaptive-quant field are applied elsewhere in the front end. Deterministic.
+// Returns false on a CUDA error.
+bool frontend_transform(const std::uint8_t* luma, std::size_t luma_pitch,
+                        const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
+                        std::size_t height, float distance, __half* coeffs, std::int8_t* acs);
 
 }  // namespace cujpegxl
 

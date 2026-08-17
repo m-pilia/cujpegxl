@@ -11,7 +11,7 @@
 
 namespace cujpegxl {
 
-// K2 (M3 CfL estimation): estimates one signed-int8 Y-to-X and Y-to-B factor per
+// CfL estimation: estimates one signed-int8 Y-to-X and Y-to-B factor per
 // 64x64 color tile from the FP16 covered-block coefficients. Each first-block's
 // AC coefficients (the block's covered-block slots, excluding its low-frequency
 // corner) contribute to the regression of its top-left color tile. `coeffs` are
@@ -24,7 +24,7 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
 void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std::size_t width,
                                std::size_t height, std::int8_t* ytox_map, std::int8_t* ytob_map);
 
-// K3 (M3 residual + quantize + DC-via-LLF): quantizes the FP16 covered-block
+// Residual + quantize + DC-via-LLF: quantizes the FP16 covered-block
 // coefficients into int16 AC (covered-block layout) and int32 DC (per 8x8 block,
 // LLF-derived), applying per-tile chroma-from-luma to the AC and the base
 // correlation to the DC, using the baked per-size dequant matrices.
@@ -37,7 +37,7 @@ void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std
 // `acs`, `ytox_map`, `ytob_map`, `quant_field` are device inputs; `ac`
 // (three int16 covered-block planes) and `dc` (three int32 planes, one per 8x8
 // block) the outputs. Deterministic. Returns false on a CUDA error.
-bool quantize_residual_m3(const __half* coeffs, const std::int8_t* acs,
+bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
                           const std::int8_t* ytox_map, const std::int8_t* ytob_map,
                           const std::int32_t* quant_field, std::size_t width, std::size_t height,
                           float distance, std::int16_t* ac, std::int32_t* dc);

@@ -13,10 +13,10 @@ namespace cujpegxl {
 using std::cos;
 using std::sqrt;
 
-// Data model for the M3 variable-block front-end: transform-type signaling, the
+// Data model for the variable-block front end: transform-type signaling, the
 // covered-block coefficient storage, and the low-frequency -> DC-image
-// derivation. Host reference used to validate the device kernels (T3/T4) and
-// exercised against the libjxl oracle.
+// derivation. Host reference used to validate the device kernels and exercised
+// against the libjxl oracle.
 
 #if defined(__CUDACC__)
 #define CUJPEGXL_VL_HD __host__ __device__
@@ -37,9 +37,9 @@ constexpr std::int8_t ACS_COVERED = 0;
 
 inline bool acs_is_first_block(std::int8_t signal) { return signal != ACS_COVERED; }
 
-// Coefficients stored per 8x8 block position in the M3 coefficient buffer. Every
-// position reserves a full DCT8 block's worth of slots; a first-block of side N
-// packs its N*N coefficients across the slots of its covered blocks.
+// Coefficients stored per 8x8 block position in the coefficient buffer. Every
+// position reserves a full 8x8 block's worth of slots (64); a first-block of side
+// N packs its N*N coefficients across the slots of its covered blocks.
 constexpr std::size_t COEFFS_PER_BLOCK = 64;
 
 // Maps a first-block's raw coefficient index (forward_dctN transposed-raster

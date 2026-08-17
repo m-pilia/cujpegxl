@@ -411,24 +411,6 @@ cc_test(
         "manual",
     ],
     deps = [
-        ":entropy",
-        ":frame_encoder",
-        "//src/bitstream",
-        "//tools/bitstream:vardct_frame",
-        "@libjxl//lib:jpegxl",
-        "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "frame_encoder_m3_gpu_test",
-    srcs = ["frame_encoder_m3_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
-    deps = [
         ":frame_encoder",
         "//src/bitstream:frame_assembly",
         "@libjxl//lib:jpegxl",

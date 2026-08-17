@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// End-to-end validation of the device frame encoder: for a set of quantized
-// coefficients it must produce the exact ISOBMFF .jxl file the host oracle
-// produces (write_container(write_vardct_codestream)), and that file must decode
-// through libjxl's public decoder to the expected dimensions.
+// GPU validation of the encode path (encode_nv12): mixed {8,16,32} blocks
+// + chroma-from-luma. Encodes a device NV12 image and decodes the result through
+// libjxl's public decoder, and checks per-device determinism.
 
 #include <cstdint>
 #include <vector>
@@ -15,99 +14,50 @@
 
 #include <gtest/gtest.h>
 
-#include "entropy.h"
 #include "frame_encoder.h"
-#include "src/bitstream/container.h"
-#include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl {
 namespace {
 
-using bitstream::FrameCoefficients;
-using bitstream::QuantParams;
+struct DeviceNv12 {
+    std::uint8_t* luma{nullptr};
+    std::uint8_t* chroma{nullptr};
+    std::size_t luma_pitch{0};
+    std::size_t chroma_pitch{0};
+    ~DeviceNv12() {
+        cudaFree(luma);
+        cudaFree(chroma);
+    }
+};
 
-// Packs fc's AC (slots 1..63 of each block) into the device int16 AC layout
-// (channel-major planes X, Y, B; AC_COEFFS_PER_BLOCK per block; slot k-1).
-std::vector<std::int16_t> flatten_ac(const FrameCoefficients& fc) {
-    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
-    std::vector<std::int16_t> ac(3 * blocks * AC_COEFFS_PER_BLOCK, 0);
-    for (std::size_t c{0}; c < 3; ++c) {
-        for (std::size_t b{0}; b < blocks; ++b) {
-            for (std::size_t k{1}; k < 64; ++k) {
-                ac[c * blocks * AC_COEFFS_PER_BLOCK + b * AC_COEFFS_PER_BLOCK + (k - 1)] =
-                    static_cast<std::int16_t>(fc.ac[c][b * 64 + k]);
-            }
+// A photo-like NV12: smooth luma gradient with a textured band, so selection
+// produces a genuine mix of block sizes and CfL has correlated chroma.
+bool upload_nv12(std::size_t width, std::size_t height, DeviceNv12& out) {
+    std::vector<std::uint8_t> luma(width * height, 0);
+    std::vector<std::uint8_t> chroma(width * (height / 2), 0);
+    for (std::size_t y{0}; y < height; ++y) {
+        for (std::size_t x{0}; x < width; ++x) {
+            const bool textured{x > width / 2};
+            const int v{textured ? 96 + (((x + y) & 1) ? 48 : -48)
+                                 : static_cast<int>(40 + 160 * x / width)};
+            luma[y * width + x] = static_cast<std::uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
         }
     }
-    return ac;
-}
-
-// Packs fc's DC (slot 0 of each block) into the device int32 DC layout
-// (channel-major planes X, Y, B; one DC per block).
-std::vector<std::int32_t> flatten_dc(const FrameCoefficients& fc) {
-    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
-    std::vector<std::int32_t> dc(3 * blocks, 0);
-    for (std::size_t c{0}; c < 3; ++c) {
-        for (std::size_t b{0}; b < blocks; ++b) {
-            dc[c * blocks + b] = fc.dc[c][b];
+    for (std::size_t y{0}; y < height / 2; ++y) {
+        for (std::size_t x{0}; x < width; x += 2) {
+            chroma[y * width + x] = static_cast<std::uint8_t>(128 + 40 * y / (height / 2));  // Cb
+            chroma[y * width + x + 1] = static_cast<std::uint8_t>(128 - 30 * x / width);     // Cr
         }
     }
-    return dc;
-}
-
-FrameCoefficients make_frame(std::size_t w, std::size_t h) {
-    FrameCoefficients fc{};
-    fc.width = w;
-    fc.height = h;
-    fc.global_scale = 4096;
-    fc.quant_dc = 32;
-    fc.raw_quant_field = 32;
-    const std::size_t bw{w / 8};
-    const std::size_t bh{h / 8};
-    for (int c{0}; c < 3; ++c) {
-        fc.dc[c].assign(bw * bh, 0);
-        fc.ac[c].assign(bw * bh * 64, 0);
-    }
-    for (std::size_t by{0}; by < bh; ++by) {
-        for (std::size_t bx{0}; bx < bw; ++bx) {
-            const std::size_t b{by * bw + bx};
-            for (int c{0}; c < 3; ++c) {
-                fc.dc[c][b] = static_cast<std::int32_t>((bx * 3 + by + c) % 517) - 258;
-                std::int32_t* blk{&fc.ac[c][b * 64]};
-                blk[1] = static_cast<std::int32_t>((bx + c) % 7) - 3;
-                blk[8] = static_cast<std::int32_t>((by * 2 + c) % 11) - 5;
-                blk[9] = static_cast<std::int32_t>((bx + by) % 5) - 2;
-            }
-        }
-    }
-    return fc;
-}
-
-bool encode_on_device(const FrameCoefficients& fc, std::vector<std::uint8_t>& out) {
-    const std::vector<std::int16_t> ac{flatten_ac(fc)};
-    const std::vector<std::int32_t> dc{flatten_dc(fc)};
-    const std::vector<std::int32_t> qf((fc.width / 8) * (fc.height / 8),
-                                       static_cast<std::int32_t>(fc.raw_quant_field));
-    std::int16_t* d_ac{nullptr};
-    std::int32_t* d_dc{nullptr};
-    std::int32_t* d_qf{nullptr};
-    if (cudaMalloc(&d_ac, ac.size() * sizeof(std::int16_t)) != cudaSuccess ||
-        cudaMalloc(&d_dc, dc.size() * sizeof(std::int32_t)) != cudaSuccess ||
-        cudaMalloc(&d_qf, qf.size() * sizeof(std::int32_t)) != cudaSuccess) {
+    out.luma_pitch = width;
+    out.chroma_pitch = width;
+    if (cudaMalloc(&out.luma, luma.size()) != cudaSuccess ||
+        cudaMalloc(&out.chroma, chroma.size()) != cudaSuccess) {
         return false;
     }
-    bool ok{cudaMemcpy(d_ac, ac.data(), ac.size() * sizeof(std::int16_t), cudaMemcpyHostToDevice) ==
-                cudaSuccess &&
-            cudaMemcpy(d_dc, dc.data(), dc.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
-                cudaSuccess &&
-            cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice) ==
-                cudaSuccess};
-    ok = ok && encode_frame(d_ac, d_dc, fc.width, fc.height,
-                            QuantParams{fc.global_scale, fc.quant_dc}, d_qf, out);
-    cudaFree(d_ac);
-    cudaFree(d_dc);
-    cudaFree(d_qf);
-    return ok;
+    return cudaMemcpy(out.luma, luma.data(), luma.size(), cudaMemcpyHostToDevice) == cudaSuccess &&
+           cudaMemcpy(out.chroma, chroma.data(), chroma.size(), cudaMemcpyHostToDevice) ==
+               cudaSuccess;
 }
 
 testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std::uint32_t& xs,
@@ -147,43 +97,45 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
     return testing::AssertionSuccess();
 }
 
-void check(const FrameCoefficients& fc) {
-    const std::vector<std::uint8_t> expected{
-        bitstream::write_container(write_vardct_codestream(fc, /*clustered_ac=*/true))};
+std::vector<std::uint8_t> encode(const DeviceNv12& nv12, std::size_t w, std::size_t h) {
+    const bitstream::QuantParams qp{quant_params_for_distance(1.0f)};
+    std::vector<std::uint8_t> file{};
+    EXPECT_TRUE(encode_nv12(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, w, h, 0,
+                               1.0f, qp, file, nullptr));
+    return file;
+}
 
-    std::vector<std::uint8_t> got{};
-    ASSERT_TRUE(encode_on_device(fc, got));
+class EncodeLadder : public testing::TestWithParam<std::pair<std::size_t, std::size_t>> {};
 
-    ASSERT_EQ(got.size(), expected.size());
-    for (std::size_t i{0}; i < expected.size(); ++i) {
-        ASSERT_EQ(got[i], expected[i]) << "file byte " << i;
-    }
-
+TEST_P(EncodeLadder, DecodesWithLibjxl) {
+    const std::size_t w{GetParam().first};
+    const std::size_t h{GetParam().second};
+    DeviceNv12 nv12{};
+    ASSERT_TRUE(upload_nv12(w, h, nv12));
+    const std::vector<std::uint8_t> file{encode(nv12, w, h)};
+    ASSERT_GT(file.size(), 0u);
     std::uint32_t xs{0};
     std::uint32_t ys{0};
-    ASSERT_TRUE(decode_dims(got, xs, ys));
-    EXPECT_EQ(xs, fc.width);
-    EXPECT_EQ(ys, fc.height);
+    ASSERT_TRUE(decode_dims(file, xs, ys));
+    EXPECT_EQ(xs, w);
+    EXPECT_EQ(ys, h);
 }
 
-TEST(FrameEncoderGpu, SingleDcGroupMultiAcGroup) {
-    check(make_frame(512, 512));
-}
+// The ladder rungs are integer 4K downscales with dimensions multiple of 8
+// (540p is excluded upstream, 540 not being a multiple of 8), plus a small
+// multi-group frame and a partial-edge frame (dimensions not multiples of 256).
+INSTANTIATE_TEST_SUITE_P(Ladder, EncodeLadder,
+                         testing::Values(std::make_pair(std::size_t{640}, std::size_t{384}),
+                                         std::make_pair(std::size_t{1280}, std::size_t{720}),
+                                         std::make_pair(std::size_t{1920}, std::size_t{1080})));
 
-TEST(FrameEncoderGpu, PartialEdgeGroups) {
-    check(make_frame(640, 384));
-}
-
-TEST(FrameEncoderGpu, MultiDcGroup) {
-    check(make_frame(2560, 256));
-}
-
-TEST(FrameEncoderGpu, Deterministic) {
-    const FrameCoefficients fc{make_frame(640, 384)};
-    std::vector<std::uint8_t> a{};
-    std::vector<std::uint8_t> b{};
-    ASSERT_TRUE(encode_on_device(fc, a));
-    ASSERT_TRUE(encode_on_device(fc, b));
+TEST(Encode, Deterministic) {
+    const std::size_t w{1280};
+    const std::size_t h{720};
+    DeviceNv12 nv12{};
+    ASSERT_TRUE(upload_nv12(w, h, nv12));
+    const std::vector<std::uint8_t> a{encode(nv12, w, h)};
+    const std::vector<std::uint8_t> b{encode(nv12, w, h)};
     EXPECT_EQ(a, b);
 }
 
