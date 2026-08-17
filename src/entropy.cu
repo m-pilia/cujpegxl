@@ -253,48 +253,6 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_
     }
 }
 
-__global__ void context_histogram_kernel(const std::int16_t* ac, const std::int32_t* nz_grid,
-                                         std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                         std::uint32_t* histograms) {
-    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
-    const std::size_t total{3 * bw * bh};
-    if (idx >= total) {
-        return;
-    }
-    const std::size_t block{idx / 3};
-    const int c{CHANNEL_ORDER[static_cast<int>(idx % 3)]};
-    const std::size_t bx{block % bw};
-    const std::size_t by{block / bw};
-    const std::int16_t* blk{ac + static_cast<std::size_t>(c) * nblocks * AC_COEFFS_PER_BLOCK +
-                            block * AC_COEFFS_PER_BLOCK};
-    const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-    for_each_token_ctx(blk, c, predicted,
-                       [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
-                           std::uint32_t context) {
-                           atomicAdd(&histograms[static_cast<std::size_t>(context) *
-                                                     AC_HISTOGRAM_SIZE +
-                                                 symbol],
-                                     1u);
-                       });
-}
-
-__global__ void collapse_context_histograms_kernel(
-    const std::uint32_t* context_histograms, const std::uint8_t* context_map,
-    std::uint32_t* cluster_histograms) {
-    const std::size_t index{blockIdx.x * blockDim.x + threadIdx.x};
-    if (index >= AC_CONTEXT_HISTOGRAM_ENTRIES) {
-        return;
-    }
-    const std::size_t context{index / AC_HISTOGRAM_SIZE};
-    const std::uint32_t count{context_histograms[index]};
-    if (count != 0) {
-        atomicAdd(&cluster_histograms[static_cast<std::size_t>(context_map[context]) *
-                                          AC_HISTOGRAM_SIZE +
-                                      index % AC_HISTOGRAM_SIZE],
-                  count);
-    }
-}
-
 __device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_t bh,
                                        std::size_t xdg) {
     const std::size_t gx{g % xdg};
@@ -1039,35 +997,6 @@ __global__ void histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* a
     }
 }
 
-__global__ void context_histogram_m3_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                                            const std::int32_t* nz_grid, std::size_t bw,
-                                            std::size_t bh, std::size_t nblocks,
-                                            std::uint32_t* histograms) {
-    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
-    const std::size_t total{3 * bw * bh};
-    if (idx >= total) {
-        return;
-    }
-    const std::size_t block{idx / 3};
-    const int side{acs == nullptr ? 8 : acs[block]};
-    if (side == ACS_COVERED) {
-        return;
-    }
-    const int c{CHANNEL_ORDER[static_cast<int>(idx % 3)]};
-    const std::size_t bx{block % bw};
-    const std::size_t by{block / bw};
-    const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
-    const std::uint32_t predicted{ac_predicted_nzeros_dev(nz_grid, c, nblocks, bw, bx, by)};
-    m3_for_each_token_ctx(plane, bx, by, side, bw, c, predicted,
-                          [&](std::uint32_t symbol, std::uint32_t, std::uint32_t,
-                              std::uint32_t context) {
-                              atomicAdd(&histograms[static_cast<std::size_t>(context) *
-                                                        AC_HISTOGRAM_SIZE +
-                                                    symbol],
-                                        1u);
-                          });
-}
-
 struct AcGroupCtxM3 {
     const std::int16_t* ac;
     const std::int8_t* acs;
@@ -1251,47 +1180,6 @@ bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t h
     return ok;
 }
 
-bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                 std::uint32_t* histograms) {
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    if (cudaMemset(histograms, 0,
-                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
-        return false;
-    }
-    std::int32_t* nz_grid{nullptr};
-    if (cudaMalloc(&nz_grid, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
-        return false;
-    }
-    const std::size_t total{3 * bw * bh};
-    const unsigned int threads{256};
-    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    ac_nzeros_grid_kernel<<<blocks, threads>>>(ac, bw, bh, nblocks, nz_grid);
-    context_histogram_kernel<<<blocks, threads>>>(ac, nz_grid, bw, bh, nblocks, histograms);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
-    cudaFree(nz_grid);
-    return ok;
-}
-
-bool ac_collapse_context_histograms(const std::uint32_t* context_histograms,
-                                    const std::uint8_t* context_map,
-                                    std::size_t num_clusters,
-                                    std::uint32_t* cluster_histograms) {
-    if (num_clusters == 0 || num_clusters > 256 ||
-        cudaMemset(cluster_histograms, 0,
-                   num_clusters * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) != cudaSuccess) {
-        return false;
-    }
-    constexpr unsigned int threads{256};
-    const unsigned int blocks{static_cast<unsigned int>(
-        (AC_CONTEXT_HISTOGRAM_ENTRIES + threads - 1) / threads)};
-    collapse_context_histograms_kernel<<<blocks, threads>>>(
-        context_histograms, context_map, cluster_histograms);
-    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
-}
-
 static bool ac_encode_groups_impl(
     const std::int16_t* ac, std::size_t width, std::size_t height,
     const std::uint8_t* context_map, const std::uint8_t* depth,
@@ -1396,20 +1284,6 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
                                  out_capacity, group_sizes, group_offsets, total_bytes);
 }
 
-bool ac_encode_groups_runtime_map(
-    const std::int16_t* ac, std::size_t width, std::size_t height,
-    const std::uint8_t* context_map, const std::uint8_t* depth,
-    const std::uint16_t* bits, std::size_t num_clusters, std::uint8_t* out,
-    std::size_t out_capacity, std::uint32_t* group_sizes,
-    std::uint32_t* group_offsets, std::size_t* total_bytes) {
-    if (context_map == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_impl(ac, width, height, context_map, depth, bits,
-                                 num_clusters, out, out_capacity, group_sizes,
-                                 group_offsets, total_bytes);
-}
-
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                            std::size_t height, std::uint32_t* histogram) {
     ensure_constants();
@@ -1430,35 +1304,6 @@ bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks, histogram);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
-    cudaFree(nz_grid);
-    return ok;
-}
-
-bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
-                                    std::size_t width, std::size_t height,
-                                    std::uint32_t* histograms) {
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    if (cudaMemset(histograms, 0,
-                   AC_CONTEXT_HISTOGRAM_ENTRIES * sizeof(std::uint32_t)) != cudaSuccess) {
-        return false;
-    }
-    std::int32_t* nz_grid{nullptr};
-    if (cudaMalloc(&nz_grid, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
-        return false;
-    }
-    const unsigned int grid_threads{256};
-    ac_nzeros_grid_m3_kernel<<<
-        static_cast<unsigned int>((bw * bh + grid_threads - 1) / grid_threads), grid_threads>>>(
-        ac, acs, bw, bh, nblocks, nz_grid);
-    const std::size_t total{3 * bw * bh};
-    const unsigned int threads{256};
-    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    context_histogram_m3_kernel<<<blocks, threads>>>(ac, acs, nz_grid, bw, bh, nblocks,
-                                                     histograms);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     cudaFree(nz_grid);
     return ok;
@@ -1563,21 +1408,6 @@ bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs,
     return ac_encode_groups_m3_impl(ac, acs, width, height, nullptr, depth, bits,
                                     AC_NUM_CLUSTERS, out, out_capacity, group_sizes,
                                     group_offsets, total_bytes);
-}
-
-bool ac_encode_groups_m3_runtime_map(
-    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-    std::size_t height, const std::uint8_t* context_map,
-    const std::uint8_t* depth, const std::uint16_t* bits,
-    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
-    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-    std::size_t* total_bytes) {
-    if (context_map == nullptr) {
-        return false;
-    }
-    return ac_encode_groups_m3_impl(ac, acs, width, height, context_map, depth,
-                                    bits, num_clusters, out, out_capacity,
-                                    group_sizes, group_offsets, total_bytes);
 }
 
 std::size_t dc_num_groups(std::size_t width, std::size_t height) {

@@ -601,32 +601,6 @@ AcReference reference_ac_encode(const FrameCoefficients& fc,
     return ref;
 }
 
-std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc) {
-    assert(fc.width % 8 == 0 && fc.height % 8 == 0);
-    const std::size_t bw{fc.width / 8};
-    const std::size_t bh{fc.height / 8};
-    const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
-    const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
-
-    std::vector<std::uint32_t> cluster_hist(AC_NUM_CLUSTERS * AC_STRIDE, 0);
-    std::vector<AcTok> tokens{};
-    for (std::size_t gy{0}; gy < yg; ++gy) {
-        for (std::size_t gx{0}; gx < xg; ++gx) {
-            const std::size_t bx0{gx * AC_GROUP_BLOCKS};
-            const std::size_t by0{gy * AC_GROUP_BLOCKS};
-            const std::size_t gbw{std::min(AC_GROUP_BLOCKS, bw - bx0)};
-            const std::size_t gbh{std::min(AC_GROUP_BLOCKS, bh - by0)};
-            tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, cluster_hist, tokens);
-        }
-    }
-
-    std::vector<std::uint32_t> histograms(AC_NUM_CONTEXTS * AC_STRIDE, 0);
-    for (const AcTok& token : tokens) {
-        ++histograms[static_cast<std::size_t>(token.context) * AC_STRIDE + token.symbol];
-    }
-    return histograms;
-}
-
 DcReference reference_dc_encode(const FrameCoefficients& fc) {
     assert(fc.width % 8 == 0 && fc.height % 8 == 0);
     const std::size_t bw{fc.width / 8};

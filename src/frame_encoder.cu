@@ -12,9 +12,6 @@
 #include <cuda_fp16.h>
 
 #include "ac_context.h"
-#include "ac_histogram_cluster.h"
-#include "ac_histogram_exchange.h"
-#include "ac_precluster.h"
 #include "entropy.h"
 #include "frontend_fused.h"
 #include "frontend_quantize.h"
@@ -82,117 +79,16 @@ struct DeviceScope {
 
 struct AcEntropyPlan {
     bool ready{false};
-    bool data_driven{false};
-    std::vector<std::uint8_t> context_map{};
     std::vector<std::uint32_t> histograms{};
     bitstream::AcGlobalResult global{};
 };
-
-std::uint64_t ac_prefix_cost(const AcEntropyPlan& plan) {
-    std::uint64_t bits{plan.global.section.size() * 8};
-    for (std::size_t i{0}; i < plan.histograms.size(); ++i) {
-        bits += static_cast<std::uint64_t>(plan.histograms[i]) *
-                plan.global.depth[i];
-    }
-    return bits;
-}
-
-struct CachedHistogramExchange {
-    AcHistogramExchange exchange{};
-    std::int32_t device{-1};
-
-    bool ensure(std::int32_t requested_device) {
-        if (exchange.ownership() != AcHistogramOwnership::UNINITIALIZED &&
-            device == requested_device) {
-            return true;
-        }
-        exchange.shutdown();
-        device = -1;
-        if (!exchange.initialize(AcHistogramExchangeMode::AUTO, requested_device)) {
-            return false;
-        }
-        device = requested_device;
-        return true;
-    }
-};
-
-bool build_data_driven_ac_plan(const std::int16_t* ac_device,
-                               const std::int8_t* acs, std::size_t width,
-                               std::size_t height, std::size_t num_ac_groups,
-                               std::int32_t device, AcEntropyPlan& plan,
-                               double& gpu_us, double& cpu_us) {
-    static thread_local CachedHistogramExchange cached{};
-    if (!cached.ensure(device)) {
-        return false;
-    }
-
-    AcHistogramExchange& exchange{cached.exchange};
-    const Clock::time_point gpu_start{Clock::now()};
-    const bool histogram_ok{
-        acs == nullptr
-            ? ac_build_context_histograms(ac_device, width, height,
-                                          exchange.gpu_data())
-            : ac_build_context_histograms_m3(ac_device, acs, width, height,
-                                             exchange.gpu_data())};
-    if (!histogram_ok || !exchange.release_to_cpu(nullptr) ||
-        !exchange.acquire_for_cpu()) {
-        exchange.shutdown();
-        cached.device = -1;
-        return false;
-    }
-    gpu_us += us_since(gpu_start);
-
-    const Clock::time_point cpu_start{Clock::now()};
-    AcPreclusterResult preclusters{};
-    AcClusterResult clusters{};
-    ac_precluster(exchange.cpu_data(), preclusters);
-    const bool clustered{ac_cluster_histograms(preclusters, AcClusterConfig{},
-                                                clusters)};
-    if (!clustered) {
-        exchange.release_to_gpu();
-        return false;
-    }
-
-    AcEntropyPlan dynamic{};
-    dynamic.ready = true;
-    dynamic.data_driven = true;
-    dynamic.context_map.assign(clusters.context_map.begin(),
-                               clusters.context_map.end());
-    dynamic.histograms.assign(
-        clusters.histograms.begin(),
-        clusters.histograms.begin() +
-            clusters.num_clusters * AC_HISTOGRAM_SIZE);
-    dynamic.global = bitstream::build_ac_global(
-        dynamic.histograms.data(), dynamic.context_map.data(),
-        clusters.num_clusters, num_ac_groups);
-
-    AcEntropyPlan fixed{};
-    fixed.ready = true;
-    fixed.histograms.assign(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE, 0);
-    const std::uint32_t* context_histograms{exchange.cpu_data()};
-    for (std::size_t context{0}; context < AC_NUM_CONTEXTS; ++context) {
-        const std::size_t cluster{static_cast<std::size_t>(
-            ac_cluster(static_cast<std::uint32_t>(context)))};
-        for (std::size_t symbol{0}; symbol < AC_HISTOGRAM_SIZE; ++symbol) {
-            fixed.histograms[cluster * AC_HISTOGRAM_SIZE + symbol] +=
-                context_histograms[context * AC_HISTOGRAM_SIZE + symbol];
-        }
-    }
-    fixed.global = bitstream::build_ac_global(fixed.histograms.data(),
-                                              num_ac_groups);
-    plan = ac_prefix_cost(dynamic) < ac_prefix_cost(fixed) ? std::move(dynamic)
-                                                           : std::move(fixed);
-    exchange.release_to_gpu();
-    cpu_us += us_since(cpu_start);
-    return true;
-}
 
 }  // namespace
 
 bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, std::size_t width,
                   std::size_t height, const bitstream::QuantParams& qp,
                   const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats, AcClusteringMode clustering) {
+                  std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -210,11 +106,6 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
 
     AcEntropyPlan ac_plan{};
-    if (clustering == AcClusteringMode::DATA_DRIVEN) {
-        build_data_driven_ac_plan(ac_device, nullptr, width, height, num_ac,
-                                  device, ac_plan, entropy.gpu_us,
-                                  entropy.cpu_us);
-    }
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
     // Device histograms -> host.
@@ -278,10 +169,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::uint8_t* d_mid{nullptr};
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
-    std::uint8_t* d_ac_context_map{nullptr};
     if (!upload(ac_plan.global.depth, &d_ac_depth) ||
         !upload(ac_plan.global.bits, &d_ac_bits) ||
-        !upload(ac_plan.context_map, &d_ac_context_map) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
         !upload(blobs.blob_pre, &d_pre) || !upload(blobs.blob_pre_off, &d_pre_off) ||
@@ -294,8 +183,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
           static_cast<void*>(d_dc_depth), static_cast<void*>(d_dc_bits),
           static_cast<void*>(d_am_depth), static_cast<void*>(d_am_bits), static_cast<void*>(d_pre),
           static_cast<void*>(d_pre_off), static_cast<void*>(d_pre_bits), static_cast<void*>(d_mid),
-          static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits),
-          static_cast<void*>(d_ac_context_map)}) {
+          static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits)}) {
         if (p) {
             scope.track(p);
         }
@@ -320,14 +208,9 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{
-        ac_plan.data_driven
-            ? ac_encode_groups_runtime_map(
-                  ac_device, width, height, d_ac_context_map, d_ac_depth,
-                  d_ac_bits, ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE,
-                  d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total)
-            : ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits,
-                               ac_plan.global.depth.size(), d_ac_body, ac_capacity,
-                               d_ac_sizes, d_ac_offsets, &ac_total)};
+        ac_encode_groups(ac_device, width, height, d_ac_depth, d_ac_bits,
+                         ac_plan.global.depth.size(), d_ac_body, ac_capacity,
+                         d_ac_sizes, d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
         return false;
     }
@@ -423,7 +306,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
                      const std::int8_t* ytob_map, std::size_t width, std::size_t height,
                      const bitstream::QuantParams& qp, const std::int32_t* quant_field,
                      std::vector<std::uint8_t>& out_file,
-                     std::vector<StageTiming>* stats, AcClusteringMode clustering) {
+                     std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -439,10 +322,6 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
     AcEntropyPlan ac_plan{};
-    if (clustering == AcClusteringMode::DATA_DRIVEN) {
-        build_data_driven_ac_plan(ac_device, acs, width, height, num_ac, device,
-                                  ac_plan, entropy.gpu_us, entropy.cpu_us);
-    }
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
     std::uint32_t* d_ac_hist{
@@ -522,10 +401,8 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::uint8_t* d_mid{nullptr};
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
-    std::uint8_t* d_ac_context_map{nullptr};
     if (!upload(ac_plan.global.depth, &d_ac_depth) ||
         !upload(ac_plan.global.bits, &d_ac_bits) ||
-        !upload(ac_plan.context_map, &d_ac_context_map) ||
         !upload(blobs.dc_depth, &d_dc_depth) || !upload(blobs.dc_bits, &d_dc_bits) ||
         !upload(blobs.acmeta_depth, &d_am_depth) || !upload(blobs.acmeta_bits, &d_am_bits) ||
         !upload(blobs.blob_pre, &d_pre) || !upload(blobs.blob_pre_off, &d_pre_off) ||
@@ -538,8 +415,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
           static_cast<void*>(d_dc_depth), static_cast<void*>(d_dc_bits),
           static_cast<void*>(d_am_depth), static_cast<void*>(d_am_bits), static_cast<void*>(d_pre),
           static_cast<void*>(d_pre_off), static_cast<void*>(d_pre_bits), static_cast<void*>(d_mid),
-          static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits),
-          static_cast<void*>(d_ac_context_map)}) {
+          static_cast<void*>(d_mid_off), static_cast<void*>(d_mid_bits)}) {
         if (p) {
             scope.track(p);
         }
@@ -561,14 +437,9 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
     std::size_t ac_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{
-        ac_plan.data_driven
-            ? ac_encode_groups_m3_runtime_map(
-                  ac_device, acs, width, height, d_ac_context_map, d_ac_depth,
-                  d_ac_bits, ac_plan.global.depth.size() / AC_HISTOGRAM_SIZE,
-                  d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total)
-            : ac_encode_groups_m3(ac_device, acs, width, height, d_ac_depth,
-                                  d_ac_bits, d_ac_body, ac_capacity, d_ac_sizes,
-                                  d_ac_offsets, &ac_total)};
+        ac_encode_groups_m3(ac_device, acs, width, height, d_ac_depth,
+                            d_ac_bits, d_ac_body, ac_capacity, d_ac_sizes,
+                            d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
         return false;
     }

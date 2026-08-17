@@ -75,8 +75,6 @@ AcReference reference_ac_encode(const FrameCoefficients& fc,
                                 const std::vector<std::uint8_t>& context_map,
                                 std::size_t num_clusters);
 
-std::vector<std::uint32_t> reference_ac_context_histogram(const FrameCoefficients& fc);
-
 // The natural (scan) coefficient order for an 8x8 DCT block: order[k] is the
 // libjxl-raster index of the k-th coefficient in scan order (order[0] == 0, the
 // DC). Exposed for tests.

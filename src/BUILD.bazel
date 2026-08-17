@@ -156,43 +156,6 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
-cc_library(
-    name = "ac_precluster",
-    srcs = ["ac_precluster.cc"],
-    hdrs = ["ac_precluster.h"],
-    copts = RUNTIME_COPTS,
-    deps = [":entropy"],
-)
-
-cc_library(
-    name = "ac_histogram_cluster",
-    srcs = ["ac_histogram_cluster.cc"],
-    hdrs = ["ac_histogram_cluster.h"],
-    copts = RUNTIME_COPTS,
-    deps = [
-        ":ac_precluster",
-        "//src/bitstream",
-    ],
-)
-
-cc_test(
-    name = "ac_histogram_cluster_test",
-    srcs = ["ac_histogram_cluster_test.cc"],
-    deps = [
-        ":ac_histogram_cluster",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "ac_precluster_test",
-    srcs = ["ac_precluster_test.cc"],
-    deps = [
-        ":ac_precluster",
-        "@googletest//:gtest_main",
-    ],
-)
-
 cc_test(
     name = "ac_context_test",
     srcs = ["ac_context_test.cc"],
@@ -393,27 +356,6 @@ cuda_library(
 )
 
 cuda_library(
-    name = "ac_histogram_exchange",
-    srcs = ["ac_histogram_exchange.cu"],
-    hdrs = ["ac_histogram_exchange.h"],
-    copts = RUNTIME_COPTS,
-    deps = [":entropy"],
-)
-
-cc_test(
-    name = "ac_histogram_exchange_gpu_test",
-    srcs = ["ac_histogram_exchange_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
-    deps = [
-        ":ac_histogram_exchange",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cuda_library(
     name = "entropy_roundtrip",
     testonly = True,
     srcs = ["entropy_roundtrip.cu"],
@@ -452,9 +394,6 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_context",
-        ":ac_histogram_cluster",
-        ":ac_histogram_exchange",
-        ":ac_precluster",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

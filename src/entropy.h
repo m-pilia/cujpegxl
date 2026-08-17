@@ -14,7 +14,6 @@ namespace cujpegxl {
 // Upper bound on the AC token alphabet: hybrid-uint tokens of 32-bit values stay
 // below this, so a fixed histogram of this size covers every symbol.
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
-constexpr std::size_t AC_CONTEXT_HISTOGRAM_ENTRIES = AC_NUM_CONTEXTS * AC_HISTOGRAM_SIZE;
 
 // AC coefficients stored per block (the 63 non-DC libjxl-raster slots). The DC
 // slot lives in the separate int32 DC buffer, so it is elided from AC storage.
@@ -34,20 +33,6 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 bool ac_build_histogram(const std::int16_t* ac, std::size_t width, std::size_t height,
                         std::uint32_t* histogram);
 
-// Alternate phase-1 path for data-driven clustering. Accumulates one symbol
-// histogram for each AC context directly on the device. `histograms` has
-// AC_CONTEXT_HISTOGRAM_ENTRIES entries and is zeroed by the call.
-bool ac_build_context_histograms(const std::int16_t* ac, std::size_t width, std::size_t height,
-                                 std::uint32_t* histograms);
-
-// Collapses per-context histograms into runtime-selected clusters. All buffers
-// are device-visible; `context_map` has AC_NUM_CONTEXTS entries and every entry
-// must be below `num_clusters`.
-bool ac_collapse_context_histograms(const std::uint32_t* context_histograms,
-                                    const std::uint8_t* context_map,
-                                    std::size_t num_clusters,
-                                    std::uint32_t* cluster_histograms);
-
 // Phase 2: emit each AC group's token bitstream (byte-aligned, one AcGroup TOC
 // section per group) concatenated into `out`, mirroring the host bitstream
 // writer byte-for-byte. `ac` is the packed int16 AC buffer (see
@@ -63,13 +48,6 @@ bool ac_encode_groups(const std::int16_t* ac, std::size_t width, std::size_t hei
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                       std::size_t* total_bytes);
 
-bool ac_encode_groups_runtime_map(
-    const std::int16_t* ac, std::size_t width, std::size_t height,
-    const std::uint8_t* context_map, const std::uint8_t* depth,
-    const std::uint16_t* bits, std::size_t num_clusters, std::uint8_t* out,
-    std::size_t out_capacity, std::uint32_t* group_sizes,
-    std::uint32_t* group_offsets, std::size_t* total_bytes);
-
 // Mixed-block (M3) AC histogram: as ac_build_histogram, but `ac` is the
 // covered-block layout (three channel planes of (width/8 * height/8) *
 // COEFFS_PER_BLOCK int16) and `acs` the per-8x8 transform signal (nullptr = all
@@ -79,10 +57,6 @@ bool ac_encode_groups_runtime_map(
 bool ac_build_histogram_m3(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
                            std::size_t height, std::uint32_t* histogram);
 
-bool ac_build_context_histograms_m3(const std::int16_t* ac, const std::int8_t* acs,
-                                    std::size_t width, std::size_t height,
-                                    std::uint32_t* histograms);
-
 // Mixed-block (M3) AC group emit: as ac_encode_groups, over the covered-block
 // layout under `acs`. `depth`/`bits` are the shared prefix code from the phase-1
 // histogram. Byte-exact with the host reference. Deterministic. Returns false on
@@ -91,14 +65,6 @@ bool ac_encode_groups_m3(const std::int16_t* ac, const std::int8_t* acs, std::si
                          std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
                          std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
                          std::uint32_t* group_offsets, std::size_t* total_bytes);
-
-bool ac_encode_groups_m3_runtime_map(
-    const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-    std::size_t height, const std::uint8_t* context_map,
-    const std::uint8_t* depth, const std::uint16_t* bits,
-    std::size_t num_clusters, std::uint8_t* out, std::size_t out_capacity,
-    std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-    std::size_t* total_bytes);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

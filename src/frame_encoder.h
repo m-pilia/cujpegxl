@@ -26,11 +26,6 @@ struct StageTiming {
     double cpu_us{0.0};
 };
 
-enum class AcClusteringMode : std::uint8_t {
-    DATA_DRIVEN = 0,
-    FIXED = 1,
-};
-
 enum class EncoderPipeline : std::uint8_t {
     DCT8 = 0,
     MIXED = 1,
@@ -126,8 +121,7 @@ private:
 bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device, std::size_t width,
                   std::size_t height, const bitstream::QuantParams& qp,
                   const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats = nullptr,
-                  AcClusteringMode clustering = AcClusteringMode::DATA_DRIVEN);
+                  std::vector<StageTiming>* stats = nullptr);
 
 // Maps a Butteraugli `distance` to the serialized Quantizer state written into
 // the codestream. Placeholder linear mapping; calibrating it against cjxl's
@@ -163,8 +157,7 @@ bool encode_frame_m3(const std::int16_t* ac_device, const std::int32_t* dc_devic
                      const std::int8_t* ytob_map, std::size_t width, std::size_t height,
                      const bitstream::QuantParams& qp, const std::int32_t* quant_field,
                      std::vector<std::uint8_t>& out_file,
-                     std::vector<StageTiming>* stats = nullptr,
-                     AcClusteringMode clustering = AcClusteringMode::DATA_DRIVEN);
+                     std::vector<StageTiming>* stats = nullptr);
 
 // M3 full device encode path (K1 select+transform, K2 CfL estimate, K3
 // residual+quantize, mixed-block entropy + assembly). Arguments as encode_nv12.
