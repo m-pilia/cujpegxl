@@ -10,6 +10,11 @@ MODULE.bazel.lock.tmp*
 # Generated corpus buffers (produced on demand from the source frames)
 *.nv12
 
+# Eval dataset generated data (originals, masters, NV12 corpus)
+eval_dataset/cache/
+eval_dataset/masters/
+eval_dataset/out/
+
 # Python
 __pycache__/
 *.pyc

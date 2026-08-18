@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
+load("@cujpegxl_pip//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
 package(default_visibility = ["//visibility:public"])
@@ -23,4 +24,47 @@ py_test(
     data = glob(["testdata/*.json"]),
     deps = [":query_lib"],
     imports = ["."],
+)
+
+py_library(
+    name = "prepare_dataset_lib",
+    srcs = ["prepare_dataset.py"],
+    imports = [
+        ".",
+        "../tools/corpus",
+    ],
+    deps = [
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_binary(
+    name = "prepare_dataset",
+    srcs = ["prepare_dataset.py"],
+    imports = [
+        ".",
+        "../tools/corpus",
+    ],
+    deps = [
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+)
+
+py_test(
+    name = "prepare_dataset_test",
+    srcs = ["prepare_dataset_test.py"],
+    deps = [
+        ":prepare_dataset_lib",
+        "//tools/corpus:corpus_prep_lib",
+        requirement("numpy"),
+        requirement("pillow"),
+    ],
+    imports = [
+        ".",
+        "../tools/corpus",
+    ],
 )
