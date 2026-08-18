@@ -3,77 +3,23 @@
 
 #include "frontend_fused.h"
 
-#include <cmath>
-#include <mutex>
-
 #include <cuda_runtime.h>
 
 #include "adaptive_quant_impl.cuh"
-#include "entropy.h"
 #include "quant_calibration.h"
-#include "quant_weights_dct8.h"
 #include "xyb_impl.cuh"
 
 namespace cujpegxl {
 namespace {
 
 // Tile geometry: one CUDA block processes TB x TB image blocks. The shared XYB
-// region carries a two-pixel halo (PAD): the inner pixel feeds the
-// adaptive-quant Laplacian, and the full two pixels feed the 5x5
-// gaborish-inverse pre-sharpening applied before the DCT. The pre-erosion map
-// is at 4x-subsampled resolution (CELLS x CELLS cells).
-constexpr int HALO = 2;
+// region carries a one-pixel halo (PAD) feeding the adaptive-quant Laplacian.
+// The pre-erosion map is at 4x-subsampled resolution (CELLS x CELLS cells).
+constexpr int HALO = 1;
 constexpr int TB = 4;
 constexpr int TILE_PX = TB * 8;
 constexpr int PAD = TILE_PX + 2 * HALO;
 constexpr int CELLS = 2 * TB;
-
-// GaborishInverse (libjxl enc_gaborish.cc) normalized 5x5 symmetric sharpening,
-// evaluated at the encoder's default per-channel strength mul = 1 so all three
-// XYB planes share one kernel. Applied to the opsin before the DCT, it cancels
-// the decoder's default gaborish smoothing (loop_filter all_default), which
-// otherwise blurs away high-frequency detail no quantizer step can recover.
-// Weights follow the WeightsSymmetric5 quadrant layout {c, r, R, d, L, D}.
-constexpr float GAB_K0 = -0.09495815671340026f;
-constexpr float GAB_K1 = -0.041031725066768575f;
-constexpr float GAB_K2 = 0.013710004822696948f;
-constexpr float GAB_K3 = 0.006510206083837737f;
-constexpr float GAB_K4 = -0.0014789063378272242f;
-constexpr float GAB_NM = 1.0f / (1.0f + 4.0f * (GAB_K0 + GAB_K1 + GAB_K2 + GAB_K4 + 2.0f * GAB_K3));
-constexpr float GAB_WC = GAB_NM;            // center (0,0)
-constexpr float GAB_WR = GAB_NM * GAB_K0;   // r: (1,0),(0,1)
-constexpr float GAB_WR2 = GAB_NM * GAB_K2;  // R: (2,0),(0,2)
-constexpr float GAB_WD = GAB_NM * GAB_K1;   // d: (1,1)
-constexpr float GAB_WL = GAB_NM * GAB_K3;   // L: (2,1),(1,2)
-constexpr float GAB_WD2 = GAB_NM * GAB_K4;  // D: (2,2)
-
-__constant__ float DCT_A[64];
-__constant__ float QUANT_WEIGHTS[3][64];
-__constant__ float DC_INV_QUANT_D[3];
-__constant__ float Y_TO_B_RATIO_D;
-
-void init_constants() {
-    float basis[64];
-    for (int k{0}; k < 8; ++k) {
-        const double g{k == 0 ? 0.125 : 1.4142135623730951 / 8.0};
-        for (int n{0}; n < 8; ++n) {
-            basis[k * 8 + n] = static_cast<float>(g * std::cos(M_PI * (n + 0.5) * k / 8.0));
-        }
-    }
-    cudaMemcpyToSymbol(DCT_A, basis, sizeof(basis));
-    cudaMemcpyToSymbol(QUANT_WEIGHTS, DCT8_DEQUANT_WEIGHTS, sizeof(DCT8_DEQUANT_WEIGHTS));
-    cudaMemcpyToSymbol(DC_INV_QUANT_D, DC_INV_QUANT, sizeof(DC_INV_QUANT));
-    cudaMemcpyToSymbol(Y_TO_B_RATIO_D, &Y_TO_B_RATIO, sizeof(float));
-}
-
-void ensure_constants() {
-    static std::once_flag flag;
-    std::call_once(flag, init_constants);
-}
-
-__device__ inline float quant_factor(int c, int k, float ac_scale, float dc_scale) {
-    return k == 0 ? DC_INV_QUANT_D[c] * dc_scale : ac_scale / QUANT_WEIGHTS[c][k];
-}
 
 // Full-mask warp sum reduction. Both warps of the 64-thread block are fully
 // populated here, so every lane participates.
@@ -82,21 +28,6 @@ __device__ inline float warp_reduce_sum(float v) {
         v += __shfl_down_sync(0xffffffffu, v, off);
     }
     return v;
-}
-
-// GaborishInverse 5x5 symmetric filter at PAD-space index idx (stride PAD),
-// exploiting the {c, r, R, d, L, D} tap symmetry. Requires a two-pixel halo
-// around idx.
-__device__ inline float gaborish_inverse(const float* __restrict__ p, int idx) {
-    const float e{p[idx - 1] + p[idx + 1] + p[idx - PAD] + p[idx + PAD]};
-    const float r2{p[idx - 2] + p[idx + 2] + p[idx - 2 * PAD] + p[idx + 2 * PAD]};
-    const float dg{p[idx - PAD - 1] + p[idx - PAD + 1] + p[idx + PAD - 1] + p[idx + PAD + 1]};
-    const float l8{p[idx - 2 * PAD - 1] + p[idx - 2 * PAD + 1] + p[idx + 2 * PAD - 1] +
-                   p[idx + 2 * PAD + 1] + p[idx - PAD - 2] + p[idx - PAD + 2] + p[idx + PAD - 2] +
-                   p[idx + PAD + 2]};
-    const float d4{p[idx - 2 * PAD - 2] + p[idx - 2 * PAD + 2] + p[idx + 2 * PAD - 2] +
-                   p[idx + 2 * PAD + 2]};
-    return GAB_WC * p[idx] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 + GAB_WD2 * d4;
 }
 
 // FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
@@ -122,27 +53,21 @@ __device__ float erosion_cell(const float* __restrict__ pre, int cx, int cy, flo
 
 __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
                                       cudaTextureObject_t chroma_tex, std::size_t width,
-                                      std::size_t height, std::size_t bw, std::size_t bh, float gsf,
-                                      float dc_scale, float km0, float km1, float km2, float km3,
-                                      float mul_pb, float add_pb, float inv_global_scale,
-                                      std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc,
+                                      std::size_t height, std::size_t bw, std::size_t bh, float km0,
+                                      float km1, float km2, float km3, float mul_pb, float add_pb,
+                                      float inv_global_scale,
                                       std::int32_t* __restrict__ quant_field) {
     __shared__ float sh_y[PAD * PAD];
     __shared__ float sh_x[PAD * PAD];
     __shared__ float sh_b[PAD * PAD];
-    __shared__ float sh_sx[64];  // gaborish-inverse sharpened block (X/Y/B)
-    __shared__ float sh_sy[64];
-    __shared__ float sh_sb[64];
     __shared__ float sh_pre[CELLS * CELLS];
     __shared__ float sh_red[2][4];
-    __shared__ int sh_q;
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
     const std::size_t tby0{static_cast<std::size_t>(blockIdx.y) * TB};
     const std::size_t px0{tbx0 * 8};
     const std::size_t py0{tby0 * 8};
     const int tid{static_cast<int>(threadIdx.y) * 8 + static_cast<int>(threadIdx.x)};
-    const std::size_t nblk{bw * bh};
 
     // Load the padded tile and compute XYB into shared memory.
     for (int i{tid}; i < PAD * PAD; i += 64) {
@@ -188,11 +113,6 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 
     const int fx{static_cast<int>(threadIdx.x)};
     const int fy{static_cast<int>(threadIdx.y)};
-    // Separable DCT ownership: thread (fx, fy) produces coefficient with
-    // x-frequency fy and y-frequency fx, i.e. k = fy*8 + fx (x-frequency major,
-    // libjxl raster). This transpose keeps each coefficient's row-pass inputs
-    // (the 8 threads sharing fy) within a single warp for the shuffle gather.
-    const int k{fy * 8 + fx};
 
     for (int lb{0}; lb < TB * TB; ++lb) {
         const int lbx{lb % TB};
@@ -277,73 +197,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             const float qval{expf(ov) * mul_pb + add_pb};
             int qi{static_cast<int>(qval * inv_global_scale + 0.5f)};
             qi = qi < 1 ? 1 : (qi > K_QUANT_MAX ? K_QUANT_MAX : qi);
-            sh_q = qi;
             quant_field[gby * bw + gbx] = qi;
-        }
-        __syncthreads();
-
-        // GaborishInverse pre-sharpening: replace this block's 8x8 opsin with
-        // its 5x5-sharpened values before the DCT, cancelling the decoder's
-        // default gaborish smoothing. The AQ field above intentionally used the
-        // unsharpened opsin, matching libjxl's ordering (InitialQuantField
-        // precedes GaborishInverse).
-        {
-            const int idx{(y0 + fy) * PAD + x0 + fx};
-            sh_sx[fy * 8 + fx] = gaborish_inverse(sh_x, idx);
-            sh_sy[fy * 8 + fx] = gaborish_inverse(sh_y, idx);
-            sh_sb[fy * 8 + fx] = gaborish_inverse(sh_b, idx);
-        }
-        __syncthreads();
-
-        const float ac_scale{static_cast<float>(sh_q) * gsf};
-        const std::size_t blk{gby * bw + gbx};
-
-        // Separable forward DCT8 + quantize, per channel (see the k definition
-        // above). Row pass: thread (fx, fy) reduces spatial row fx against
-        // x-frequency fy, producing R[fy][fx]. Column pass: warp shuffles gather
-        // R[fy][0..7] (the 8 lanes sharing fy) and reduce against y-frequency fx.
-        // This replaces the 64-MAC dense transform with 16 MACs + 8 shuffles.
-        float ry{0.0f};
-        float rx{0.0f};
-        float rb{0.0f};
-        for (int x{0}; x < 8; ++x) {
-            const float a{DCT_A[fy * 8 + x]};
-            const int s{fx * 8 + x};
-            ry += a * sh_sy[s];
-            rx += a * sh_sx[s];
-            rb += a * sh_sb[s];
-        }
-        float acc_y{0.0f};
-        float acc_x{0.0f};
-        float acc_b{0.0f};
-        const int base_lane{(fy & 3) * 8};
-        for (int s{0}; s < 8; ++s) {
-            const float a{DCT_A[fx * 8 + s]};
-            acc_y += a * __shfl_sync(0xffffffffu, ry, base_lane + s, 32);
-            acc_x += a * __shfl_sync(0xffffffffu, rx, base_lane + s, 32);
-            acc_b += a * __shfl_sync(0xffffffffu, rb, base_lane + s, 32);
-        }
-
-        const std::int32_t qx{
-            static_cast<std::int32_t>(rintf(acc_x * quant_factor(0, k, ac_scale, dc_scale)))};
-        const std::int32_t qy{
-            static_cast<std::int32_t>(rintf(acc_y * quant_factor(1, k, ac_scale, dc_scale)))};
-        const float roundtrip_y{static_cast<float>(qy) / quant_factor(1, k, ac_scale, dc_scale)};
-        const float residual{acc_b - Y_TO_B_RATIO_D * roundtrip_y};
-        const std::int32_t qb{
-            static_cast<std::int32_t>(rintf(residual * quant_factor(2, k, ac_scale, dc_scale)))};
-
-        // Split storage: DC (k == 0) stays int32 in the compact DC buffer; the 63
-        // AC coefficients narrow to int16 in the packed AC buffer (slot k-1).
-        if (k == 0) {
-            dc[blk] = qx;
-            dc[nblk + blk] = qy;
-            dc[2 * nblk + blk] = qb;
-        } else {
-            const std::size_t ac_off{blk * AC_COEFFS_PER_BLOCK + (k - 1)};
-            ac[ac_off] = static_cast<std::int16_t>(qx);
-            ac[nblk * AC_COEFFS_PER_BLOCK + ac_off] = static_cast<std::int16_t>(qy);
-            ac[2 * nblk * AC_COEFFS_PER_BLOCK + ac_off] = static_cast<std::int16_t>(qb);
         }
         __syncthreads();
     }
@@ -353,16 +207,11 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                      std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                     float distance, std::int16_t* ac, std::int32_t* dc,
-                     std::int32_t* quant_field) {
-    ensure_constants();
-
+                     float distance, std::int32_t* quant_field) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
 
     const QuantCalibration cal{calibrate_quant(distance)};
-    const float gsf{cal.global_scale_float};
-    const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
     const float scale{K_AC_QUANT / distance};
 
     // PerBlockModulations exponent -> multiplicative field mapping.
@@ -412,9 +261,9 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
     const dim3 block{8, 8};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
-    frontend_fused_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, bw, bh, gsf,
-                                           dc_scale, km0, km1, km2, km3, mul_pb, add_pb,
-                                           cal.inv_global_scale, ac, dc, quant_field);
+    frontend_fused_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, bw, bh, km0,
+                                           km1, km2, km3, mul_pb, add_pb, cal.inv_global_scale,
+                                           quant_field);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};

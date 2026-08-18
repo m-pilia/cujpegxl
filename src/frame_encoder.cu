@@ -86,10 +86,10 @@ struct AcEntropyPlan {
 }  // namespace
 
 bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
-                     const std::int8_t* acs, const std::int8_t* ytox_map,
-                     const std::int8_t* ytob_map, std::size_t width, std::size_t height,
-                     const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                     std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+                  const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                  std::size_t width, std::size_t height, const bitstream::QuantParams& qp,
+                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
+                  std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -214,8 +214,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     std::size_t ac_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{ac_encode_groups(ac_device, acs, width, height, d_ac_depth, d_ac_bits,
-                                              d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets,
-                                              &ac_total)};
+                                           d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets,
+                                           &ac_total)};
     if (!ac_encoded) {
         return false;
     }
@@ -297,9 +297,9 @@ bitstream::QuantParams quant_params_for_distance(float distance) {
 }
 
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                    std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                    std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                    std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
+                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
+                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
         return false;
     }
@@ -316,12 +316,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
     std::int16_t* d_ac16{scope.alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
     std::int32_t* d_dc32{scope.alloc<std::int32_t>(3 * blocks)};
-    // The per-block adaptive-quant field is produced by the fused adaptive-quant
-    // front end (transform-independent); its coefficient outputs are scratch here.
-    std::int16_t* d_ac_scratch{scope.alloc<std::int16_t>(3 * blocks * AC_COEFFS_PER_BLOCK)};
-    std::int32_t* d_dc_scratch{scope.alloc<std::int32_t>(3 * blocks)};
-    if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32 || !d_ac_scratch ||
-        !d_dc_scratch) {
+    if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32) {
         return false;
     }
 
@@ -341,19 +336,19 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
 
     const Clock::time_point frontend_start{Clock::now()};
     if (!encode_frontend(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
-                         d_ac_scratch, d_dc_scratch, d_qf) ||
-        !frontend_transform(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height,
-                               distance, d_coeffs, d_acs) ||
+                         d_qf) ||
+        !frontend_transform(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
+                            d_coeffs, d_acs) ||
         !estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb) ||
         !quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, distance, d_ac16,
-                              d_dc32)) {
+                           d_dc32)) {
         return false;
     }
     if (stats != nullptr) {
         stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
     }
     return encode_frame(d_ac16, d_dc32, d_acs, d_mx, d_mb, width, height, qp, d_qf, out_file,
-                           stats);
+                        stats);
 }
 
 }  // namespace cujpegxl

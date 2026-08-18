@@ -164,11 +164,11 @@ bool frontend_transform(const std::uint8_t* luma, std::size_t luma_pitch,
     const std::size_t plane{width * height};
     float* xyb{nullptr};
     float* sharp{nullptr};
-    if (cudaMalloc(&xyb, 3 * plane * sizeof(float)) != cudaSuccess) {
+    if (cudaMallocAsync(&xyb, 3 * plane * sizeof(float), 0) != cudaSuccess) {
         return false;
     }
-    if (cudaMalloc(&sharp, 3 * plane * sizeof(float)) != cudaSuccess) {
-        cudaFree(xyb);
+    if (cudaMallocAsync(&sharp, 3 * plane * sizeof(float), 0) != cudaSuccess) {
+        cudaFreeAsync(xyb, 0);
         return false;
     }
 
@@ -184,8 +184,8 @@ bool frontend_transform(const std::uint8_t* luma, std::size_t luma_pitch,
     ok = ok && select_transforms(sharp + plane, width, height, distance, acs);  // Y plane
     ok = ok && variable_forward_dct(sharp, width, height, acs, coeffs);
 
-    cudaFree(xyb);
-    cudaFree(sharp);
+    cudaFreeAsync(xyb, 0);
+    cudaFreeAsync(sharp, 0);
     return ok;
 }
 
