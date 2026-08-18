@@ -71,9 +71,9 @@ __global__ void forward_dctn_kernel(const float* __restrict__ xyb, std::size_t w
 }
 
 const float* basis_symbol(int n) {
-    const void* symbol{n == 8 ? static_cast<const void*>(DCT_A8)
-                              : (n == 16 ? static_cast<const void*>(DCT_A16)
-                                         : static_cast<const void*>(DCT_A32))};
+    const void* symbol{
+        n == 8 ? static_cast<const void*>(DCT_A8)
+               : (n == 16 ? static_cast<const void*>(DCT_A16) : static_cast<const void*>(DCT_A32))};
     void* address{nullptr};
     if (cudaGetSymbolAddress(&address, symbol) != cudaSuccess) {
         return nullptr;

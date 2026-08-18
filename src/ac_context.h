@@ -22,9 +22,9 @@ namespace cujpegxl {
 #define CUJPEGXL_ACC_HD
 #endif
 
-inline constexpr int AC_NUM_ORDERS = 13;         // kNumOrders
-inline constexpr int AC_NUM_BLOCK_CTX = 15;      // default BlockCtxMap num_ctxs
-inline constexpr int AC_NON_ZERO_BUCKETS = 37;   // kNonZeroBuckets
+inline constexpr int AC_NUM_ORDERS = 13;           // kNumOrders
+inline constexpr int AC_NUM_BLOCK_CTX = 15;        // default BlockCtxMap num_ctxs
+inline constexpr int AC_NON_ZERO_BUCKETS = 37;     // kNonZeroBuckets
 inline constexpr int AC_ZERO_DENSITY_COUNT = 458;  // kZeroDensityContextCount
 inline constexpr int AC_NUM_CONTEXTS =
     AC_NUM_BLOCK_CTX * (AC_NON_ZERO_BUCKETS + AC_ZERO_DENSITY_COUNT);  // 7425
@@ -32,24 +32,22 @@ inline constexpr int AC_NUM_CONTEXTS =
 // libjxl kDefaultCtxMap: 3 channel groups x kNumOrders, clustering the large
 // transforms together. Row order is the permuted channel index (Y, X, B).
 inline constexpr std::uint8_t AC_DEFAULT_CTX_MAP[3 * AC_NUM_ORDERS] = {
-    0, 1, 2, 2, 3, 3, 4, 5, 6, 6, 6, 6, 6,       //
+    0, 1, 2, 2, 3,  3,  4,  5,  6,  6,  6,  6,  6,   //
     7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14,  //
     7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14,  //
 };
 
 inline constexpr std::uint16_t AC_COEFF_FREQ_CONTEXT[64] = {
-    0xBAD, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14,
-    15,    15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
-    23,    23, 23, 23, 24, 24, 24, 24, 25, 25, 25, 25, 26, 26, 26, 26,
-    27,    27, 27, 27, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30, 30, 30,
+    0xBAD, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 15, 16, 16, 17, 17,
+    18,    18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 23, 23, 24, 24, 24, 24, 25, 25, 25, 25,
+    26,    26, 26, 26, 27, 27, 27, 27, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30, 30, 30,
 };
 
 inline constexpr std::uint16_t AC_COEFF_NUM_NONZERO_CONTEXT[64] = {
-    0xBAD, 0,   31,  62,  62,  93,  93,  93,  93,  123, 123, 123, 123,
-    152,   152, 152, 152, 152, 152, 152, 152, 180, 180, 180, 180, 180,
-    180,   180, 180, 180, 180, 180, 180, 206, 206, 206, 206, 206, 206,
-    206,   206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
-    206,   206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
+    0xBAD, 0,   31,  62,  62,  93,  93,  93,  93,  123, 123, 123, 123, 152, 152, 152,
+    152,   152, 152, 152, 152, 180, 180, 180, 180, 180, 180, 180, 180, 180, 180, 180,
+    180,   206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
+    206,   206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
 };
 
 // libjxl kStrategyOrder for the square strategies we emit: DCT (side 8) -> 0,
@@ -106,8 +104,8 @@ CUJPEGXL_ACC_HD inline int ac_cluster(std::uint32_t ctx) {
         const std::uint32_t nonzero_bucket{ctx / AC_NUM_BLOCK_CTX};
         const int block_ctx{static_cast<int>(ctx % AC_NUM_BLOCK_CTX)};
         const int channel_group{block_ctx < 7 ? 0 : 1};
-        const int band{nonzero_bucket < 4 ? 0 : (nonzero_bucket < 12 ? 1 :
-                                                 (nonzero_bucket < 24 ? 2 : 3))};
+        const int band{
+            nonzero_bucket < 4 ? 0 : (nonzero_bucket < 12 ? 1 : (nonzero_bucket < 24 ? 2 : 3))};
         return channel_group * 4 + band;
     }
 

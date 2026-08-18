@@ -36,10 +36,8 @@ struct AcGlobalResult {
     std::vector<std::uint16_t> bits{};
 };
 AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t num_ac_groups);
-AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
-                               const std::uint8_t* context_map,
-                               std::size_t num_clusters,
-                               std::size_t num_ac_groups);
+AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms, const std::uint8_t* context_map,
+                               std::size_t num_clusters, std::size_t num_ac_groups);
 
 // The byte-aligned DcGlobal section.
 std::vector<std::uint8_t> build_dc_global(const QuantParams& qp);

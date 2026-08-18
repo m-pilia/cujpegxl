@@ -53,8 +53,8 @@ testing::AssertionResult decode(const std::vector<std::uint8_t>& codestream, Dec
             out.ysize = info.ysize;
         } else if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
             out.pixels.assign(static_cast<std::size_t>(out.xsize) * out.ysize * 3, 0);
-            if (JxlDecoderSetImageOutBuffer(dec, &format, out.pixels.data(),
-                                            out.pixels.size()) != JXL_DEC_SUCCESS) {
+            if (JxlDecoderSetImageOutBuffer(dec, &format, out.pixels.data(), out.pixels.size()) !=
+                JXL_DEC_SUCCESS) {
                 JxlDecoderDestroy(dec);
                 return testing::AssertionFailure() << "SetImageOutBuffer failed";
             }
@@ -121,7 +121,7 @@ TEST(VarDctFrame, NonZeroAcDecodes) {
         for (std::size_t bx{0}; bx < 32; ++bx) {
             for (int c{0}; c < 3; ++c) {
                 std::int32_t* blk{&fc.ac[c][(by * bw + bx) * 64]};
-                blk[1] = 3;    // a low-frequency AC coefficient
+                blk[1] = 3;  // a low-frequency AC coefficient
                 blk[8] = -2;
                 blk[20] = 1;
             }
@@ -234,11 +234,11 @@ FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
     set_first_block(fc, bw, 32, 0, 0);
     set_first_block(fc, bw, 16, 4, 0);
     set_first_block(fc, bw, 16, 0, 4);
-    set_ac(fc, bw, 32, 0, 0, 16, 4);   // first AC coefficient past the 4x4 LLF
+    set_ac(fc, bw, 32, 0, 0, 16, 4);  // first AC coefficient past the 4x4 LLF
     set_ac(fc, bw, 32, 0, 0, 40, -2);
-    set_ac(fc, bw, 16, 4, 0, 4, 3);    // first AC coefficient past the 2x2 LLF
+    set_ac(fc, bw, 16, 4, 0, 4, 3);  // first AC coefficient past the 2x2 LLF
     set_ac(fc, bw, 16, 0, 4, 5, -1);
-    set_ac(fc, bw, 8, 10, 10, 1, 2);   // an ordinary DCT8 block
+    set_ac(fc, bw, 8, 10, 10, 1, 2);  // an ordinary DCT8 block
 
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t cmh{(bh + 7) / 8};

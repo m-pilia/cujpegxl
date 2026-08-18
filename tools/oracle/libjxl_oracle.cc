@@ -210,7 +210,8 @@ int run_coefforder(std::size_t block_dim, const char* out_path) {
         std::fprintf(stderr, "oracle: cannot open %s for writing\n", out_path);
         return 1;
     }
-    const std::size_t put{std::fwrite(order.data(), sizeof(jxl::coeff_order_t), order.size(), file)};
+    const std::size_t put{
+        std::fwrite(order.data(), sizeof(jxl::coeff_order_t), order.size(), file)};
     std::fclose(file);
     return put == order.size() ? 0 : 1;
 }
@@ -287,12 +288,13 @@ int main(int argc, char** argv) {
                          argv[0]);
             return 2;
         }
-        return run_dct(parse_dim(argv[2]), parse_dim(argv[3]), parse_dim(argv[4]), argv[5], argv[6]);
+        return run_dct(parse_dim(argv[2]), parse_dim(argv[3]), parse_dim(argv[4]), argv[5],
+                       argv[6]);
     }
     if (argc >= 2 && std::strcmp(argv[1], "dcfromllf") == 0) {
         if (argc != 5) {
-            std::fprintf(stderr,
-                         "usage: %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n", argv[0]);
+            std::fprintf(stderr, "usage: %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n",
+                         argv[0]);
             return 2;
         }
         return run_dcfromllf(parse_dim(argv[2]), argv[3], argv[4]);

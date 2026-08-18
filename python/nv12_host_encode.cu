@@ -32,7 +32,7 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
             cudaMemcpy(d_chroma, chroma, chroma_bytes, cudaMemcpyHostToDevice) == cudaSuccess};
     if (ok) {
         ok = encode_nv12(d_luma, width, d_chroma, width, width, height, device_ordinal, distance,
-                            quant_params_for_distance(distance), out, stats);
+                         quant_params_for_distance(distance), out, stats);
     }
     cudaFree(d_luma);
     cudaFree(d_chroma);

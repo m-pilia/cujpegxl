@@ -24,8 +24,12 @@
 namespace cujpegxl::bitstream {
 namespace {
 
-void* test_alloc(void*, size_t size) { return std::malloc(size); }
-void test_free(void*, void* p) { std::free(p); }
+void* test_alloc(void*, size_t size) {
+    return std::malloc(size);
+}
+void test_free(void*, void* p) {
+    std::free(p);
+}
 
 struct Token {
     std::size_t context;

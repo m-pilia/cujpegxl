@@ -101,14 +101,15 @@ void check_matches_reference(const FrameCoefficients& fc) {
                                                 static_cast<std::int32_t>(fc.raw_quant_field));
     DcDeviceResult dev{};
     ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
-                                    fc.width, fc.height, ref, dev));
+                                 fc.width, fc.height, ref, dev));
     ASSERT_EQ(dev.group_sizes.size(), ref.groups.size());
 
     std::uint32_t offset{0};
     for (std::size_t g{0}; g < ref.groups.size(); ++g) {
         const bitstream::DcGroupReference& r{ref.groups[g]};
         for (std::size_t s{0}; s < r.dc_histogram.size(); ++s) {
-            EXPECT_EQ(dev.histograms[g][s], r.dc_histogram[s]) << "group " << g << " dc symbol " << s;
+            EXPECT_EQ(dev.histograms[g][s], r.dc_histogram[s])
+                << "group " << g << " dc symbol " << s;
         }
         for (std::size_t s{0}; s < r.acmeta_histogram.size(); ++s) {
             EXPECT_EQ(dev.acmeta_histograms[g][s], r.acmeta_histogram[s])

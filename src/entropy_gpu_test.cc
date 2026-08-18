@@ -99,8 +99,8 @@ FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
                 continue;
             }
             for (int raw{1}; raw < side * side; raw += 3) {
-                const std::size_t slot{covered_plane_slot(side, bx, by, bw,
-                                                          static_cast<std::size_t>(raw))};
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
                 for (int c{0}; c < 3; ++c) {
                     fc.ac[c][slot] = static_cast<std::int32_t>((raw + bx + by + c) % 9) - 4;
                 }

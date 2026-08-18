@@ -37,8 +37,7 @@ void EntropyEncoder::write_tokens(BitWriter& w) const {
     write_tokens_range(w, 0, tokens_.size());
 }
 
-void EntropyEncoder::write_tokens_range(BitWriter& w, std::size_t begin,
-                                        std::size_t end) const {
+void EntropyEncoder::write_tokens_range(BitWriter& w, std::size_t begin, std::size_t end) const {
     assert(begin <= end && end <= tokens_.size());
     for (std::size_t i{begin}; i < end; ++i) {
         const Token& t{tokens_[i]};

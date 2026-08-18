@@ -41,8 +41,12 @@ namespace {
 // scale as `cjxl -d` and cujpegxl's `--distance`.
 constexpr float kSdrIntensityTarget{255.0f};
 
-void* mm_alloc(void*, size_t size) { return std::malloc(size); }
-void mm_free(void*, void* address) { std::free(address); }
+void* mm_alloc(void*, size_t size) {
+    return std::malloc(size);
+}
+void mm_free(void*, void* address) {
+    std::free(address);
+}
 
 JxlMemoryManager make_memory_manager() {
     return JxlMemoryManager{nullptr, &mm_alloc, &mm_free};
@@ -81,8 +85,7 @@ jxl::Image3F image3f_from_rgb(JxlMemoryManager* mm, const Planes& p, bool linear
     jxl::Image3F img = std::move(img_or).value_();
     const auto srgb_eotf = [](float v) {
         v /= 255.0f;
-        return v <= 0.04045f ? v / 12.92f
-                             : std::pow((v + 0.055f) / 1.055f, 2.4f);
+        return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
     };
     for (std::size_t c{0}; c < 3; ++c) {
         for (std::uint32_t y{0}; y < p.height; ++y) {
@@ -200,8 +203,7 @@ py::object decode_jxl(const py::bytes& data) {
         JXL_DEC_SUCCESS) {
         throw std::runtime_error("JxlDecoderSubscribeEvents failed");
     }
-    JxlDecoderSetInput(dec, reinterpret_cast<const std::uint8_t*>(bytes.data()),
-                       bytes.size());
+    JxlDecoderSetInput(dec, reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
     JxlDecoderCloseInput(dec);
 
     JxlPixelFormat pixfmt{3, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
@@ -226,8 +228,7 @@ py::object decode_jxl(const py::bytes& data) {
                 throw std::runtime_error("JxlDecoderImageOutBufferSize failed");
             }
             pixels.resize(size);
-            if (JxlDecoderSetImageOutBuffer(dec, &pixfmt, pixels.data(), size) !=
-                JXL_DEC_SUCCESS) {
+            if (JxlDecoderSetImageOutBuffer(dec, &pixfmt, pixels.data(), size) != JXL_DEC_SUCCESS) {
                 throw std::runtime_error("JxlDecoderSetImageOutBuffer failed");
             }
         } else if (status == JXL_DEC_FULL_IMAGE) {
@@ -247,8 +248,7 @@ py::object decode_jxl(const py::bytes& data) {
     return out;
 }
 
-double butteraugli_score(const py::array_t<std::uint8_t>& a,
-                         const py::array_t<std::uint8_t>& b) {
+double butteraugli_score(const py::array_t<std::uint8_t>& a, const py::array_t<std::uint8_t>& b) {
     const Planes pa{take_rgb(a)};
     const Planes pb{take_rgb(b)};
     check_same_size(pa, pb);
@@ -273,8 +273,7 @@ double butteraugli_score(const py::array_t<std::uint8_t>& a,
     return jxl::ButteraugliScoreFromDiffmap(diffmap, &params);
 }
 
-double ssimulacra2_score(const py::array_t<std::uint8_t>& a,
-                         const py::array_t<std::uint8_t>& b) {
+double ssimulacra2_score(const py::array_t<std::uint8_t>& a, const py::array_t<std::uint8_t>& b) {
     const Planes pa{take_rgb(a)};
     const Planes pb{take_rgb(b)};
     check_same_size(pa, pb);
@@ -290,8 +289,7 @@ double ssimulacra2_score(const py::array_t<std::uint8_t>& a,
     return std::move(result).value_().Score();
 }
 
-double psnr_score(const py::array_t<std::uint8_t>& a,
-                  const py::array_t<std::uint8_t>& b) {
+double psnr_score(const py::array_t<std::uint8_t>& a, const py::array_t<std::uint8_t>& b) {
     const Planes pa{take_rgb(a)};
     const Planes pb{take_rgb(b)};
     check_same_size(pa, pb);

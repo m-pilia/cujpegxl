@@ -22,8 +22,12 @@
 namespace cujpegxl::bitstream {
 namespace {
 
-void* test_alloc(void*, size_t size) { return std::malloc(size); }
-void test_free(void*, void* p) { std::free(p); }
+void* test_alloc(void*, size_t size) {
+    return std::malloc(size);
+}
+void test_free(void*, void* p) {
+    std::free(p);
+}
 
 void round_trip(std::size_t num_contexts,
                 const std::vector<std::pair<std::size_t, std::uint32_t>>& tokens) {
@@ -46,8 +50,8 @@ void round_trip(std::size_t num_contexts,
     jxl::ANSSymbolReader reader{std::move(reader_or).value_()};
 
     for (const auto& [ctx, value] : tokens) {
-        const std::uint32_t decoded{static_cast<std::uint32_t>(
-            reader.ReadHybridUint(ctx, &br, context_map))};
+        const std::uint32_t decoded{
+            static_cast<std::uint32_t>(reader.ReadHybridUint(ctx, &br, context_map))};
         EXPECT_EQ(decoded, value) << "context " << ctx;
     }
     EXPECT_TRUE(br.AllReadsWithinBounds());
@@ -60,8 +64,7 @@ TEST(EntropyEncoder, SingleContextSmallValues) {
 }
 
 TEST(EntropyEncoder, SingleContextLargeValues) {
-    round_trip(1, {{0, 0}, {0, 15}, {0, 16}, {0, 255}, {0, 4096}, {0, 100000},
-                   {0, 16777215}});
+    round_trip(1, {{0, 0}, {0, 15}, {0, 16}, {0, 255}, {0, 4096}, {0, 100000}, {0, 16777215}});
 }
 
 TEST(EntropyEncoder, SingleSymbolZeroBitCode) {

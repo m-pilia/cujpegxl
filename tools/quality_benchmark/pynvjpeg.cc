@@ -25,8 +25,8 @@ namespace {
 
 void check_cuda(cudaError_t err, const char* what) {
     if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("cuda ") + what + " failed: " +
-                                 cudaGetErrorString(err));
+        throw std::runtime_error(std::string("cuda ") + what +
+                                 " failed: " + cudaGetErrorString(err));
     }
 }
 
@@ -76,9 +76,12 @@ py::bytes encode_jpeg(const py::array_t<std::uint8_t>& nv12, std::uint32_t width
         std::uint8_t* cb;
         std::uint8_t* cr;
         ~Guard() {
-            if (l != nullptr) cudaFree(l);
-            if (cb != nullptr) cudaFree(cb);
-            if (cr != nullptr) cudaFree(cr);
+            if (l != nullptr)
+                cudaFree(l);
+            if (cb != nullptr)
+                cudaFree(cb);
+            if (cr != nullptr)
+                cudaFree(cr);
         }
     } guard{d_luma, d_cb, d_cr};
     check_cuda(cudaMalloc(&d_cb, chroma_bytes), "cudaMalloc cb");
@@ -98,9 +101,12 @@ py::bytes encode_jpeg(const py::array_t<std::uint8_t>& nv12, std::uint32_t width
         nvjpegEncoderState_t& state;
         nvjpegEncoderParams_t& params;
         ~NvGuard() {
-            if (params != nullptr) nvjpegEncoderParamsDestroy(params);
-            if (state != nullptr) nvjpegEncoderStateDestroy(state);
-            if (handle != nullptr) nvjpegDestroy(handle);
+            if (params != nullptr)
+                nvjpegEncoderParamsDestroy(params);
+            if (state != nullptr)
+                nvjpegEncoderStateDestroy(state);
+            if (handle != nullptr)
+                nvjpegDestroy(handle);
         }
     } nv_guard{handle, state, params};
     check_nvjpeg(nvjpegEncoderStateCreate(handle, &state, nullptr), "EncoderStateCreate");

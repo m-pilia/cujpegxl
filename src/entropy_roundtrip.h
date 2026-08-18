@@ -24,8 +24,7 @@ struct AcDeviceResult {
 // `q` is the covered-block coefficient layout (three planes of
 // (width/8 * height/8) * 64 int32) and `acs` the per-8x8 transform signal.
 bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
-                      std::size_t width, std::size_t height,
-                      const std::vector<std::uint8_t>& depth,
+                      std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
                       const std::vector<std::uint16_t>& bits, AcDeviceResult& out);
 
 }  // namespace cujpegxl

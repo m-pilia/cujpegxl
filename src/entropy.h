@@ -94,13 +94,12 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
                       const std::int32_t* quant_field, const std::int8_t* acs,
                       const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                      const std::uint8_t* dc_depth,
-                      const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
-                      const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
-                      const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
-                      const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
-                      const std::uint32_t* blob_mid_bits, std::uint8_t* out,
-                      std::size_t out_capacity, std::uint32_t* group_sizes,
+                      const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
+                      const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
+                      const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
+                      const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
+                      const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
+                      std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
                       std::uint32_t* group_offsets, std::size_t* total_bytes);
 
 }  // namespace cujpegxl

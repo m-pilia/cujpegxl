@@ -78,8 +78,8 @@ void write_modular_header(BitWriter& w, const std::uint32_t* data_hist, std::siz
     // mul_bits 0. Every token value is below the hybrid split, so symbol == value
     // with no extra bits. For Predictor::Zero all tokens are 0 (a single-symbol
     // zero-bit code, emitting nothing); Gradient adds the symbol 5.
-    const std::uint32_t tree_tokens[NUM_TREE_CONTEXTS - 1]{
-        0, static_cast<std::uint32_t>(predictor), 0, 0, 0};
+    const std::uint32_t tree_tokens[NUM_TREE_CONTEXTS - 1]{0, static_cast<std::uint32_t>(predictor),
+                                                           0, 0, 0};
     std::uint32_t tree_hist[16]{};
     std::size_t tree_len{1};
     for (std::uint32_t t : tree_tokens) {
@@ -124,14 +124,11 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t nu
     for (std::size_t i{0}; i < NUM_AC_CONTEXTS; ++i) {
         context_map[i] = static_cast<std::uint8_t>(ac_cluster(static_cast<std::uint32_t>(i)));
     }
-    return build_ac_global(ac_histogram, context_map.data(), AC_NUM_CLUSTERS,
-                           num_ac_groups);
+    return build_ac_global(ac_histogram, context_map.data(), AC_NUM_CLUSTERS, num_ac_groups);
 }
 
-AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
-                               const std::uint8_t* context_map,
-                               std::size_t num_clusters,
-                               std::size_t num_ac_groups) {
+AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms, const std::uint8_t* context_map,
+                               std::size_t num_clusters, std::size_t num_ac_groups) {
     AcGlobalResult out{};
     out.depth.assign(num_clusters * HISTOGRAM_STRIDE, 0);
     out.bits.assign(num_clusters * HISTOGRAM_STRIDE, 0);
@@ -140,9 +137,9 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms,
     write_bool(w, true);                                 // DequantMatrices::Decode all_default
     write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);  // num_histograms - 1
     write_u32(w, ORDER_ENC, 0);                          // used_orders = 0 (natural)
-    write_clustered_prefix_histograms(w, context_map, NUM_AC_CONTEXTS, num_clusters,
-                                      ac_histograms, HISTOGRAM_STRIDE, HybridUintConfig{},
-                                      out.depth.data(), out.bits.data());
+    write_clustered_prefix_histograms(w, context_map, NUM_AC_CONTEXTS, num_clusters, ac_histograms,
+                                      HISTOGRAM_STRIDE, HybridUintConfig{}, out.depth.data(),
+                                      out.bits.data());
     w.zero_pad_to_byte();
     out.section = w.bytes();
     return out;

@@ -21,8 +21,12 @@
 namespace cujpegxl::bitstream {
 namespace {
 
-void* test_alloc(void*, size_t size) { return std::malloc(size); }
-void test_free(void*, void* p) { std::free(p); }
+void* test_alloc(void*, size_t size) {
+    return std::malloc(size);
+}
+void test_free(void*, void* p) {
+    std::free(p);
+}
 
 void expect_libjxl_inverse(const std::vector<std::uint8_t>& context_map) {
     std::vector<std::uint8_t> transformed(context_map.size());
@@ -43,8 +47,7 @@ void expect_complex_map_round_trip(const std::vector<std::uint8_t>& context_map,
     std::size_t num_histograms{0};
     ASSERT_TRUE(jxl::DecodeContextMap(&mm, &decoded, &num_histograms, &br));
     EXPECT_EQ(decoded, context_map);
-    const std::uint8_t max_cluster{
-        *std::max_element(context_map.begin(), context_map.end())};
+    const std::uint8_t max_cluster{*std::max_element(context_map.begin(), context_map.end())};
     EXPECT_EQ(num_histograms, static_cast<std::size_t>(max_cluster) + 1);
     EXPECT_TRUE(br.Close());
 }
@@ -53,8 +56,8 @@ ContextMapEncoding expect_best_map_round_trip(const std::vector<std::uint8_t>& c
                                               std::size_t num_clusters) {
     BitWriter w{};
     w.write(5, 0x15);
-    const ContextMapEncoding encoding{write_best_prefix_context_map(
-        w, context_map.data(), context_map.size(), num_clusters)};
+    const ContextMapEncoding encoding{
+        write_best_prefix_context_map(w, context_map.data(), context_map.size(), num_clusters)};
     w.zero_pad_to_byte();
 
     JxlMemoryManager mm{nullptr, &test_alloc, &test_free};

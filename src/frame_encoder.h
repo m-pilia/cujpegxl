@@ -47,10 +47,9 @@ struct StageTiming {
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
 // timings for the budget model; passing null (the default) emits no records.
 bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
-                  const std::int8_t* acs, const std::int8_t* ytox_map,
-                  const std::int8_t* ytob_map, std::size_t width, std::size_t height,
-                  const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                  std::vector<std::uint8_t>& out_file,
+                  const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                  std::size_t width, std::size_t height, const bitstream::QuantParams& qp,
+                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
                   std::vector<StageTiming>* stats = nullptr);
 
 // Maps a Butteraugli `distance` to the serialized Quantizer state written into

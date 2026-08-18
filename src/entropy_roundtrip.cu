@@ -26,8 +26,7 @@ bool upload(const std::vector<T>& host, T** device) {
 }  // namespace
 
 bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
-                      std::size_t width, std::size_t height,
-                      const std::vector<std::uint8_t>& depth,
+                      std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
                       const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
     const std::size_t blocks{(width / 8) * (height / 8)};
@@ -60,7 +59,7 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     std::size_t total_bytes{0};
     ok = ok && ac_build_histogram(d_ac, d_acs, width, height, d_hist);
     ok = ok && ac_encode_groups(d_ac, d_acs, width, height, d_depth, d_bits, d_out, capacity,
-                                   d_sizes, d_offsets, &total_bytes);
+                                d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
         out.histogram.assign(AC_HIST_SPAN, 0);

@@ -101,7 +101,7 @@ std::vector<std::uint8_t> encode(const DeviceNv12& nv12, std::size_t w, std::siz
     const bitstream::QuantParams qp{quant_params_for_distance(1.0f)};
     std::vector<std::uint8_t> file{};
     EXPECT_TRUE(encode_nv12(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, w, h, 0,
-                               1.0f, qp, file, nullptr));
+                            1.0f, qp, file, nullptr));
     return file;
 }
 

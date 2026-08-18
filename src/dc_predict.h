@@ -39,8 +39,9 @@ CUJPEGXL_DCP_HD inline std::int32_t clamped_gradient(std::int32_t n, std::int32_
 // NW : left. Neighbor values are read only where the corresponding flag is set,
 // so the caller may pass 0 for an absent neighbor. libjxl calls the Gradient
 // predictor as ClampedGradient(left, top, topleft).
-CUJPEGXL_DCP_HD inline std::int32_t gradient_predict(bool has_left, bool has_top, std::int32_t w_val,
-                                                     std::int32_t n_val, std::int32_t nw_val) {
+CUJPEGXL_DCP_HD inline std::int32_t gradient_predict(bool has_left, bool has_top,
+                                                     std::int32_t w_val, std::int32_t n_val,
+                                                     std::int32_t nw_val) {
     const std::int32_t left{has_left ? w_val : (has_top ? n_val : 0)};
     const std::int32_t top{has_top ? n_val : left};
     const std::int32_t topleft{(has_left && has_top) ? nw_val : left};

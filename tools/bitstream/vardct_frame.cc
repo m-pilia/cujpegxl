@@ -41,7 +41,9 @@ constexpr U32Enc GLOBAL_SCALE_ENC{
 constexpr U32Enc QUANT_DC_ENC{{Val(16), BitsOffset(5, 1), BitsOffset(8, 1), BitsOffset(16, 1)}};
 constexpr U32Enc ORDER_ENC{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
 
-std::size_t ceil_div(std::size_t a, std::size_t b) { return (a + b - 1) / b; }
+std::size_t ceil_div(std::size_t a, std::size_t b) {
+    return (a + b - 1) / b;
+}
 
 std::size_t ceil_log2_nonzero(std::size_t x) {
     if (x <= 1) {
@@ -89,10 +91,9 @@ std::array<std::uint32_t, 64> compute_dct8_natural_order() {
 // Extracts the DC block sub-rectangle [bx0, bx0+dgw) x [by0, by0+dgh) from the
 // full-image DC planes into physical modular channels Y, X, B (DequantDC reads
 // channel[1]=X, channel[0]=Y, channel[2]=B), while fc.dc is X, Y, B.
-std::vector<ModularChannel> make_vardct_dc_channels(const FrameCoefficients& fc,
-                                                    std::size_t bw, std::size_t bx0,
-                                                    std::size_t by0, std::size_t dgw,
-                                                    std::size_t dgh) {
+std::vector<ModularChannel> make_vardct_dc_channels(const FrameCoefficients& fc, std::size_t bw,
+                                                    std::size_t bx0, std::size_t by0,
+                                                    std::size_t dgw, std::size_t dgh) {
     const int xyb_for_physical[3]{1, 0, 2};
     std::vector<ModularChannel> channels{};
     for (int p{0}; p < 3; ++p) {
@@ -110,7 +111,9 @@ std::vector<ModularChannel> make_vardct_dc_channels(const FrameCoefficients& fc,
 
 // libjxl AcStrategyType raw value for a square block side (DCT=0, DCT16X16=4,
 // DCT32X32=5).
-std::int32_t raw_strategy(int side) { return side == 16 ? 4 : (side == 32 ? 5 : 0); }
+std::int32_t raw_strategy(int side) {
+    return side == 16 ? 4 : (side == 32 ? 5 : 0);
+}
 
 // The block's transform side; an empty acs signals an all-DCT8 frame.
 int block_side(const FrameCoefficients& fc, std::size_t blk) {
@@ -179,7 +182,8 @@ std::vector<ModularChannel> make_ac_metadata_channels(const FrameCoefficients& f
 // positions, starting past the LLF) followed by those coefficients in the
 // block's natural scan order up to the last nonzero. Returns the token count.
 std::size_t tokenize_ac_group(const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
-                              std::size_t by0, std::size_t gbw, std::size_t gbh, EntropyEncoder& ac) {
+                              std::size_t by0, std::size_t gbw, std::size_t gbh,
+                              EntropyEncoder& ac) {
     const int channel_order[3]{1, 0, 2};  // Y, X, B (decoder LoadBlock order)
     const std::size_t before{ac.num_tokens()};
     for (std::size_t by{0}; by < gbh; ++by) {
@@ -203,7 +207,8 @@ std::size_t tokenize_ac_group(const FrameCoefficients& fc, std::size_t bw, std::
                 ac.add_token(0, nzeros);
                 std::uint32_t remaining{nzeros};
                 for (std::size_t k{covered}; k < size && remaining > 0; ++k) {
-                    const std::int32_t v{fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])]};
+                    const std::int32_t v{
+                        fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])]};
                     ac.add_token(0, pack_signed(v));
                     if (v != 0) {
                         --remaining;
@@ -218,8 +223,10 @@ std::size_t tokenize_ac_group(const FrameCoefficients& fc, std::size_t bw, std::
 // Tokenizes every AC group in raster order into `ac`, returning each group's
 // [begin, end) token range. Shared by the codestream writer and the device
 // reference so both tokenize identically.
-std::vector<std::pair<std::size_t, std::size_t>> tokenize_all_ac_groups(
-    const FrameCoefficients& fc, std::size_t bw, std::size_t bh, EntropyEncoder& ac) {
+std::vector<std::pair<std::size_t, std::size_t>> tokenize_all_ac_groups(const FrameCoefficients& fc,
+                                                                        std::size_t bw,
+                                                                        std::size_t bh,
+                                                                        EntropyEncoder& ac) {
     const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
     const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
     std::vector<std::pair<std::size_t, std::size_t>> ranges(xg * yg);
@@ -249,7 +256,9 @@ struct AcTok {
     std::uint32_t bits;
 };
 
-std::size_t log2_covered(int side) { return side == 16 ? 2 : (side == 32 ? 4 : 0); }
+std::size_t log2_covered(int side) {
+    return side == 16 ? 2 : (side == 32 ? 4 : 0);
+}
 
 // Tokenizes one AC group with libjxl's real per-token contexts, appending the
 // (cluster, symbol, extra-bits) tuples to `out` and accumulating the per-cluster
@@ -258,8 +267,7 @@ std::size_t log2_covered(int side) { return side == 16 ? 2 : (side == 32 ? 4 : 0
 // each coefficient's zero-density context follows the scan.
 void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
                                  std::size_t by0, std::size_t gbw, std::size_t gbh,
-                                 std::vector<std::uint32_t>& cluster_hist,
-                                 std::vector<AcTok>& out,
+                                 std::vector<std::uint32_t>& cluster_hist, std::vector<AcTok>& out,
                                  const std::uint8_t* context_map = nullptr) {
     const int channel_order[3]{1, 0, 2};  // physical planes Y, X, B
     const HybridUintConfig config{};
@@ -284,7 +292,8 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
             for (int c : channel_order) {
                 std::int32_t nz{0};
                 for (std::size_t k{cb}; k < sz; ++k) {
-                    if (fc.ac[c][covered_plane_slot(side, bx0 + sbx, by0 + sby, bw, order[k])] != 0) {
+                    if (fc.ac[c][covered_plane_slot(side, bx0 + sbx, by0 + sby, bw, order[k])] !=
+                        0) {
                         ++nz;
                     }
                 }
@@ -299,10 +308,9 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
     }
 
     const auto emit = [&](std::uint32_t value, std::uint32_t context) {
-        const std::uint8_t cluster{
-            context_map == nullptr
-                ? static_cast<std::uint8_t>(ac_cluster(context))
-                : context_map[context]};
+        const std::uint8_t cluster{context_map == nullptr
+                                       ? static_cast<std::uint8_t>(ac_cluster(context))
+                                       : context_map[context]};
         std::uint32_t symbol{}, nbits{}, bits{};
         config.encode(value, symbol, nbits, bits);
         ++cluster_hist[static_cast<std::size_t>(cluster) * AC_STRIDE + symbol];
@@ -335,8 +343,7 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
                 const bool has_top{sby > 0};
                 const std::int32_t topv{has_top ? nz_norm[c][(sby - 1) * gbw + sbx] : 0};
                 const std::int32_t leftv{has_left ? nz_norm[c][sby * gbw + (sbx - 1)] : 0};
-                const std::uint32_t predicted{
-                    ac_predict_nonzeros(has_left, has_top, topv, leftv)};
+                const std::uint32_t predicted{ac_predict_nonzeros(has_left, has_top, topv, leftv)};
                 emit(nzeros, ac_nonzero_context(predicted, block_ctx));
 
                 const std::uint32_t histo_off{ac_zero_density_offset(block_ctx)};
@@ -346,8 +353,9 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
                     const std::int32_t v{
                         fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])]};
                     const std::uint32_t ctx{
-                        histo_off + ac_zero_density_context(remaining, static_cast<std::uint32_t>(k),
-                                                            static_cast<std::uint32_t>(cb), l2, prev)};
+                        histo_off +
+                        ac_zero_density_context(remaining, static_cast<std::uint32_t>(k),
+                                                static_cast<std::uint32_t>(cb), l2, prev)};
                     emit(pack_signed(v), ctx);
                     prev = v != 0 ? 1u : 0u;
                     remaining -= prev;
@@ -367,8 +375,9 @@ std::vector<std::uint8_t> ac_context_map() {
 }
 
 // Emits a run of clustered AC tokens with the per-cluster prefix codes.
-void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t begin, std::size_t end,
-                    const std::vector<std::uint8_t>& depth, const std::vector<std::uint16_t>& bits) {
+void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t begin,
+                    std::size_t end, const std::vector<std::uint8_t>& depth,
+                    const std::vector<std::uint16_t>& bits) {
     for (std::size_t i{begin}; i < end; ++i) {
         const AcTok& t{toks[i]};
         const std::size_t idx{static_cast<std::size_t>(t.cluster) * AC_STRIDE + t.symbol};
@@ -380,17 +389,17 @@ void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t be
 }
 
 void write_dc_global(BitWriter& w, const FrameCoefficients& fc) {
-    write_bool(w, true);                     // DequantMatrices::DecodeDC all_default
+    write_bool(w, true);  // DequantMatrices::DecodeDC all_default
     write_u32(w, GLOBAL_SCALE_ENC, fc.global_scale);
     write_u32(w, QUANT_DC_ENC, fc.quant_dc);  // Quantizer::Decode
-    write_bool(w, true);                     // DecodeBlockCtxMap is_default
-    write_bool(w, true);                     // ColorCorrelation::DecodeDC all_default
-    write_bool(w, false);                    // modular global has_tree = 0 (no channels)
+    write_bool(w, true);                      // DecodeBlockCtxMap is_default
+    write_bool(w, true);                      // ColorCorrelation::DecodeDC all_default
+    write_bool(w, false);                     // modular global has_tree = 0 (no channels)
 }
 
 // One DcGroup section covering dgw x dgh blocks at block origin (bx0, by0).
-void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw,
-                    std::size_t bx0, std::size_t by0, std::size_t dgw, std::size_t dgh) {
+void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
+                    std::size_t by0, std::size_t dgw, std::size_t dgh) {
     write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
     write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh),
                         DC_PREDICTOR_GRADIENT);
@@ -398,19 +407,17 @@ void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw,
     const std::vector<ModularChannel> meta{make_ac_metadata_channels(fc, bw, bx0, by0, dgw, dgh)};
     const std::size_t count{meta[2].w};  // ACS+QF width = number of first-blocks
     // AcMetadata count - 1, width fixed by the block-count upper bound.
-    write_bits(w, static_cast<std::size_t>(ceil_log2_nonzero(dgw * dgh)),
-               static_cast<std::uint32_t>(count - 1));
+    write_bits(w, ceil_log2_nonzero(dgw * dgh), static_cast<std::uint32_t>(count - 1));
     write_modular_image(w, meta);
 }
 
-std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients& fc,
-                                                        std::size_t bw, std::size_t bh,
-                                                        bool clustered_ac) {
+std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients& fc, std::size_t bw,
+                                                        std::size_t bh, bool clustered_ac) {
     BitWriter body{};
     write_dc_global(body, fc);
     write_dc_group(body, fc, bw, 0, 0, bw, bh);
     // AcGlobal.
-    write_bool(body, true);         // DequantMatrices::Decode all_default
+    write_bool(body, true);  // DequantMatrices::Decode all_default
     // num_histograms: CeilLog2Nonzero(num_groups == 1) == 0 bits.
     write_u32(body, ORDER_ENC, 0);  // used_orders = 0 (natural order)
     if (clustered_ac) {
@@ -441,9 +448,8 @@ std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients&
     return w.bytes();
 }
 
-std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& fc,
-                                                       std::size_t bw, std::size_t bh,
-                                                       bool clustered_ac) {
+std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& fc, std::size_t bw,
+                                                       std::size_t bh, bool clustered_ac) {
     const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
     const std::size_t ydg{ceil_div(bh, DC_GROUP_BLOCKS)};
     const std::size_t num_dc_groups{xdg * ydg};
@@ -474,7 +480,7 @@ std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& 
     }
 
     BitWriter ac_global{};
-    write_bool(ac_global, true);  // DequantMatrices::Decode all_default
+    write_bool(ac_global, true);                              // DequantMatrices::Decode all_default
     write_bits(ac_global, ceil_log2_nonzero(num_groups), 0);  // num_histograms - 1
     write_u32(ac_global, ORDER_ENC, 0);                       // used_orders = 0
 
@@ -586,9 +592,8 @@ AcReference reference_ac_encode(const FrameCoefficients& fc,
     ref.depth.assign(num_clusters * AC_STRIDE, 0);
     ref.bits.assign(num_clusters * AC_STRIDE, 0);
     BitWriter histograms{};
-    write_clustered_prefix_histograms(histograms, context_map.data(), AC_NUM_CONTEXTS,
-                                      num_clusters, cluster_hist.data(), AC_STRIDE,
-                                      HybridUintConfig{},
+    write_clustered_prefix_histograms(histograms, context_map.data(), AC_NUM_CONTEXTS, num_clusters,
+                                      cluster_hist.data(), AC_STRIDE, HybridUintConfig{},
                                       ref.depth.data(), ref.bits.data());
 
     ref.group_streams.reserve(num_groups);
@@ -640,7 +645,7 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
         g.dc_histogram = dc_data.histogram();
 
         BitWriter mid{};
-        write_bits(mid, static_cast<std::size_t>(ceil_log2_nonzero(dgw * dgh)),
+        write_bits(mid, ceil_log2_nonzero(dgw * dgh),
                    static_cast<std::uint32_t>(meta_ch[2].w - 1));  // AcMetadata count - 1
         EntropyEncoder meta_data{1};
         write_modular_header(mid, meta_ch, meta_data);
