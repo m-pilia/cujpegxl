@@ -38,58 +38,82 @@ __device__ inline float dequant_weight(int side, int channel, int raw) {
     return DCT8_DEQUANT_WEIGHTS[channel][raw];
 }
 
-// One thread per 64x64 color tile accumulates its first-blocks' AC-coefficient
-// regression sums and quantizes them to the color map. Shared by device and host.
-__host__ __device__ inline void estimate_tile(const __half* coeffs, const std::int8_t* acs,
-                                              std::size_t bw, std::size_t bh, std::size_t cmw,
-                                              std::size_t tile, std::int8_t* ytox_map,
-                                              std::int8_t* ytob_map) {
-    const std::size_t ctx{tile % cmw};
-    const std::size_t cty{tile / cmw};
-    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    double sxy{0.0};
-    double syy{0.0};
-    double sby{0.0};
-    const std::size_t by_end{cty * 8 + 8 < bh ? cty * 8 + 8 : bh};
-    const std::size_t bx_end{ctx * 8 + 8 < bw ? ctx * 8 + 8 : bw};
-    for (std::size_t by{cty * 8}; by < by_end; ++by) {
-        for (std::size_t bx{ctx * 8}; bx < bx_end; ++bx) {
-            const int side{acs == nullptr ? 8 : acs[by * bw + bx]};
-            if (side == ACS_COVERED) {
-                continue;
-            }
-            for (int raw{0}; raw < side * side; ++raw) {
-                if (raw_is_llf(raw, side)) {
-                    continue;
-                }
-                const std::size_t slot{
-                    covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
-                const double xr{__half2float(coeffs[slot])};
-                const double yr{__half2float(coeffs[cplane + slot])};
-                const double br{__half2float(coeffs[2 * cplane + slot])};
-                sxy += xr * yr;
-                syy += yr * yr;
-                sby += (br - CFL_BASE_B * yr) * yr;
-            }
-        }
+// Number of 8x8 block positions in one 64x64 color tile (8x8), one per reduction
+// lane in the cooperative estimator.
+constexpr int CFL_TILE_POSITIONS = 64;
+
+// FP32 regression partials for the single 8x8 block position (bx, by): the
+// first-block's non-LLF AC coefficients accumulated in raw order (0 if the
+// position is out of image or covered). Shared by device and host so the tile
+// reduction is bit-identical either side.
+__host__ __device__ inline void cfl_block_partial(const __half* coeffs, std::size_t cplane,
+                                                  const std::int8_t* acs, std::size_t bw,
+                                                  std::size_t bh, std::size_t bx, std::size_t by,
+                                                  float& sxy, float& syy, float& sby) {
+    sxy = 0.0f;
+    syy = 0.0f;
+    sby = 0.0f;
+    if (bx >= bw || by >= bh) {
+        return;
     }
-    int mx{0};
-    int mb{0};
-    cfl_maps_from_sums(sxy, syy, sby, &mx, &mb);
-    ytox_map[tile] = static_cast<std::int8_t>(mx);
-    ytob_map[tile] = static_cast<std::int8_t>(mb);
+    const int side{acs == nullptr ? 8 : acs[by * bw + bx]};
+    if (side == ACS_COVERED) {
+        return;
+    }
+    for (int raw{0}; raw < side * side; ++raw) {
+        if (raw_is_llf(raw, side)) {
+            continue;
+        }
+        const std::size_t slot{covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
+        const float xr{__half2float(coeffs[slot])};
+        const float yr{__half2float(coeffs[cplane + slot])};
+        const float br{__half2float(coeffs[2 * cplane + slot])};
+        sxy += xr * yr;
+        syy += yr * yr;
+        sby += (br - CFL_BASE_B * yr) * yr;
+    }
 }
 
+// One CUDA block per 64x64 color tile; one thread per 8x8 block position computes
+// its FP32 regression partials, then the block tree-reduces them and thread 0
+// quantizes the tile's color map. Replaces the former one-thread-per-tile kernel's
+// serial double accumulation with a cooperative single-precision reduction; the
+// host mirror uses the same partials and tree, so device and host agree bit for
+// bit.
 __global__ void estimate_cfl_covered_kernel(const __half* __restrict__ coeffs,
                                             const std::int8_t* __restrict__ acs, std::size_t bw,
                                             std::size_t bh, std::size_t cmw, std::size_t cmh,
                                             std::int8_t* __restrict__ ytox_map,
                                             std::int8_t* __restrict__ ytob_map) {
-    const std::size_t tile{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x};
+    const std::size_t tile{static_cast<std::size_t>(blockIdx.x)};
     if (tile >= cmw * cmh) {
         return;
     }
-    estimate_tile(coeffs, acs, bw, bh, cmw, tile, ytox_map, ytob_map);
+    const int tid{static_cast<int>(threadIdx.x)};
+    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
+    const std::size_t bx{(tile % cmw) * 8 + static_cast<std::size_t>(tid % 8)};
+    const std::size_t by{(tile / cmw) * 8 + static_cast<std::size_t>(tid / 8)};
+
+    __shared__ float rxy[CFL_TILE_POSITIONS];
+    __shared__ float ryy[CFL_TILE_POSITIONS];
+    __shared__ float rby[CFL_TILE_POSITIONS];
+    cfl_block_partial(coeffs, cplane, acs, bw, bh, bx, by, rxy[tid], ryy[tid], rby[tid]);
+    __syncthreads();
+    for (int s{CFL_TILE_POSITIONS / 2}; s > 0; s >>= 1) {
+        if (tid < s) {
+            rxy[tid] += rxy[tid + s];
+            ryy[tid] += ryy[tid + s];
+            rby[tid] += rby[tid + s];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        int mx{0};
+        int mb{0};
+        cfl_maps_from_sums(rxy[0], ryy[0], rby[0], &mx, &mb);
+        ytox_map[tile] = static_cast<std::int8_t>(mx);
+        ytob_map[tile] = static_cast<std::int8_t>(mb);
+    }
 }
 
 // One thread per first-block. Quantizes the AC with per-tile CfL residuals (each
@@ -184,8 +208,8 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
     const std::size_t bh{height / 8};
     const std::size_t cmw{ceil_div(bw, 8)};
     const std::size_t cmh{ceil_div(bh, 8)};
-    const unsigned int threads{128};
-    const unsigned int blocks{static_cast<unsigned int>((cmw * cmh + threads - 1) / threads)};
+    const unsigned int threads{CFL_TILE_POSITIONS};
+    const unsigned int blocks{static_cast<unsigned int>(cmw * cmh)};
     estimate_cfl_covered_kernel<<<blocks, threads>>>(coeffs, acs, bw, bh, cmw, cmh, ytox_map,
                                                      ytob_map);
     const cudaError_t launch{cudaGetLastError()};
@@ -199,8 +223,28 @@ void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std
     const std::size_t bh{height / 8};
     const std::size_t cmw{ceil_div(bw, 8)};
     const std::size_t cmh{ceil_div(bh, 8)};
+    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
     for (std::size_t tile{0}; tile < cmw * cmh; ++tile) {
-        estimate_tile(coeffs, acs, bw, bh, cmw, tile, ytox_map, ytob_map);
+        float rxy[CFL_TILE_POSITIONS];
+        float ryy[CFL_TILE_POSITIONS];
+        float rby[CFL_TILE_POSITIONS];
+        for (int t{0}; t < CFL_TILE_POSITIONS; ++t) {
+            const std::size_t bx{(tile % cmw) * 8 + static_cast<std::size_t>(t % 8)};
+            const std::size_t by{(tile / cmw) * 8 + static_cast<std::size_t>(t / 8)};
+            cfl_block_partial(coeffs, cplane, acs, bw, bh, bx, by, rxy[t], ryy[t], rby[t]);
+        }
+        for (int s{CFL_TILE_POSITIONS / 2}; s > 0; s >>= 1) {
+            for (int t{0}; t < s; ++t) {
+                rxy[t] += rxy[t + s];
+                ryy[t] += ryy[t + s];
+                rby[t] += rby[t + s];
+            }
+        }
+        int mx{0};
+        int mb{0};
+        cfl_maps_from_sums(rxy[0], ryy[0], rby[0], &mx, &mb);
+        ytox_map[tile] = static_cast<std::int8_t>(mx);
+        ytob_map[tile] = static_cast<std::int8_t>(mb);
     }
 }
 
