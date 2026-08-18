@@ -39,6 +39,15 @@ jobs:
       - name: Build and test
         run: bazelisk test //... --test_tag_filters=-gpu
 
+      - name: Build and test (ASan)
+        run: bazelisk test --config=asan //... --test_tag_filters=-gpu,-no-sanitizers
+
+      - name: Build and test (UBSan)
+        run: bazelisk test --config=ubsan //... --test_tag_filters=-gpu,-no-sanitizers
+
+      - name: Build and test (TSan)
+        run: bazelisk test --config=tsan //... --test_tag_filters=-gpu,-no-sanitizers
+
       - name: Build CMake install tree
         run: bazelisk build //packaging:install_tree
 

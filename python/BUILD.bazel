@@ -33,6 +33,10 @@ py_test(
     name = "pycujpegxl_test",
     srcs = ["pycujpegxl_test.py"],
     imports = ["."],
+    tags = [
+        # The instrumented pybind extension cannot be dlopen'd by an uninstrumented CPython
+        "no-sanitizers",
+    ],
     deps = [":pycujpegxl"],
 )
 

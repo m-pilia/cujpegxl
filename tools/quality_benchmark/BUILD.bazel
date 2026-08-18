@@ -100,6 +100,10 @@ py_test(
         "../corpus",
         "../../python",
     ],
+    tags = [
+        # Transitively imports the pycujpegxl extension
+        "no-sanitizers",
+    ],
     deps = [
         ":quality_benchmark_lib",
         "//tools/corpus:corpus_prep_lib",

@@ -20,6 +20,30 @@ build --@rules_cuda//cuda:runtime=@cuda//:cuda_runtime_static
 
 test --test_output=errors
 
+build:asan --features=asan
+build:asan --copt=-O1
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --copt=-g
+build:asan --strip=never
+build:asan --test_env=ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+test:asan --test_tag_filters=-no-sanitizers
+
+build:ubsan --features=ubsan
+build:ubsan --copt=-fno-sanitize-recover=all
+build:ubsan --copt=-fno-omit-frame-pointer
+build:ubsan --copt=-g
+build:ubsan --strip=never
+build:ubsan --test_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+test:ubsan --test_tag_filters=-no-sanitizers
+
+build:tsan --features=tsan
+build:tsan --copt=-O1
+build:tsan --copt=-fno-omit-frame-pointer
+build:tsan --copt=-g
+build:tsan --strip=never
+build:tsan --test_env=TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
+test:tsan --test_tag_filters=-no-sanitizers
+
 build:clang-tidy --aspects=//tools/lint:linters.bzl%clang_tidy
 build:clang-tidy --output_groups=rules_lint_human
 build:clang-tidy --@aspect_rules_lint//lint:fail_on_violation
