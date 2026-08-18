@@ -96,6 +96,7 @@ def download_original(
 ) -> pathlib.Path:
     dest = cache_path(entry, cache_dir)
     if dest.exists() and (not entry["sha1"] or _hash_file(dest, "sha1") == entry["sha1"]):
+        print(f"stage A: {dest.name} (cached)", file=sys.stderr)
         return dest
     for attempt in range(RETRIES):
         try:
@@ -103,16 +104,19 @@ def download_original(
         except urllib.error.HTTPError as err:
             if err.code in (429, 503) and attempt < RETRIES - 1:
                 retry_after = err.headers.get("Retry-After")
-                time.sleep(
-                    min(
-                        max(
-                            float(retry_after) if retry_after is not None else 0.0,
-                            BACKOFF_BASE_S * 2.0**attempt,
-                        ),
-                        BACKOFF_MAX_S,
-                    )
-                    + rate_limiter.note_rate_limit()
+                wait = min(
+                    max(
+                        float(retry_after) if retry_after is not None else 0.0,
+                        BACKOFF_BASE_S * 2.0**attempt,
+                    ),
+                    BACKOFF_MAX_S,
+                ) + rate_limiter.note_rate_limit()
+                print(
+                    f"stage A: {dest.name} rate-limited (HTTP {err.code}), "
+                    f"retrying in {wait:.0f}s",
+                    file=sys.stderr,
                 )
+                time.sleep(wait)
                 continue
             raise RuntimeError(f"{entry['name']}: download failed: {err}") from err
         except (urllib.error.URLError, TimeoutError) as err:
@@ -127,6 +131,7 @@ def download_original(
         tmp.write_bytes(data)
         tmp.replace(dest)
         rate_limiter.note_success()
+        print(f"stage A: {dest.name} ({len(data) >> 20} MiB)", file=sys.stderr)
         time.sleep(DOWNLOAD_PAUSE_S)
         return dest
     raise RuntimeError("unreachable")
