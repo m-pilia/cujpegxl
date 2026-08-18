@@ -52,6 +52,43 @@ def test_nv12_to_rgb_round_trips_luma_and_stays_bounded() -> None:
     assert recon.mean() < 256 and recon.min() >= 0
 
 
+def _jpeg_from_bt709_ycbcr(rgb: np.ndarray) -> bytes:
+    """Emulate nvJPEG: store BT.709 full-range Y'CbCr in a bare JFIF stream."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    pixels = rgb.astype(np.float64)
+    y = np.rint(pixels @ cp._RGB_TO_Y)
+    cb = np.rint(pixels @ cp._RGB_TO_CB + 128.0)
+    cr = np.rint(pixels @ cp._RGB_TO_CR + 128.0)
+    ycbcr = np.clip(np.stack([y, cb, cr], axis=-1), 0, 255).astype(np.uint8)
+    buf = BytesIO()
+    Image.fromarray(ycbcr, mode="YCbCr").save(buf, "JPEG", quality=100, subsampling=0)
+    return buf.getvalue()
+
+
+def test_decode_jpeg_uses_bt709_not_jfif_bt601() -> None:
+    rgb = _gradient(64, 64)
+    jpeg = _jpeg_from_bt709_ycbcr(rgb)
+
+    recovered = qb._decode_jpeg(jpeg)
+    assert recovered.shape == rgb.shape
+    assert recovered.dtype == np.uint8
+
+    from io import BytesIO
+
+    from PIL import Image
+
+    with Image.open(BytesIO(jpeg)) as handle:
+        jfif_rgb = np.asarray(handle.convert("RGB"), dtype=np.uint8)
+
+    bt709_err = np.mean(np.abs(recovered.astype(int) - rgb.astype(int)))
+    bt601_err = np.mean(np.abs(jfif_rgb.astype(int) - rgb.astype(int)))
+    assert bt709_err < 2.0
+    assert bt601_err > 3.0 * bt709_err
+
+
 def test_identical_images_score_as_a_perfect_match() -> None:
     img = _gradient(64, 64)
     assert abs(pylibjxl.psnr(img, img) - 99.0) < 1e-9

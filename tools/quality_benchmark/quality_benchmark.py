@@ -133,8 +133,11 @@ def nv12_to_rgb(nv12: bytes | np.ndarray, width: int, height: int) -> np.ndarray
     cb_up = _linear_upsample_2x(inter[:, 0::2])
     cr_up = _linear_upsample_2x(inter[:, 1::2])
     ycbcr = np.stack([luma, cb_up - 128.0, cr_up - 128.0], axis=-1)
-    rgb = np.clip(np.rint(ycbcr @ _RGB_FROM_YCBCR.T), 0, 255).astype(np.uint8)
-    return rgb
+    return _ycbcr_to_rgb(ycbcr)
+
+
+def _ycbcr_to_rgb(ycbcr_centered: np.ndarray) -> np.ndarray:
+    return np.clip(np.rint(ycbcr_centered @ _RGB_FROM_YCBCR.T), 0, 255).astype(np.uint8)
 
 
 def _score(reference: np.ndarray, distorted: np.ndarray) -> dict:
@@ -146,8 +149,26 @@ def _score(reference: np.ndarray, distorted: np.ndarray) -> dict:
 
 
 def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
+    """Decode nvJPEG output to RGB on the pipeline's BT.709 full-range convention.
+
+    nvJPEG emits a bare JFIF stream, so libjpeg's default RGB decode applies the
+    JFIF/BT.601 inverse. But the stored Y'CbCr was produced by corpus_prep's
+    BT.709 full-range matrix, so that mismatch imposes a fixed chroma rotation on
+    every pixel (a butteraugli floor independent of quality). `draft("YCbCr")`
+    makes libjpeg hand back the raw stored samples without color conversion, and
+    inverting them with _RGB_FROM_YCBCR keeps nvJPEG on the same convention as
+    the reference and the other codecs.
+    """
     with Image.open(io.BytesIO(jpeg_bytes)) as handle:
-        return np.asarray(handle.convert("RGB"), dtype=np.uint8)
+        handle.draft("YCbCr", handle.size)
+        if handle.mode != "YCbCr":
+            raise RuntimeError(
+                f"expected raw YCbCr decode, got mode {handle.mode!r}; the BT.709 "
+                "inverse would be applied to the wrong color space"
+            )
+        ycbcr = np.asarray(handle, dtype=np.float64)
+    ycbcr[..., 1:] -= 128.0
+    return _ycbcr_to_rgb(ycbcr)
 
 
 def _ensure_4k(rgb: np.ndarray, name: str) -> None:
