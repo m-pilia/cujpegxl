@@ -19,3 +19,7 @@ common --repo_env=CUDA_COMPILER_USE_CC_TOOLCHAIN=true
 build --@rules_cuda//cuda:runtime=@cuda//:cuda_runtime_static
 
 test --test_output=errors
+
+build:clang-tidy --aspects=//tools/lint:linters.bzl%clang_tidy
+build:clang-tidy --output_groups=rules_lint_human
+build:clang-tidy --@aspect_rules_lint//lint:fail_on_violation

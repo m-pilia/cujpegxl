@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+
+format_multirun(
+    name = "format",
+    c = "@llvm_toolchain//:clang-format",
+    cc = "@llvm_toolchain//:clang-format",
+    cuda = "@llvm_toolchain//:clang-format",
+    visibility = ["//visibility:public"],
+)

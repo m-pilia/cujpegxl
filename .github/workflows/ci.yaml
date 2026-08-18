@@ -56,15 +56,8 @@ jobs:
         working-directory: examples/bazel_consumer
         run: bazelisk run //:consumer
 
-  format:
-    name: clang-format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install clang-format
-        run: pipx install clang-format==19.1.7
+      - name: Run clang-tidy
+        run: bazelisk build --config=clang-tidy //...
+
       - name: Check formatting
-        run: |
-          find src include cli python examples \
-            \( -name '*.cc' -o -name '*.cu' -o -name '*.h' -o -name '*.c' \) -print0 \
-            | xargs -0 clang-format --dry-run --Werror
+        run: bazelisk run //tools/format:format.check
