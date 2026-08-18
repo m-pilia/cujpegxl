@@ -93,57 +93,44 @@ py::bytes encode_jpeg(const py::array_t<std::uint8_t>& nv12, std::uint32_t width
     nvjpegEncoderState_t state{nullptr};
     nvjpegEncoderParams_t params{nullptr};
     check_nvjpeg(nvjpegCreateSimple(&handle), "CreateSimple");
-    try {
-        check_nvjpeg(nvjpegEncoderStateCreate(handle, &state, nullptr), "EncoderStateCreate");
-        try {
-            check_nvjpeg(nvjpegEncoderParamsCreate(handle, &params, nullptr), "EncoderParamsCreate");
-            try {
-                check_nvjpeg(nvjpegEncoderParamsSetQuality(params, quality, nullptr), "SetQuality");
-                check_nvjpeg(nvjpegEncoderParamsSetSamplingFactors(params, NVJPEG_CSS_420, nullptr),
-                             "SetSamplingFactors");
-
-                nvjpegImage_t image{};
-                image.channel[0] = d_luma;
-                image.pitch[0] = width;
-                image.channel[1] = d_cb;
-                image.pitch[1] = chroma_w;
-                image.channel[2] = d_cr;
-                image.pitch[2] = chroma_w;
-
-                check_nvjpeg(nvjpegEncodeYUV(handle, state, params, &image, NVJPEG_CSS_420,
-                                             static_cast<int>(width), static_cast<int>(height),
-                                             nullptr),
-                             "EncodeYUV");
-                std::size_t max_size{0};
-                check_nvjpeg(nvjpegEncodeGetBufferSize(handle, params, static_cast<int>(width),
-                                                       static_cast<int>(height), &max_size),
-                             "EncodeGetBufferSize");
-                std::vector<std::uint8_t> out(max_size);
-                std::size_t length{out.size()};
-                check_nvjpeg(nvjpegEncodeRetrieveBitstream(handle, state, out.data(), &length,
-                                                           nullptr),
-                             "RetrieveBitstream");
-                check_cuda(cudaDeviceSynchronize(), "sync");
-                out.resize(length);
-                nvjpegEncoderParamsDestroy(params);
-                params = nullptr;
-                return py::bytes(reinterpret_cast<const char*>(out.data()), out.size());
-            } catch (...) {
-                if (params != nullptr) {
-                    nvjpegEncoderParamsDestroy(params);
-                }
-                throw;
-            }
-        } catch (...) {
-            if (state != nullptr) {
-                nvjpegEncoderStateDestroy(state);
-            }
-            throw;
+    struct NvGuard {
+        nvjpegHandle_t& handle;
+        nvjpegEncoderState_t& state;
+        nvjpegEncoderParams_t& params;
+        ~NvGuard() {
+            if (params != nullptr) nvjpegEncoderParamsDestroy(params);
+            if (state != nullptr) nvjpegEncoderStateDestroy(state);
+            if (handle != nullptr) nvjpegDestroy(handle);
         }
-    } catch (...) {
-        nvjpegDestroy(handle);
-        throw;
-    }
+    } nv_guard{handle, state, params};
+    check_nvjpeg(nvjpegEncoderStateCreate(handle, &state, nullptr), "EncoderStateCreate");
+    check_nvjpeg(nvjpegEncoderParamsCreate(handle, &params, nullptr), "EncoderParamsCreate");
+    check_nvjpeg(nvjpegEncoderParamsSetQuality(params, quality, nullptr), "SetQuality");
+    check_nvjpeg(nvjpegEncoderParamsSetSamplingFactors(params, NVJPEG_CSS_420, nullptr),
+                 "SetSamplingFactors");
+
+    nvjpegImage_t image{};
+    image.channel[0] = d_luma;
+    image.pitch[0] = width;
+    image.channel[1] = d_cb;
+    image.pitch[1] = chroma_w;
+    image.channel[2] = d_cr;
+    image.pitch[2] = chroma_w;
+
+    check_nvjpeg(nvjpegEncodeYUV(handle, state, params, &image, NVJPEG_CSS_420,
+                                 static_cast<int>(width), static_cast<int>(height), nullptr),
+                 "EncodeYUV");
+    std::size_t max_size{0};
+    check_nvjpeg(nvjpegEncodeGetBufferSize(handle, params, static_cast<int>(width),
+                                           static_cast<int>(height), &max_size),
+                 "EncodeGetBufferSize");
+    std::vector<std::uint8_t> out(max_size);
+    std::size_t length{out.size()};
+    check_nvjpeg(nvjpegEncodeRetrieveBitstream(handle, state, out.data(), &length, nullptr),
+                 "RetrieveBitstream");
+    check_cuda(cudaDeviceSynchronize(), "sync");
+    out.resize(length);
+    return py::bytes(reinterpret_cast<const char*>(out.data()), out.size());
 }
 
 }  // namespace
