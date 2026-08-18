@@ -1,16 +1,19 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Rate-distortion quality benchmark: cujpegxl vs nvJPEG vs libjxl at 4K.
+"""Rate-distortion quality benchmark: cujpegxl vs nvJPEG vs libjxl.
 
-Encodes the 2160p corpus with all three codecs across a quality/distance
-ladder, decodes each output back to RGB, and scores perceptual quality
-(butteraugli, ssimulacra2) and PSNR against a shared reference. The reference
-is the NV12-reconstructed RGB, i.e. the same 4:2:0-subsampled signal the GPU
-encoders see, so the comparison isolates codec distortion from the shared
-chroma subsampling and gives libjxl no full-chroma advantage. Chroma is
-upsampled with the same bilinear kernel the decoders reconstruct, so a lossless
-codec scores ~0 rather than paying a chroma-upsampling mismatch floor.
+Encodes the corpus at a --resolution rung (2160p by default, 1080p for the
+eval corpus) with all three codecs across a quality/distance ladder, decodes
+each output back to RGB, and scores perceptual quality (butteraugli,
+ssimulacra2) and PSNR against a shared reference. Inputs are always 4K master
+PNGs; the rung frame is derived with the same integer box downscale the corpus
+uses. The reference is the NV12-reconstructed RGB, i.e. the same
+4:2:0-subsampled signal the GPU encoders see, so the comparison isolates codec
+distortion from the shared chroma subsampling and gives libjxl no full-chroma
+advantage. Chroma is upsampled with the same bilinear kernel the decoders
+reconstruct, so a lossless codec scores ~0 rather than paying a
+chroma-upsampling mismatch floor.
 
 cujpegxl and libjxl share the butteraugli-distance axis (so they are directly
 comparable at a given distance); nvJPEG's quality axis is reported as its own
@@ -35,8 +38,7 @@ import pycujpegxl
 import pylibjxl
 import pynvjpeg
 
-FULL_4K_WIDTH: int = cp.FULL_4K_WIDTH
-FULL_4K_HEIGHT: int = cp.FULL_4K_HEIGHT
+RESOLUTIONS = ("1080p", "2160p")
 
 # BT.709 full-range Y'CbCr->RGB, the exact inverse of corpus_prep._RGB_TO_*.
 _RGB_FROM_YCBCR = np.linalg.inv(
@@ -57,6 +59,7 @@ DEFAULT_QUALITIES: tuple[int, ...] = (70, 80, 90, 95)
 @dataclass
 class Row:
     image: str
+    resolution: str
     codec: str
     param: str
     coded_bytes: int
@@ -69,6 +72,7 @@ class Row:
     def as_dict(self) -> dict:
         return {
             "image": self.image,
+            "resolution": self.resolution,
             "codec": self.codec,
             "param": self.param,
             "coded_bytes": self.coded_bytes,
@@ -171,25 +175,33 @@ def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     return _ycbcr_to_rgb(ycbcr)
 
 
-def _ensure_4k(rgb: np.ndarray, name: str) -> None:
-    if rgb.shape[1] != FULL_4K_WIDTH or rgb.shape[0] != FULL_4K_HEIGHT:
+def _ensure_shape(rgb: np.ndarray, width: int, height: int, name: str) -> None:
+    if rgb.shape[1] != width or rgb.shape[0] != height:
         raise ValueError(
-            f"{name}: expected {FULL_4K_WIDTH}x{FULL_4K_HEIGHT}, got "
+            f"{name}: expected {width}x{height}, got "
             f"{rgb.shape[1]}x{rgb.shape[0]}"
         )
 
 
+def _rung_for(resolution: str) -> cp.Rung:
+    for rung in cp.LADDER:
+        if rung.name == resolution:
+            return rung
+    raise ValueError(f"unsupported resolution: {resolution}")
+
+
 def bench_image(
     source: pathlib.Path,
+    rung: cp.Rung,
     cfg: BenchConfig,
-    cached: dict[tuple[str, str, str], Row] | None = None,
+    cached: dict[tuple[str, str, str, str], Row] | None = None,
 ) -> list[Row]:
     name = source.name
     rgb = cp.load_rgb(source)
-    _ensure_4k(rgb, name)
-    width = FULL_4K_WIDTH
-    height = FULL_4K_HEIGHT
-    nv12 = cp.rgb_to_nv12(rgb)
+    _ensure_shape(rgb, cp.FULL_4K_WIDTH, cp.FULL_4K_HEIGHT, name)
+    width = rung.width
+    height = rung.height
+    nv12 = cp.rgb_to_nv12(cp.box_downscale(rgb, rung.factor))
     nv12_arr = np.frombuffer(nv12, dtype=np.uint8)
     reference = nv12_to_rgb(nv12, width, height)
 
@@ -198,33 +210,34 @@ def bench_image(
     for distance in cfg.distances:
         jxl = pycujpegxl.encode(nv12_arr, width, height, distance, cfg.device)
         decoded = pylibjxl.decode(jxl)
-        rows.append(_row(name, "cujpegxl", f"d={distance}", len(jxl), width, height,
-                         reference, decoded))
+        rows.append(_row(name, rung.name, "cujpegxl", f"d={distance}", len(jxl),
+                         width, height, reference, decoded))
 
     if cached is None:
         for distance in cfg.distances:
             jxl = pylibjxl.encode(reference, distance)
             decoded = pylibjxl.decode(jxl)
-            rows.append(_row(name, "libjxl", f"d={distance}", len(jxl), width, height,
-                             reference, decoded))
+            rows.append(_row(name, rung.name, "libjxl", f"d={distance}", len(jxl),
+                             width, height, reference, decoded))
 
         for quality in cfg.qualities:
             jpg = pynvjpeg.encode(nv12_arr, width, height, quality, cfg.device)
             decoded = _decode_jpeg(jpg)
-            rows.append(_row(name, "nvjpeg", f"q={quality}", len(jpg), width, height,
-                             reference, decoded))
+            rows.append(_row(name, rung.name, "nvjpeg", f"q={quality}", len(jpg),
+                             width, height, reference, decoded))
     else:
-        rows.extend(cached[(name, "libjxl", f"d={d}")] for d in cfg.distances)
-        rows.extend(cached[(name, "nvjpeg", f"q={q}")] for q in cfg.qualities)
+        rows.extend(cached[(rung.name, name, "libjxl", f"d={d}")] for d in cfg.distances)
+        rows.extend(cached[(rung.name, name, "nvjpeg", f"q={q}")] for q in cfg.qualities)
 
     return rows
 
 
-def _row(image: str, codec: str, param: str, coded_bytes: int, width: int, height: int,
-         reference: np.ndarray, decoded: np.ndarray) -> Row:
+def _row(image: str, resolution: str, codec: str, param: str, coded_bytes: int,
+         width: int, height: int, reference: np.ndarray, decoded: np.ndarray) -> Row:
     scores = _score(reference, decoded)
     return Row(
         image=image,
+        resolution=resolution,
         codec=codec,
         param=param,
         coded_bytes=coded_bytes,
@@ -235,21 +248,28 @@ def _row(image: str, codec: str, param: str, coded_bytes: int, width: int, heigh
 
 
 def _load_cached_rows(
-    path: pathlib.Path, frames: list[pathlib.Path], cfg: BenchConfig
-) -> dict[tuple[str, str, str], Row]:
-    cache = {
-        (row["image"], row["codec"], row["param"]): Row(**row)
-        for row in json.loads(path.read_text())
-        if row["codec"] != "cujpegxl"
-    }
+    path: pathlib.Path, frames: list[pathlib.Path], cfg: BenchConfig, resolution: str
+) -> dict[tuple[str, str, str, str], Row]:
+    cache: dict[tuple[str, str, str, str], Row] = {}
+    for raw in json.loads(path.read_text()):
+        if raw["codec"] == "cujpegxl":
+            continue
+        if "resolution" not in raw:
+            raise ValueError(
+                f"{path}: row {raw['image']} {raw['codec']} {raw['param']} has no "
+                "resolution field; the cache predates per-resolution rows and "
+                "must be regenerated without --cached-input."
+            )
+        row = Row(**raw)
+        cache[(row.resolution, row.image, row.codec, row.param)] = row
     missing = [
-        f"{frame.name} {codec} {param}"
+        f"{resolution} {frame.name} {codec} {param}"
         for frame in frames
         for codec, param in [
             *(("libjxl", f"d={distance}") for distance in cfg.distances),
             *(("nvjpeg", f"q={quality}") for quality in cfg.qualities),
         ]
-        if (frame.name, codec, param) not in cache
+        if (resolution, frame.name, codec, param) not in cache
     ]
     if missing:
         raise ValueError(
@@ -289,6 +309,12 @@ def main(argv: list[str] | None = None) -> int:
         default=pathlib.Path("data"),
         help="Directory with source PNG frames (default: data).",
     )
+    parser.add_argument(
+        "--resolution",
+        choices=RESOLUTIONS,
+        default="2160p",
+        help="Corpus rung to benchmark; masters are 4K PNGs downscaled to it.",
+    )
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
         "--distances",
@@ -325,16 +351,17 @@ def main(argv: list[str] | None = None) -> int:
         qualities=tuple(args.qualities),
         device=args.device,
     )
+    rung = _rung_for(args.resolution)
     frames = _data_frames(args.data_dir)
     cached = (
-        _load_cached_rows(args.cached_input, frames, cfg)
+        _load_cached_rows(args.cached_input, frames, cfg, rung.name)
         if args.cached_input is not None
         else None
     )
 
     all_rows: list[Row] = []
     for source in frames:
-        all_rows.extend(bench_image(source, cfg, cached))
+        all_rows.extend(bench_image(source, rung, cfg, cached))
 
     print(_format_table(all_rows))
 
