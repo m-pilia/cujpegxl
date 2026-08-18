@@ -35,7 +35,9 @@ CUJPEGXL_VL_HD inline std::size_t covered_blocks_side(std::size_t block_dim) {
 // non-zero signal; covered blocks are skipped by selection and entropy.
 constexpr std::int8_t ACS_COVERED = 0;
 
-inline bool acs_is_first_block(std::int8_t signal) { return signal != ACS_COVERED; }
+inline bool acs_is_first_block(std::int8_t signal) {
+    return signal != ACS_COVERED;
+}
 
 // Coefficients stored per 8x8 block position in the coefficient buffer. Every
 // position reserves a full 8x8 block's worth of slots (64); a first-block of side
@@ -50,8 +52,8 @@ constexpr std::size_t COEFFS_PER_BLOCK = 64;
 // row-major: covered ordinal q = raw / COEFFS_PER_BLOCK selects covered block
 // (by + q/side, bx + q%side); the low bits raw % COEFFS_PER_BLOCK are the slot.
 CUJPEGXL_VL_HD inline std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx,
-                                                    std::size_t by, std::size_t bw,
-                                                    std::size_t raw_index) {
+                                                     std::size_t by, std::size_t bw,
+                                                     std::size_t raw_index) {
     const std::size_t side{covered_blocks_side(block_dim)};
     const std::size_t q{raw_index / COEFFS_PER_BLOCK};
     const std::size_t slot{raw_index % COEFFS_PER_BLOCK};
@@ -77,15 +79,16 @@ CUJPEGXL_VL_HD inline double vl_ortho_basis(std::size_t m, std::size_t k, std::s
                       static_cast<double>(k) / md);
 }
 
-// Low-frequency -> DC derivation: given the `block_dim*block_dim` transposed-
-// raster DCT coefficients of one square block (forward_dctN layout), writes the
-// covered_blocks_side^2 DC values (row-major, dc[Y*side + X] for covered block
-// row Y, column X), matching libjxl's DCFromLowestFrequencies for the square
-// DCTNxN strategy. These are the DC-image entries the covered 8x8 positions take.
-CUJPEGXL_VL_HD inline void dc_from_llf(std::size_t block_dim, const float* coeffs, float* dc) {
-    const std::size_t m{covered_blocks_side(block_dim)};
+// Low-frequency -> DC derivation from the m*m low-frequency corner (m =
+// covered_blocks_side), read as `llf[fx*stride + fy]`. Writes the m*m DC values
+// (row-major, dc[Y*m + X] for covered block row Y, column X), matching libjxl's
+// DCFromLowestFrequencies for the square DCTNxN strategy. `stride` is the source
+// block's row pitch: block_dim for a full transposed-raster block, or m for a
+// compacted corner.
+CUJPEGXL_VL_HD inline void dc_from_llf_strided(std::size_t m, const float* llf, std::size_t stride,
+                                               float* dc) {
     if (m == 1) {
-        dc[0] = coeffs[0];
+        dc[0] = llf[0];
         return;
     }
     // libjxl DCTResampleScales<N, N/8> for the covered-side ReinterpretingIDCT.
@@ -97,7 +100,7 @@ CUJPEGXL_VL_HD inline void dc_from_llf(std::size_t block_dim, const float* coeff
             double sum{0.0};
             for (std::size_t fx{0}; fx < m; ++fx) {
                 for (std::size_t fy{0}; fy < m; ++fy) {
-                    const double c{coeffs[fx * block_dim + fy]};
+                    const double c{llf[fx * stride + fy]};
                     sum += vl_ortho_basis(m, fx, out_x) * vl_ortho_basis(m, fy, out_y) * c *
                            scale[fx] * scale[fy];
                 }
@@ -105,6 +108,12 @@ CUJPEGXL_VL_HD inline void dc_from_llf(std::size_t block_dim, const float* coeff
             dc[out_y * m + out_x] = static_cast<float>(static_cast<double>(m) * sum);
         }
     }
+}
+
+// Convenience overload reading the corner in-place from a full block_dim*block_dim
+// transposed-raster block.
+CUJPEGXL_VL_HD inline void dc_from_llf(std::size_t block_dim, const float* coeffs, float* dc) {
+    dc_from_llf_strided(covered_blocks_side(block_dim), coeffs, block_dim, dc);
 }
 
 }  // namespace cujpegxl

@@ -92,9 +92,12 @@ __global__ void estimate_cfl_covered_kernel(const __half* __restrict__ coeffs,
     estimate_tile(coeffs, acs, bw, bh, cmw, tile, ytox_map, ytob_map);
 }
 
-// One thread per first-block. Gathers the block's raw coefficients, quantizes
-// the AC with per-tile CfL residuals (Y roundtrip drives X/B), and derives the DC
-// from the low frequencies with the base correlation.
+// One thread per first-block. Quantizes the AC with per-tile CfL residuals (each
+// coefficient independent, so the raw coefficients and the Y roundtrip are
+// per-iteration scalars, not buffered), then derives the DC from the compacted
+// cx*cx low-frequency corner with the base correlation. Reading coefficients on
+// demand replaces the former kernel's four `[32*32]` local arrays (16 KB/thread,
+// spilled) with a cx*cx <= 16-entry corner that stays in registers.
 __global__ void quantize_residual_kernel(
     const __half* __restrict__ coeffs, const std::int8_t* __restrict__ acs,
     const std::int8_t* __restrict__ ytox_map, const std::int8_t* __restrict__ ytob_map,
@@ -120,44 +123,42 @@ __global__ void quantize_residual_kernel(
     const float ytox{cfl_ytox_ratio(ytox_map == nullptr ? 0 : ytox_map[tile])};
     const float ytob{cfl_ytob_ratio(ytob_map == nullptr ? 0 : ytob_map[tile])};
 
-    float xs[32 * 32];
-    float ys[32 * 32];
-    float bs[32 * 32];
-    float y_round[32 * 32];
+    float llf_x[16];
+    float llf_y[16];
+    float llf_b[16];
     for (int raw{0}; raw < n * n; ++raw) {
         const std::size_t slot{covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))};
-        xs[raw] = __half2float(coeffs[slot]);
-        ys[raw] = __half2float(coeffs[cplane + slot]);
-        bs[raw] = __half2float(coeffs[2 * cplane + slot]);
-    }
-
-    for (int raw{0}; raw < n * n; ++raw) {
-        const std::size_t slot{covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))};
+        const float xr{__half2float(coeffs[slot])};
+        const float yr{__half2float(coeffs[cplane + slot])};
+        const float br{__half2float(coeffs[2 * cplane + slot])};
         if (raw_is_llf(raw, n)) {
-            y_round[raw] = 0.0f;
+            const int lp{(raw / n) * cx + (raw % n)};
+            llf_x[lp] = xr;
+            llf_y[lp] = yr;
+            llf_b[lp] = br;
             ac[slot] = 0;
             ac[cplane + slot] = 0;
             ac[2 * cplane + slot] = 0;
             continue;
         }
         const float wy{dequant_weight(n, 1, raw)};
-        const int qy{static_cast<int>(lrintf(ys[raw] * qgsf / wy))};
-        y_round[raw] = static_cast<float>(qy) * wy / qgsf;
+        const int qy{static_cast<int>(lrintf(yr * qgsf / wy))};
+        const float y_round{static_cast<float>(qy) * wy / qgsf};
         ac[cplane + slot] = static_cast<std::int16_t>(qy);
 
         const float wx{dequant_weight(n, 0, raw)};
-        ac[slot] = static_cast<std::int16_t>(lrintf((xs[raw] - ytox * y_round[raw]) * qgsf / wx));
+        ac[slot] = static_cast<std::int16_t>(lrintf((xr - ytox * y_round) * qgsf / wx));
         const float wb{dequant_weight(n, 2, raw)};
         ac[2 * cplane + slot] =
-            static_cast<std::int16_t>(lrintf((bs[raw] - ytob * y_round[raw]) * qgsf / wb));
+            static_cast<std::int16_t>(lrintf((br - ytob * y_round) * qgsf / wb));
     }
 
     float dc_x[16];
     float dc_y[16];
     float dc_b[16];
-    dc_from_llf(n, xs, dc_x);
-    dc_from_llf(n, ys, dc_y);
-    dc_from_llf(n, bs, dc_b);
+    dc_from_llf_strided(cx, llf_x, cx, dc_x);
+    dc_from_llf_strided(cx, llf_y, cx, dc_y);
+    dc_from_llf_strided(cx, llf_b, cx, dc_b);
     const float dcq_x{DC_INV_QUANT[0] * dc_scale};
     const float dcq_y{DC_INV_QUANT[1] * dc_scale};
     const float dcq_b{DC_INV_QUANT[2] * dc_scale};
