@@ -1,0 +1,8 @@
+{
+  "query": {
+    "categorymembers": [
+      {"pageid": 1004, "ns": 6, "title": "File:Matterton Glacier.tif"},
+      {"pageid": 1006, "ns": 6, "title": "File:Blue hour harbour.jpg"}
+    ]
+  }
+}

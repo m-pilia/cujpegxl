@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
+package(default_visibility = ["//visibility:public"])
+
+py_library(
+    name = "query_lib",
+    srcs = ["query.py"],
+    imports = ["."],
+)
+
+py_binary(
+    name = "query",
+    srcs = ["query.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "query_test",
+    srcs = ["query_test.py"],
+    data = glob(["testdata/*.json"]),
+    deps = [":query_lib"],
+    imports = ["."],
+)

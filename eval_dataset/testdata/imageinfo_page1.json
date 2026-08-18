@@ -1,0 +1,81 @@
+{
+  "query": {
+    "pages": {
+      "1001": {
+        "pageid": 1001,
+        "ns": 6,
+        "title": "File:Zurich skyline panorama.jpg",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/a/ab/Zurich_skyline_panorama.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Zurich_skyline_panorama.jpg",
+            "width": 7952,
+            "height": 5304,
+            "mime": "image/jpeg",
+            "sha1": "5c1a0c5c4ad5b3e2f6d8e0f2ab93a0e21c7d54b9",
+            "extmetadata": {
+              "Artist": {
+                "value": "<a href=\"https://example.org/user\" title=\"Example\">&quot;Jane&lt;Doe&gt;&quot;</a> from Zurich",
+                "source": "commons-templates"
+              },
+              "LicenseShortName": {
+                "value": "CC BY-SA 4.0",
+                "source": "commons-templates"
+              }
+            }
+          }
+        ]
+      },
+      "1002": {
+        "pageid": 1002,
+        "ns": 6,
+        "title": "File:Antiguo faro de Akranes, Vesturland.JPG",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/c/c1/Antiguo_faro_de_Akranes.JPG",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Antiguo_faro_de_Akranes,_Vesturland.JPG",
+            "width": 4000,
+            "height": 3000,
+            "mime": "image/jpeg",
+            "sha1": "1111111111111111111111111111111111111111",
+            "extmetadata": {
+              "Artist": {"value": "Diego Delso", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC BY-SA 4.0", "source": "commons-templates"}
+            }
+          }
+        ]
+      },
+      "1003": {
+        "pageid": 1003,
+        "ns": 6,
+        "title": "File:Small flower.png",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/Small_flower.png",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Small_flower.png",
+            "width": 1920,
+            "height": 1080,
+            "mime": "image/png",
+            "sha1": "2222222222222222222222222222222222222222",
+            "extmetadata": {
+              "Artist": {"value": "Nobody", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC0", "source": "commons-templates"}
+            }
+          }
+        ]
+      },
+      "1005": {
+        "pageid": 1005,
+        "ns": 6,
+        "title": "File:Vanished image.jpg",
+        "missing": "",
+        "known": "",
+        "imagerepository": "",
+        "imageinfo": []
+      }
+    }
+  }
+}

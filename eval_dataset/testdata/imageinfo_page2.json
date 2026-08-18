@@ -1,0 +1,42 @@
+{
+  "query": {
+    "pages": {
+      "1004": {
+        "pageid": 1004,
+        "ns": 6,
+        "title": "File:Matterton Glacier.tif",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/3/3d/Matterton_Glacier.tif",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Matterton_Glacier.tif",
+            "width": 8256,
+            "height": 5504,
+            "mime": "image/tiff",
+            "sha1": "3333333333333333333333333333333333333333"
+          }
+        ]
+      },
+      "1006": {
+        "pageid": 1006,
+        "ns": 6,
+        "title": "File:Blue hour harbour.jpg",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/9/98/Blue_hour_harbour.jpg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Blue_hour_harbour.jpg",
+            "width": 6000,
+            "height": 4000,
+            "mime": "image/jpeg",
+            "sha1": "6666666666666666666666666666666666666666",
+            "extmetadata": {
+              "Artist": {"value": "Harbour &amp; Co.\nPhotography", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC BY 4.0", "source": "commons-templates"}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

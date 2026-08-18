@@ -1,0 +1,46 @@
+{
+  "query": {
+    "pages": {
+      "2001": {
+        "pageid": 2001,
+        "ns": 6,
+        "title": "File:Wide banner.svg",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Wide_banner.svg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Wide_banner.svg",
+            "width": 5000,
+            "height": 3000,
+            "mime": "image/svg+xml",
+            "sha1": "4444444444444444444444444444444444444444",
+            "extmetadata": {
+              "Artist": {"value": "Diagram maker", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC BY 4.0", "source": "commons-templates"}
+            }
+          }
+        ]
+      },
+      "2002": {
+        "pageid": 2002,
+        "ns": 6,
+        "title": "File:Animation loop.gif",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/5/5e/Animation_loop.gif",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Animation_loop.gif",
+            "width": 4000,
+            "height": 4000,
+            "mime": "image/gif",
+            "sha1": "7777777777777777777777777777777777777777",
+            "extmetadata": {
+              "Artist": {"value": "Animator", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC0", "source": "commons-templates"}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

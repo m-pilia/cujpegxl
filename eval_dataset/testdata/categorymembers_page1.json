@@ -1,0 +1,14 @@
+{
+  "continue": {
+    "cmcontinue": "file|SOMETOKEN|189999",
+    "continue": "-||"
+  },
+  "query": {
+    "categorymembers": [
+      {"pageid": 1001, "ns": 6, "title": "File:Zurich skyline panorama.jpg"},
+      {"pageid": 1002, "ns": 6, "title": "File:Antiguo faro de Akranes, Vesturland.JPG"},
+      {"pageid": 1003, "ns": 6, "title": "File:Small flower.png"},
+      {"pageid": 1005, "ns": 6, "title": "File:Vanished image.jpg"}
+    ]
+  }
+}
