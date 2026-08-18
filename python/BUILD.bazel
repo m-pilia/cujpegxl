@@ -56,10 +56,7 @@ py_test(
     name = "pycujpegxl_encode_gpu_test",
     srcs = ["pycujpegxl_encode_gpu_test.py"],
     imports = ["."],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":pycujpegxl",
         "//tools/budget:budget_model_lib",

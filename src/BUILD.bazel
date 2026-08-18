@@ -97,10 +97,7 @@ cuda_library(
 cc_test(
     name = "transform_select_gpu_test",
     srcs = ["transform_select_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":transform_select",
         ":vardct_layout",
@@ -126,10 +123,7 @@ cuda_library(
 cc_test(
     name = "frontend_transform_gpu_test",
     srcs = ["frontend_transform_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":frontend_transform",
         ":transform_select",
@@ -194,10 +188,7 @@ cuda_library(
 cc_test(
     name = "frontend_quantize_gpu_test",
     srcs = ["frontend_quantize_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":cfl",
         ":frontend_quantize",
@@ -210,10 +201,7 @@ cc_test(
 cc_test(
     name = "cfl_gpu_test",
     srcs = ["cfl_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":cfl",
         ":cfl_cuda",
@@ -240,10 +228,7 @@ cc_binary(
     name = "nv12_to_xyb_dump",
     testonly = True,
     srcs = ["nv12_to_xyb_dump_main.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [":nv12_to_xyb_dump_lib"],
 )
 
@@ -258,10 +243,7 @@ cc_binary(
     name = "dct_dump",
     testonly = True,
     srcs = ["dct_dump_main.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [":dct_dump_lib"],
 )
 
@@ -335,10 +317,7 @@ cc_binary(
     name = "quant_dump",
     testonly = True,
     srcs = ["quant_dump_main.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [":quant_dump_lib"],
 )
 
@@ -369,10 +348,7 @@ cuda_library(
 cc_test(
     name = "entropy_gpu_test",
     srcs = ["entropy_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":entropy_roundtrip",
         ":vardct_layout",
@@ -406,10 +382,7 @@ cuda_library(
 cc_test(
     name = "frame_encoder_gpu_test",
     srcs = ["frame_encoder_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":frame_encoder",
         "//src/bitstream:frame_assembly",
@@ -433,10 +406,7 @@ cuda_library(
 cc_test(
     name = "dc_entropy_gpu_test",
     srcs = ["dc_entropy_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":dc_entropy_roundtrip",
         ":vardct_layout",
@@ -462,10 +432,7 @@ cc_library(
 cc_test(
     name = "cujpegxl_encode_gpu_test",
     srcs = ["cujpegxl_encode_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":cujpegxl_lib",
         "//:cujpegxl_headers",
@@ -487,10 +454,7 @@ cc_test(
 cc_test(
     name = "query_backend_gpu_test",
     srcs = ["query_backend_gpu_test.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":capability",
         ":capability_cuda",

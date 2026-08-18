@@ -10,10 +10,7 @@ package(default_visibility = ["//visibility:public"])
 cc_binary(
     name = "encode_bench",
     srcs = ["encode_bench.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         "//src:frame_encoder",
         "@cuda//:nvjpeg",

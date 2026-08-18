@@ -44,10 +44,7 @@ pybind_extension(
     name = "pynvjpeg",
     testonly = True,
     srcs = ["pynvjpeg.cc"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     visibility = ["//visibility:public"],
     deps = [
         "@cuda//:cuda_runtime_static",
@@ -85,10 +82,7 @@ py_binary(
         "../corpus",
         "../../python",
     ],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [":quality_benchmark_lib"],
 )
 

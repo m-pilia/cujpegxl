@@ -25,10 +25,7 @@ py_test(
         "//src:nv12_to_xyb_dump",
         "//tools/oracle:libjxl_oracle",
     ],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":reference",
         "//tools/oracle:oracle",
@@ -47,10 +44,7 @@ py_test(
         "//src:dct_dump",
         "//tools/oracle:libjxl_oracle",
     ],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [requirement("numpy")],
 )
 
@@ -121,10 +115,7 @@ py_test(
         "//src:quant_dump",
         "//tools/oracle:libjxl_oracle",
     ],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [requirement("numpy")],
 )
 
@@ -142,10 +133,7 @@ py_test(
     args = ["/usr/bin/djxl"],
     data = ["//data:frames"],
     imports = ["../python"],
-    tags = [
-        "gpu",
-        "manual",
-    ],
+    tags = ["gpu"],
     deps = [
         ":conformance_util",
         "//python:pycujpegxl",
