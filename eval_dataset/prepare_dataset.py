@@ -14,6 +14,11 @@ the resample is always a downscale.
 
 When run through `bazelisk run`, pass absolute --* paths: the py_binary's
 working directory is its runfiles tree, not the workspace.
+
+upload.wikimedia.org rate-limits bulk original downloads (HTTP 429) and asks
+for a serial, paced access pattern: requests are strictly sequential and
+spaced by DOWNLOAD_PAUSE_S; 429/503 responses back off exponentially while
+honoring Retry-After, and a streak of them trips a long client-wide cooldown.
 """
 
 from __future__ import annotations
@@ -36,11 +41,8 @@ import corpus_prep as cp
 
 USER_AGENT = "cujpegxl-eval-dataset/1.0"
 MIME_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/tiff": "tif"}
-# upload.wikimedia.org rate-limits bulk original downloads (HTTP 429) and asks
-# for a serial, paced access pattern: requests are strictly sequential and
-# spaced by DOWNLOAD_PAUSE_S; 429/503 responses back off exponentially while
-# honoring Retry-After, and a streak of them trips a long client-wide cooldown.
-DOWNLOAD_PAUSE_S = 30.0
+
+DOWNLOAD_PAUSE_S = 60.0
 RETRIES = 5
 BACKOFF_BASE_S = 30.0
 BACKOFF_MAX_S = 600.0
