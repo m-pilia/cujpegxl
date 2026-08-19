@@ -56,6 +56,10 @@ A small development set of freely licensed images is bundled in [//data:frames](
 
 The `//eval_dataset` package implements tooling to generate a reproducible evaluation dataset using high-quality and free-license images, while `//tools/quality_benchmark` implements comparative compression quality benchmarking, see [eval_dataset/README.md](https://github.com/m-pilia/cujpegxl/blob/master/eval_dataset/README.md) for information.
 
+Evaluation results using a 100 image subset of the evaluation dataset at 1080p resolution (`bazelisk run //eval_dataset:prepare_dataset -- --resolution 1080p --limit 100 ...`):
+
+![ssimulacra2](doc/2026-08-19_ssimulacra2.png)
+
 ## Code checks
 
 To run tests and various code checks:
