@@ -93,6 +93,7 @@ def download_original(
     cache_dir: pathlib.Path,
     rate_limiter: _RateLimiter,
     fetch: Fetch = _http_get,
+    pause: float = DOWNLOAD_PAUSE_S,
 ) -> pathlib.Path:
     dest = cache_path(entry, cache_dir)
     if dest.exists() and (not entry["sha1"] or _hash_file(dest, "sha1") == entry["sha1"]):
@@ -132,7 +133,7 @@ def download_original(
         tmp.replace(dest)
         rate_limiter.note_success()
         print(f"stage A: {dest.name} ({len(data) >> 20} MiB)", file=sys.stderr)
-        time.sleep(DOWNLOAD_PAUSE_S)
+        time.sleep(pause)
         return dest
     raise RuntimeError("unreachable")
 
@@ -188,13 +189,15 @@ def build_nv12(master_path: pathlib.Path, rung: cp.Rung, out_dir: pathlib.Path) 
     return cp.build_asset(master_path, rgb, rung, out_dir)
 
 
-def _download_all(entries: list[dict], cache_dir: pathlib.Path, fetch: Fetch) -> list[pathlib.Path]:
+def _download_all(
+    entries: list[dict], cache_dir: pathlib.Path, fetch: Fetch, pause: float
+) -> list[pathlib.Path]:
     failures: list[str] = []
     cached: list[pathlib.Path] = []
     rate_limiter = _RateLimiter()
     for entry in entries:
         try:
-            cached.append(download_original(entry, cache_dir, rate_limiter, fetch))
+            cached.append(download_original(entry, cache_dir, rate_limiter, fetch, pause))
         except RuntimeError as err:
             failures.append(str(err))
     if failures:
@@ -211,12 +214,13 @@ def prepare(
     out_dir: pathlib.Path,
     sources_ref: dict,
     fetch: Fetch = _http_get,
+    pause: float = DOWNLOAD_PAUSE_S,
 ) -> dict:
     rung = _rung_for(resolution)
     for directory in (cache_dir, masters_dir, out_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
-    cached = _download_all(entries, cache_dir, fetch)
+    cached = _download_all(entries, cache_dir, fetch, pause)
     print(f"stage A: {len(cached)} originals in {cache_dir}", file=sys.stderr)
 
     masters: list[pathlib.Path] = []
@@ -290,9 +294,12 @@ def main(argv: list[str] | None = None) -> int:
         default=pathlib.Path("eval_dataset/masters"),
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--pause", type=float, default=DOWNLOAD_PAUSE_S)
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be >= 1")
+    if args.pause < 0:
+        parser.error("--pause must be >= 0")
 
     doc = json.loads(args.sources.read_text())
     entries = doc["files"][: args.limit] if args.limit else doc["files"]
@@ -309,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         args.masters_dir,
         args.out_dir,
         sources_ref,
+        pause=args.pause,
     )
     return 0
 

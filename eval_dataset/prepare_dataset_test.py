@@ -104,9 +104,8 @@ class DownloadOriginalTest(unittest.TestCase):
             return self.payload
 
         cache_dir = self.dir / "cache"
-        with mock.patch("time.sleep"):
-            first = pd.download_original(self.entry, cache_dir, pd._RateLimiter(), fetch)
-            second = pd.download_original(self.entry, cache_dir, pd._RateLimiter(), fetch)
+        first = pd.download_original(self.entry, cache_dir, pd._RateLimiter(), fetch, pause=0.0)
+        second = pd.download_original(self.entry, cache_dir, pd._RateLimiter(), fetch, pause=0.0)
         self.assertEqual(first.read_bytes(), self.payload)
         self.assertEqual(second, first)
         self.assertEqual(len(calls), 1)
@@ -292,6 +291,7 @@ class PrepareTest(unittest.TestCase):
             [self.entry],
             resolution,
             sources_ref={"path": "sources.json", "sha256": "0" * 64},
+            pause=0.0,
             **self.dirs,
         )
 
@@ -347,6 +347,7 @@ class PrepareTest(unittest.TestCase):
                     "1080p",
                     sources_ref={"path": "sources.json", "sha256": "0" * 64},
                     fetch=fetch,
+                    pause=0.0,
                     **self.dirs,
                 )
         self.assertIn("tiny", str(ctx.exception))
