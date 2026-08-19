@@ -27,7 +27,13 @@ bazelisk run //tools/quality_benchmark:quality_benchmark -- \
     --distances 0.5 0.7 1.0 1.3 1.6 2.0 2.5 3.0 4.0 \
     --qualities 20 30 40 50 60 70 75 80 85 90 95 100 \
     --data-dir $PWD/eval_dataset/masters \
-    --resolution 1080p
+    --resolution 1080p \
+    --output $PWD/tmp/sweep_1080p_eval_dataset.json
+
+# 4. Compare the codecs on the sweep results.
+bazelisk run //tools/quality_benchmark:result_analysis -- \
+    --input $PWD/tmp/sweep_1080p_eval_dataset.json \
+    --output-dir $PWD/tmp
 ```
 
 Layout after a run:

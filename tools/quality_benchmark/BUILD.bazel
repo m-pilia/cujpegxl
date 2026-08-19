@@ -86,6 +86,12 @@ py_binary(
     deps = [":quality_benchmark_lib"],
 )
 
+py_binary(
+    name = "result_analysis",
+    srcs = ["result_analysis.py"],
+    deps = [requirement("matplotlib")],
+)
+
 py_test(
     name = "quality_benchmark_test",
     srcs = ["quality_benchmark_test.py"],
