@@ -1,9 +1,11 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include "cfl.h"
+#include "cfl_estimate.h"
 
 #include <cuda_runtime.h>
+
+#include "cfl.h"
 
 namespace cujpegxl {
 namespace {

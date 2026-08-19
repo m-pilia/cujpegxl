@@ -82,16 +82,6 @@ CUJPEGXL_CFL_HD inline void cfl_estimate(const float* x, const float* y, const f
     cfl_maps_from_sums(sxy, syy, sby, ytox_map, ytob_map);
 }
 
-// Per-tile CfL estimation. `x`/`y`/`b` hold `num_tiles * coeffs_per_tile`
-// AC coefficients grouped by tile (each tile's coefficients contiguous); `ytox_map`
-// and `ytob_map` receive one signed-int8 factor per tile. Deterministic. The
-// device entry returns false on a CUDA error; the host entry runs the identical
-// per-tile core for validation.
-bool estimate_cfl(const float* x, const float* y, const float* b, std::size_t num_tiles,
-                  std::size_t coeffs_per_tile, std::int8_t* ytox_map, std::int8_t* ytob_map);
-void estimate_cfl_host(const float* x, const float* y, const float* b, std::size_t num_tiles,
-                       std::size_t coeffs_per_tile, std::int8_t* ytox_map, std::int8_t* ytob_map);
-
 // AC quantization helpers shared with the front-end: q = round(coeff * qgsf / w),
 // where qgsf = quant_field * global_scale and w is the per-coefficient dequant
 // weight. The inverse reproduces the decoder's dequantized value.

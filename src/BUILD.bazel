@@ -161,7 +161,9 @@ cc_test(
 
 cuda_library(
     name = "cfl_cuda",
+    testonly = True,
     srcs = ["cfl.cu"],
+    hdrs = ["cfl_estimate.h"],
     copts = RUNTIME_COPTS,
     deps = [":cfl"],
 )
