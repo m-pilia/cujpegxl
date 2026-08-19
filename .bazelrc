@@ -1,4 +1,5 @@
 common --enable_bzlmod
+common --incompatible_default_to_explicit_init_py
 
 build --incompatible_enable_cc_toolchain_resolution
 build --cxxopt=-std=c++17
