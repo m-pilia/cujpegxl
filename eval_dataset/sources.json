@@ -4,6 +4,8 @@
     "category": "Category:Featured pictures on Wikimedia Commons",
     "min_width": 3840,
     "min_height": 2160,
+    "max_width": 8000,
+    "max_height": 8000,
     "mimes": [
       "image/jpeg",
       "image/png",
@@ -20,17 +22,6 @@
       "mime": "image/jpeg",
       "sha1": "a90a22cfa71eeae3003da8bdc61e96b2b9b789b7",
       "author": "Ross, Gordon, 1873-1946, artist",
-      "license": "Public domain"
-    },
-    {
-      "name": "a_sure_horse_for_the_first_money_lccn2002695764_restored",
-      "page": "https://commons.wikimedia.org/wiki/File:%22A_sure_horse_for_the_first_money%22_LCCN2002695764-restored.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/%22A_sure_horse_for_the_first_money%22_LCCN2002695764-restored.jpg",
-      "width": 8032,
-      "height": 5330,
-      "mime": "image/jpeg",
-      "sha1": "c205476e5cdaf3492a5dadda5f14ae04f8307391",
-      "author": "Popular Graphic Arts",
       "license": "Public domain"
     },
     {
@@ -100,28 +91,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "map_of_the_complete_island_of_cuba_loc_2003623399",
-      "page": "https://commons.wikimedia.org/wiki/File:(Map_of_the_complete_island_of_Cuba)._LOC_2003623399.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/93/%28Map_of_the_complete_island_of_Cuba%29._LOC_2003623399.jpg",
-      "width": 10253,
-      "height": 6114,
-      "mime": "image/jpeg",
-      "sha1": "613cc291cdfaf125b518dd29e1b43fab5e0265df",
-      "author": "Vinckeboons, Joan",
-      "license": "Public domain"
-    },
-    {
-      "name": "orgueil_l_glise_saint_ferr_ol_voute_du_choeur",
-      "page": "https://commons.wikimedia.org/wiki/File:(Orgueil)_-_L%27%C3%89glise_Saint-Ferr%C3%A9ol_-_Voute_du_choeur.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/55/%28Orgueil%29_-_L%27%C3%89glise_Saint-Ferr%C3%A9ol_-_Voute_du_choeur.jpg",
-      "width": 8229,
-      "height": 7413,
-      "mime": "image/jpeg",
-      "sha1": "928bbf1d5f96d8c0062e0aa006c14bfcbf4458b2",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "toulouse_enyo_gorgon_mhnt_cut_2010_0_527_maripasoula_guyane_fran",
       "page": "https://commons.wikimedia.org/wiki/File:(Toulouse)_Enyo_gorgon_MHNT_CUT_2010_0_527_-_Maripasoula,_Guyane_France_-_female_dorsal.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/e/e9/%28Toulouse%29_Enyo_gorgon_MHNT_CUT_2010_0_527_-_Maripasoula%2C_Guyane_France_-_female_dorsal.jpg",
@@ -140,17 +109,6 @@
       "height": 4691,
       "mime": "image/jpeg",
       "sha1": "9855b268f35aaa9f9b5f3786c6b07d6e0bc372b5",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "venice_bocca_di_leone_in_the_doge_s_palace",
-      "page": "https://commons.wikimedia.org/wiki/File:(Venice)_Bocca_di_Leone_in_the_Doge%27s_Palace.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/%28Venice%29_Bocca_di_Leone_in_the_Doge%27s_Palace.jpg",
-      "width": 8670,
-      "height": 9552,
-      "mime": "image/jpeg",
-      "sha1": "0c6a81e4972c69987237859fbff2a64e7c9d1952",
       "author": "Didier Descouens",
       "license": "CC BY-SA 4.0"
     },
@@ -206,17 +164,6 @@
       "height": 6627,
       "mime": "image/jpeg",
       "sha1": "51a813f150724d1de8efed4b0aebe7d9ea9960a0",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "001_wild_golden_eagle_and_majinghorn_pfyn_finges_photo_by_giles",
-      "page": "https://commons.wikimedia.org/wiki/File:001_Wild_Golden_Eagle_and_Majinghorn_Pfyn-Finges_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/001_Wild_Golden_Eagle_and_Majinghorn_Pfyn-Finges_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 4719,
-      "mime": "image/jpeg",
-      "sha1": "7b931e2d19ea9e0a84ba4755c4b220eccdfded62",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -287,17 +234,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "003_cheetah_hissing_after_a_meal_in_kalahari_desert_photo_by_gil",
-      "page": "https://commons.wikimedia.org/wiki/File:003_Cheetah_hissing_after_a_meal_in_Kalahari_Desert_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/67/003_Cheetah_hissing_after_a_meal_in_Kalahari_Desert_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "b4aeb3248dd4e5b75bec675fef9f680dbd72c444",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "003_olive_bellied_sunbird_in_flight_at_kibale_forest_national_pa",
       "page": "https://commons.wikimedia.org/wiki/File:003_Olive-bellied_Sunbird_in_flight_at_Kibale_forest_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/f/f7/003_Olive-bellied_Sunbird_in_flight_at_Kibale_forest_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -320,17 +256,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "003_wild_alpine_ibex_sunset_creux_du_van_mont_racine_photo_by_gi",
-      "page": "https://commons.wikimedia.org/wiki/File:003_Wild_Alpine_Ibex_Sunset_Creux_du_Van_Mont_Racine_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9b/003_Wild_Alpine_Ibex_Sunset_Creux_du_Van_Mont_Racine_Photo_by_Giles_Laurent.jpg",
-      "width": 5760,
-      "height": 8640,
-      "mime": "image/jpeg",
-      "sha1": "210e80b5986eec96cdd2bdd2872033d1387084f7",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "004_2018_05_14_extremes_wetter",
       "page": "https://commons.wikimedia.org/wiki/File:004_2018_05_14_Extremes_Wetter.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/004_2018_05_14_Extremes_Wetter.jpg",
@@ -339,17 +264,6 @@
       "mime": "image/jpeg",
       "sha1": "9c81a80065776c266046af66bd1880b12f1c4c37",
       "author": "Friedrich Haag",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "004_chital_in_keoladeo_national_park_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:004_Chital_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d5/004_Chital_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "352f653f38170dd1f8f827c7e44d83d63db85432",
-      "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
     {
@@ -382,17 +296,6 @@
       "height": 3554,
       "mime": "image/jpeg",
       "sha1": "91a87e272cc5b28c703d7ef6f2787d00eeefa538",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "004_sunrise_at_serengeti_national_park_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:004_Sunrise_at_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/3f/004_Sunrise_at_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 22524,
-      "height": 7200,
-      "mime": "image/jpeg",
-      "sha1": "4b1310fc1d6339e5cb3eac6503db5e8cfb23b5c9",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -496,17 +399,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "006_wild_baby_alpine_chamois_creux_du_van_and_swiss_alps_sunset",
-      "page": "https://commons.wikimedia.org/wiki/File:006_Wild_Baby_Alpine_Chamois_Creux_du_Van_and_Swiss_Alps_Sunset_colors_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/dc/006_Wild_Baby_Alpine_Chamois_Creux_du_Van_and_Swiss_Alps_Sunset_colors_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "2a2908340ace7be493d87453d8a20452230dcac8",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "007_greater_flamingos_courtship_display_in_the_camargue_during_m",
       "page": "https://commons.wikimedia.org/wiki/File:007_Greater_flamingos_courtship_display_in_the_Camargue_during_mating_season_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/78/007_Greater_flamingos_courtship_display_in_the_Camargue_during_mating_season_Photo_by_Giles_Laurent.jpg",
@@ -558,17 +450,6 @@
       "height": 5304,
       "mime": "image/jpeg",
       "sha1": "105d82a7dcad743ef81e9787dfecdde458d32271",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "008_milky_way_aligned_with_the_matterhorn_reflecting_in_stellise",
-      "page": "https://commons.wikimedia.org/wiki/File:008_Milky_way_aligned_with_the_Matterhorn_reflecting_in_Stellisee_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/4e/008_Milky_way_aligned_with_the_Matterhorn_reflecting_in_Stellisee_Photo_by_Giles_Laurent.jpg",
-      "width": 6946,
-      "height": 13606,
-      "mime": "image/jpeg",
-      "sha1": "d7597a818634907eecaba73d9b9b72314d8bb234",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -650,17 +531,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "011_jaguar_drinking_in_encontro_das_guas_state_park_photo_by_gil",
-      "page": "https://commons.wikimedia.org/wiki/File:011_Jaguar_drinking_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ec/011_Jaguar_drinking_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8419,
-      "height": 5613,
-      "mime": "image/jpeg",
-      "sha1": "c642015fde6a5821353b0bd7f1391ce70fcd4893",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "011_plains_zebra_eye_close_up_in_etosha_national_park_photo_by_g",
       "page": "https://commons.wikimedia.org/wiki/File:011_Plains_zebra_eye_close-up_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/f/ff/011_Plains_zebra_eye_close-up_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -683,17 +553,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "012_indian_peafowl_in_keoladeo_national_park_photo_by_giles_laur",
-      "page": "https://commons.wikimedia.org/wiki/File:012_Indian_peafowl_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7a/012_Indian_peafowl_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 5760,
-      "height": 8640,
-      "mime": "image/jpeg",
-      "sha1": "036b024f5947f9738a2ad2f47f44a8bfe1868620",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "012_wild_chamois_riederalp_photo_by_giles_laurent",
       "page": "https://commons.wikimedia.org/wiki/File:012_Wild_Chamois_Riederalp_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/7b/012_Wild_Chamois_Riederalp_Photo_by_Giles_Laurent.jpg",
@@ -701,17 +560,6 @@
       "height": 5304,
       "mime": "image/jpeg",
       "sha1": "7cc2e7e9948ad702ae6d2c2993066d79f762d6d2",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "013_alpha_male_chimpanzee_at_kibale_forest_national_park_photo_b",
-      "page": "https://commons.wikimedia.org/wiki/File:013_Alpha_male_chimpanzee_at_Kibale_forest_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/86/013_Alpha_male_chimpanzee_at_Kibale_forest_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "e05702a782446c5ef1fac9bd4fede8339908d7ac",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -826,28 +674,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "016_wild_golden_eagle_in_flight_at_pfyn_finges_switzerland_photo",
-      "page": "https://commons.wikimedia.org/wiki/File:016_Wild_Golden_Eagle_in_flight_at_Pfyn-Finges_(Switzerland)_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f7/016_Wild_Golden_Eagle_in_flight_at_Pfyn-Finges_%28Switzerland%29_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "d649c3705e7cb362c416d67f08f25625b178bf26",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "01665_ita_tuscany_pitigliano_s_from_viewpoint_v_p",
-      "page": "https://commons.wikimedia.org/wiki/File:01665_ITA_Tuscany_Pitigliano_S_from_viewpoint_V-P.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c4/01665_ITA_Tuscany_Pitigliano_S_from_viewpoint_V-P.jpg",
-      "width": 14878,
-      "height": 4960,
-      "mime": "image/jpeg",
-      "sha1": "855819917e11b826a6c879e5a94ce5247a787f48",
-      "author": "Virtual-Pano",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "016a_desert_adapted_elephant_dust_bathing_in_damaraland_photo_by",
       "page": "https://commons.wikimedia.org/wiki/File:016a_Desert-adapted_elephant_dust_bathing_in_Damaraland_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/5/5d/016a_Desert-adapted_elephant_dust_bathing_in_Damaraland_Photo_by_Giles_Laurent.jpg",
@@ -933,28 +759,6 @@
       "mime": "image/jpeg",
       "sha1": "406439e6d6db87d4e9de8c4125c27e7d3271d880",
       "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "01844b_ita_tuscany_sorano_blue_hour_3_to_1_v_p",
-      "page": "https://commons.wikimedia.org/wiki/File:01844b_ITA_Tuscany_Sorano_blue_hour_3_to_1_V-P.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5d/01844b_ITA_Tuscany_Sorano_blue_hour_3_to_1_V-P.jpg",
-      "width": 23853,
-      "height": 7951,
-      "mime": "image/jpeg",
-      "sha1": "2fdcf90f1b1df0144baea654e23206678c708366",
-      "author": "Virtual-Pano",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "01845_ita_tuscany_sorano_panoramic_view_s_v_p",
-      "page": "https://commons.wikimedia.org/wiki/File:01845_ITA_Tuscany_Sorano_panoramic_view_S_V-P.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/01845_ITA_Tuscany_Sorano_panoramic_view_S_V-P.jpg",
-      "width": 14090,
-      "height": 7045,
-      "mime": "image/jpeg",
-      "sha1": "70d436949fba46c062fd2e1cc0abbd091caa7a77",
-      "author": "Virtual-Pano",
       "license": "CC BY-SA 4.0"
     },
     {
@@ -1090,17 +894,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "022_grant_s_gazelle_in_the_serengeti_national_park_photo_by_gile",
-      "page": "https://commons.wikimedia.org/wiki/File:022_Grant%27s_gazelle_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/022_Grant%27s_gazelle_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8502,
-      "height": 5668,
-      "mime": "image/jpeg",
-      "sha1": "35b65aa2ecd4275c31ca2867a70d6d2d86b72853",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "023_aerial_view_of_jakobshavn_glacier_at_disko_bay_greenland_pho",
       "page": "https://commons.wikimedia.org/wiki/File:023_Aerial_view_of_Jakobshavn_Glacier_at_Disko_Bay_(Greenland)_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/023_Aerial_view_of_Jakobshavn_Glacier_at_Disko_Bay_%28Greenland%29_Photo_by_Giles_Laurent.jpg",
@@ -1141,17 +934,6 @@
       "height": 4848,
       "mime": "image/jpeg",
       "sha1": "9dc1cacc3b60a45fe5b20e828efa9a13e2479271",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "023_yacare_caiman_sunbathing_in_encontro_das_guas_state_park_pho",
-      "page": "https://commons.wikimedia.org/wiki/File:023_Yacare_caiman_sunbathing_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7e/023_Yacare_caiman_sunbathing_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "9d2efe22382feb1dd9d5ce28c6aca5c77577ebab",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -1244,50 +1026,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "028_capybara_and_pink_ip_trees_in_encontro_das_guas_state_park_p",
-      "page": "https://commons.wikimedia.org/wiki/File:028_Capybara_and_Pink_Ip%C3%AA_trees_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/90/028_Capybara_and_Pink_Ip%C3%AA_trees_in_Encontro_das_%C3%81guas_State_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8347,
-      "height": 5565,
-      "mime": "image/jpeg",
-      "sha1": "49a755dcf30d0690c50957104a4d3d09a46879da",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "029_african_buffalo_in_the_serengeti_national_park_photo_by_gile",
-      "page": "https://commons.wikimedia.org/wiki/File:029_African_buffalo_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2e/029_African_buffalo_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "1f44a96645380096628a4df6afea19bf01ac73bc",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "029_great_tit_standing_on_flowering_wisteria_in_gl_ne_district_p",
-      "page": "https://commons.wikimedia.org/wiki/File:029_Great_tit_standing_on_flowering_Wisteria_in_Gl%C3%A2ne_District_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c0/029_Great_tit_standing_on_flowering_Wisteria_in_Gl%C3%A2ne_District_Photo_by_Giles_Laurent.jpg",
-      "width": 8327,
-      "height": 5551,
-      "mime": "image/jpeg",
-      "sha1": "7eca7de8c35c021e274a80b091acc0c91f3daaa1",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "029_western_cattle_egret_in_the_camargue_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:029_Western_cattle_egret_in_the_Camargue_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/51/029_Western_cattle_egret_in_the_Camargue_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "5706349a0b906947a9381d1423d49cd3eecc5005",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "030_lilac_breasted_roller_in_flight_in_the_serengeti_national_pa",
       "page": "https://commons.wikimedia.org/wiki/File:030_Lilac-breasted_roller_in_flight_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/95/030_Lilac-breasted_roller_in_flight_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -1328,17 +1066,6 @@
       "height": 5255,
       "mime": "image/jpeg",
       "sha1": "6bce4a5f25fe0732a24bffb938a34a938f166d22",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "033_golden_jackal_in_keoladeo_national_park_photo_by_giles_laure",
-      "page": "https://commons.wikimedia.org/wiki/File:033_Golden_jackal_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ee/033_Golden_jackal_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8092,
-      "height": 5394,
-      "mime": "image/jpeg",
-      "sha1": "620075e2af98768051a9c85451e776215f3f6d95",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -1416,28 +1143,6 @@
       "height": 2719,
       "mime": "image/jpeg",
       "sha1": "cf0e5ed6678b05a5c4d5a96507ee75e429e7b2c2",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "035_vertical_panorama_of_the_milky_way_during_perseids_seen_from",
-      "page": "https://commons.wikimedia.org/wiki/File:035_Vertical_panorama_of_the_Milky_Way_during_Perseids_seen_from_Oeschinensee_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/19/035_Vertical_panorama_of_the_Milky_Way_during_Perseids_seen_from_Oeschinensee_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 12500,
-      "mime": "image/jpeg",
-      "sha1": "81f36751c53cc26646a694360eced95e80443509",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "036_milky_way_during_perseids_seen_from_oeschinensee_with_water",
-      "page": "https://commons.wikimedia.org/wiki/File:036_Milky_Way_during_Perseids_seen_from_Oeschinensee_with_water_reflections_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2f/036_Milky_Way_during_Perseids_seen_from_Oeschinensee_with_water_reflections_Photo_by_Giles_Laurent.jpg",
-      "width": 7457,
-      "height": 13630,
-      "mime": "image/jpeg",
-      "sha1": "25bc0558d52c86b23a3f4ac4bd8f0adb0368d9b3",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -1541,17 +1246,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "042_masai_giraffe_in_the_serengeti_national_park_photo_by_giles",
-      "page": "https://commons.wikimedia.org/wiki/File:042_Masai_giraffe_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c7/042_Masai_giraffe_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8486,
-      "height": 5657,
-      "mime": "image/jpeg",
-      "sha1": "55c96a733331ad13256c50653b9da67815e7a118",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "043_little_bee_eater_in_the_serengeti_national_park_photo_by_gil",
       "page": "https://commons.wikimedia.org/wiki/File:043_Little_bee-eater_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/043_Little_bee-eater_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -1570,17 +1264,6 @@
       "height": 3340,
       "mime": "image/jpeg",
       "sha1": "fcb345436b55c29524793c537034641f9cfed20c",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "044_olive_baboon_with_baby_on_the_back_in_the_serengeti_national",
-      "page": "https://commons.wikimedia.org/wiki/File:044_Olive_baboon_with_baby_on_the_back_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e8/044_Olive_baboon_with_baby_on_the_back_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "ed2a54edf031d18de2bf7550a16733eb0546d6e6",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -1618,17 +1301,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "047_kirk_s_dik_dik_in_the_serengeti_national_park_photo_by_giles",
-      "page": "https://commons.wikimedia.org/wiki/File:047_Kirk%27s_dik-dik_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0e/047_Kirk%27s_dik-dik_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8142,
-      "height": 5428,
-      "mime": "image/jpeg",
-      "sha1": "ce518cb8c45a911f7d13b8348ae24709c6c7771f",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "048_hippopotamus_fight_in_the_serengeti_national_park_photo_by_g",
       "page": "https://commons.wikimedia.org/wiki/File:048_Hippopotamus_fight_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/03/048_Hippopotamus_fight_in_the_Serengeti_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -1636,17 +1308,6 @@
       "height": 2570,
       "mime": "image/jpeg",
       "sha1": "8e04ae210e4ba4135810d412894792e960363df1",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "048_lioness_during_golden_hour_of_the_morning_at_queen_elizabeth",
-      "page": "https://commons.wikimedia.org/wiki/File:048_Lioness_during_golden_hour_of_the_morning_at_Queen_Elizabeth_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/79/048_Lioness_during_golden_hour_of_the_morning_at_Queen_Elizabeth_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "2519aa0acf38a8c31d0c354c259fa2a39020ed8c",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -1816,17 +1477,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "064_wild_chamois_parc_r_gional_chasseral_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:064_Wild_Chamois_Parc_r%C3%A9gional_Chasseral_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f0/064_Wild_Chamois_Parc_r%C3%A9gional_Chasseral_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "5a2324e89a6ca7846d43ef6a79af4e6323a93440",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "065_male_white_throated_mountaingem_in_los_quetzales_national_pa",
       "page": "https://commons.wikimedia.org/wiki/File:065_Male_White-throated_mountaingem_in_Los_Quetzales_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/4/4a/065_Male_White-throated_mountaingem_in_Los_Quetzales_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -1904,17 +1554,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "075_white_rhinoceros_mother_and_her_newborn_baby_in_the_kalahari",
-      "page": "https://commons.wikimedia.org/wiki/File:075_White_rhinoceros_mother_and_her_newborn_baby_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a6/075_White_rhinoceros_mother_and_her_newborn_baby_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "width": 8571,
-      "height": 5714,
-      "mime": "image/jpeg",
-      "sha1": "d46ea16e6cc9e8105803f34602841152477d6483",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "076_baby_angolan_giraffes_running_in_etosha_national_park_photo",
       "page": "https://commons.wikimedia.org/wiki/File:076_Baby_Angolan_giraffes_running_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/076_Baby_Angolan_giraffes_running_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -1981,17 +1620,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "084_sun_setting_in_the_namib_desert_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:084_Sun_setting_in_the_Namib_desert_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/ca/084_Sun_setting_in_the_Namib_desert_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "a7f236a4aa7837042eeb02ad4209335ed5f2f82d",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "085_indian_white_eye_in_jim_corbett_national_park_photo_by_giles",
       "page": "https://commons.wikimedia.org/wiki/File:085_Indian_white-eye_in_Jim_Corbett_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/2/28/085_Indian_white-eye_in_Jim_Corbett_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -2047,17 +1675,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "092_wild_mute_swan_in_flight_at_lake_geneva_during_golden_hour_o",
-      "page": "https://commons.wikimedia.org/wiki/File:092_Wild_Mute_swan_in_flight_at_Lake_Geneva_during_golden_hour_of_sunset_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/b/b6/092_Wild_Mute_swan_in_flight_at_Lake_Geneva_during_golden_hour_of_sunset_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "8f0322d1a01bfe980bcfda5a711d9260451dcca7",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "093_wild_mute_swan_at_lake_geneva_during_sunset_photo_by_giles_l",
       "page": "https://commons.wikimedia.org/wiki/File:093_Wild_Mute_swan_at_Lake_Geneva_during_sunset_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/1/1c/093_Wild_Mute_swan_at_Lake_Geneva_during_sunset_Photo_by_Giles_Laurent.jpg",
@@ -2102,50 +1719,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "1_aerial_yangshuo_panorama_2017",
-      "page": "https://commons.wikimedia.org/wiki/File:1_aerial_yangshuo_panorama_2017.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c2/1_aerial_yangshuo_panorama_2017.jpg",
-      "width": 8267,
-      "height": 3780,
-      "mime": "image/jpeg",
-      "sha1": "10791002b0dffa4ecc245f5081258eec939c1f1e",
-      "author": "Chensiyuan",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1_lake_louise_pano_2019",
-      "page": "https://commons.wikimedia.org/wiki/File:1_lake_louise_pano_2019.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6c/1_lake_louise_pano_2019.jpg",
-      "width": 14102,
-      "height": 7912,
-      "mime": "image/jpeg",
-      "sha1": "d76f0d61a768564a46cca85c7ef5efb291e0a0b1",
-      "author": "Chensiyuan",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1_pano_cuiping_yangshuo_2016",
-      "page": "https://commons.wikimedia.org/wiki/File:1_pano_cuiping_yangshuo_2016.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1b/1_pano_cuiping_yangshuo_2016.jpg",
-      "width": 17806,
-      "height": 6969,
-      "mime": "image/jpeg",
-      "sha1": "3f4616311ed2b2a20d5a9f73922c8bca1b76c305",
-      "author": "Chensiyuan",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1_rocinha_night_2014_panorama",
-      "page": "https://commons.wikimedia.org/wiki/File:1_rocinha_night_2014_panorama.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/25/1_rocinha_night_2014_panorama.jpg",
-      "width": 11811,
-      "height": 5297,
-      "mime": "image/jpeg",
-      "sha1": "8ecf08dcd954ac4ba5a1c17d4d20813f13f8358b",
-      "author": "Chensiyuan",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "1_singapore_national_day_parade_2011_fireworks",
       "page": "https://commons.wikimedia.org/wiki/File:1_singapore_national_day_parade_2011_fireworks.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/ae/1_singapore_national_day_parade_2011_fireworks.jpg",
@@ -2153,28 +1726,6 @@
       "height": 2832,
       "mime": "image/jpeg",
       "sha1": "ce0ff7a601e75b9bf751b23573357d4e0fc4f71e",
-      "author": "chensiyuan",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1_taipei_sunrise_panorama_dxr_edit_pangen_141215_1",
-      "page": "https://commons.wikimedia.org/wiki/File:1_taipei_sunrise_panorama_dxr_edit_pangen_141215_1.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e4/1_taipei_sunrise_panorama_dxr_edit_pangen_141215_1.jpg",
-      "width": 8871,
-      "height": 5003,
-      "mime": "image/jpeg",
-      "sha1": "56c4f87416aef4f5d9221287f837ec298156798c",
-      "author": "Chensiyuan, edit by DXR",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1_tianzishan_wulingyuan_zhangjiajie_2012",
-      "page": "https://commons.wikimedia.org/wiki/File:1_tianzishan_wulingyuan_zhangjiajie_2012.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/77/1_tianzishan_wulingyuan_zhangjiajie_2012.jpg",
-      "width": 8841,
-      "height": 4415,
-      "mime": "image/jpeg",
-      "sha1": "3bb7de4baacc5bd1532bab1b61ad39866c0a41a0",
       "author": "chensiyuan",
       "license": "CC BY-SA 4.0"
     },
@@ -2188,17 +1739,6 @@
       "sha1": "30c324b1527f5962a65145add6f0e4e32b87bd4b",
       "author": "Chensiyuan",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "1_zhangjiajie_huangshizhai_wulingyuan_panorama_2012",
-      "page": "https://commons.wikimedia.org/wiki/File:1_zhangjiajie_huangshizhai_wulingyuan_panorama_2012.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/62/1_zhangjiajie_huangshizhai_wulingyuan_panorama_2012.jpg",
-      "width": 13206,
-      "height": 6676,
-      "mime": "image/jpeg",
-      "sha1": "0c9e5ce6ba3d34b3753782338bedddc7d3e7d998",
-      "author": "chensiyuan",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "1",
@@ -2223,61 +1763,6 @@
       "license": "CC BY 2.0"
     },
     {
-      "name": "1000_islands_tower_view_july_2015_panorama_5",
-      "page": "https://commons.wikimedia.org/wiki/File:1000_Islands_Tower_view_July_2015_panorama_5.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6c/1000_Islands_Tower_view_July_2015_panorama_5.jpg",
-      "width": 28000,
-      "height": 5000,
-      "mime": "image/jpeg",
-      "sha1": "fa73b66a6a732da674546f74e8253f5960d3778e",
-      "author": "King of Hearts",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1000_three_domes_of_oia_in_santorini_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:1000_Three_domes_of_Oia_in_Santorini_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/27/1000_Three_domes_of_Oia_in_Santorini_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "e7427330e9bbc14c50af9b6b9cfa598c8bec888b",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1007_graslei_clock_tower_of_the_post_office_church_of_saint_nico",
-      "page": "https://commons.wikimedia.org/wiki/File:1007_Graslei,_Clock_tower_of_the_Post_Office,_Church_of_Saint-Nicolas_in_Ghent_and_Belfry_of_Ghent_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/60/1007_Graslei%2C_Clock_tower_of_the_Post_Office%2C_Church_of_Saint-Nicolas_in_Ghent_and_Belfry_of_Ghent_Photo_by_Giles_Laurent.jpg",
-      "width": 8064,
-      "height": 6048,
-      "mime": "image/jpeg",
-      "sha1": "f68a0eace93d6b22e7e271b904d7a781131c1d6d",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "101_african_bush_elephant_face_close_up_in_etosha_national_park",
-      "page": "https://commons.wikimedia.org/wiki/File:101_African_bush_elephant_face_close-up_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f0/101_African_bush_elephant_face_close-up_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8379,
-      "height": 5586,
-      "mime": "image/jpeg",
-      "sha1": "49ccd5ebeebbe36d3319f8fad3b49c3c0fbe15ec",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1010_church_of_our_lady_bruges_photo_by_giles_laurent",
-      "page": "https://commons.wikimedia.org/wiki/File:1010_Church_of_Our_Lady_(Bruges)_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7e/1010_Church_of_Our_Lady_%28Bruges%29_Photo_by_Giles_Laurent.jpg",
-      "width": 8064,
-      "height": 6048,
-      "mime": "image/jpeg",
-      "sha1": "16743f81a47ff636f084d2db9f0e53b648406105",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "102_female_plum_headed_parakeet_in_jim_corbett_national_park_pho",
       "page": "https://commons.wikimedia.org/wiki/File:102_Female_Plum-headed_parakeet_in_Jim_Corbett_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/9a/102_Female_Plum-headed_parakeet_in_Jim_Corbett_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -2285,28 +1770,6 @@
       "height": 2793,
       "mime": "image/jpeg",
       "sha1": "f0c6158be2893e6ffb96c439b93e75cffb37b28a",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1029_acropolis_of_athens_in_greece_at_night_photo_by_giles_laure",
-      "page": "https://commons.wikimedia.org/wiki/File:1029_Acropolis_of_Athens_in_Greece_at_night_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/1029_Acropolis_of_Athens_in_Greece_at_night_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "8583328fa624e091e8b68cce54d70883a9b3397e",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "104_juvenile_south_african_ostrich_in_the_kalahari_desert_of_nam",
-      "page": "https://commons.wikimedia.org/wiki/File:104_Juvenile_South_African_ostrich_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1d/104_Juvenile_South_African_ostrich_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "width": 8395,
-      "height": 5597,
-      "mime": "image/jpeg",
-      "sha1": "c2a7034dbd36ea6c727b90e660cbf73be47a1b9d",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
     },
@@ -2331,17 +1794,6 @@
       "sha1": "4a73b57bea457fca233dd1b544c92a4d98f50809",
       "author": "Julian Herzog (Website)",
       "license": "CC BY 4.0"
-    },
-    {
-      "name": "106_angolan_giraffe_walking_in_the_kalahari_desert_of_namibia_ph",
-      "page": "https://commons.wikimedia.org/wiki/File:106_Angolan_giraffe_walking_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/106_Angolan_giraffe_walking_in_the_Kalahari_Desert_of_Namibia_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "b3c495f28faecdf2e366f038614a8f0e620237e3",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "107_hyacinth_macaw_eating_in_encontro_das_guas_state_park_photo",
@@ -2487,17 +1939,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "122_toronto_septembre_2009",
-      "page": "https://commons.wikimedia.org/wiki/File:122_-_Toronto_-_Septembre_2009.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/b/b6/122_-_Toronto_-_Septembre_2009.jpg",
-      "width": 16700,
-      "height": 4478,
-      "mime": "image/jpeg",
-      "sha1": "8769097335db9e7386e1fe72279a5714fc567f5e",
-      "author": "Martin St-Amant (S23678)",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "122_indian_palm_squirrel_in_keoladeo_national_park_photo_by_gile",
       "page": "https://commons.wikimedia.org/wiki/File:122_Indian_palm_squirrel_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/7f/122_Indian_palm_squirrel_in_Keoladeo_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -2520,17 +1961,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "129_cape_fur_seal_bull_walking_at_pelican_point_photo_by_giles_l",
-      "page": "https://commons.wikimedia.org/wiki/File:129_Cape_fur_seal_bull_walking_at_Pelican_point_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6e/129_Cape_fur_seal_bull_walking_at_Pelican_point_Photo_by_Giles_Laurent.jpg",
-      "width": 8640,
-      "height": 5760,
-      "mime": "image/jpeg",
-      "sha1": "81750a59d99a5c3416991af5a43de2a04a8036b8",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "13_02_27_spielbank_wiesbaden_by_ralfr_093",
       "page": "https://commons.wikimedia.org/wiki/File:13-02-27-spielbank-wiesbaden-by-RalfR-093.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/a4/13-02-27-spielbank-wiesbaden-by-RalfR-093.jpg",
@@ -2549,17 +1979,6 @@
       "height": 2767,
       "mime": "image/jpeg",
       "sha1": "49ac5521e45dba579a09e1042a29d3e28eba8f7a",
-      "author": "Ralf Roletschek",
-      "license": "CC BY 3.0"
-    },
-    {
-      "name": "13_08_08_hongkong_by_ralfr_panorama2",
-      "page": "https://commons.wikimedia.org/wiki/File:13-08-08-hongkong-by-RalfR-Panorama2.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/58/13-08-08-hongkong-by-RalfR-Panorama2.jpg",
-      "width": 8816,
-      "height": 4621,
-      "mime": "image/jpeg",
-      "sha1": "99fd0a8d0bf4e977707815cd6f2cbf2cce733f38",
       "author": "Ralf Roletschek",
       "license": "CC BY 3.0"
     },
@@ -2652,17 +2071,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "1375_atlas_catalan_abraham_cresques",
-      "page": "https://commons.wikimedia.org/wiki/File:1375_Atlas_Catalan_Abraham_Cresques.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/1375_Atlas_Catalan_Abraham_Cresques.jpg",
-      "width": 11811,
-      "height": 3850,
-      "mime": "image/jpeg",
-      "sha1": "c0e47d331ae09c52f85bcc88b4cb0295929686a8",
-      "author": "Cresques Abraham",
-      "license": "Public domain"
-    },
-    {
       "name": "13th_century_stone_curvings_at_konark_sun_temple_puri_district_o",
       "page": "https://commons.wikimedia.org/wiki/File:13th_Century_stone_curvings_at_Konark_Sun_Temple_Puri_district,_Odisha,_India_5.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/13th_Century_stone_curvings_at_Konark_Sun_Temple_Puri_district%2C_Odisha%2C_India_5.jpg",
@@ -2672,28 +2080,6 @@
       "sha1": "e828d43f54532037eaefa568469d7894e8c4d419",
       "author": "Joydeep",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "14_sammlung_eybl_sterreich_alfred_offner_1879_1937_zeichnet_8_kr",
-      "page": "https://commons.wikimedia.org/wiki/File:14_Sammlung_Eybl_%C3%96sterreich._Alfred_Offner_(1879-1937)._Zeichnet_8._Kriegsanleihe._1918._95_x_63_cm._(Slg.Nr._325).jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/41/14_Sammlung_Eybl_%C3%96sterreich._Alfred_Offner_%281879-1937%29._Zeichnet_8._Kriegsanleihe._1918._95_x_63_cm._%28Slg.Nr._325%29.jpg",
-      "width": 7249,
-      "height": 11170,
-      "mime": "image/jpeg",
-      "sha1": "f98831d7a98d703c02c41f85a1e85259a3044e90",
-      "author": "Alfred Offner",
-      "license": "Public domain"
-    },
-    {
-      "name": "14_02_02_straszburg_ralfr_113",
-      "page": "https://commons.wikimedia.org/wiki/File:14-02-02-straszburg-RalfR-113.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/96/14-02-02-straszburg-RalfR-113.jpg",
-      "width": 8107,
-      "height": 4942,
-      "mime": "image/jpeg",
-      "sha1": "2e557d497407b4c0405e7ec7a9fbe67b424e0070",
-      "author": "Ralf Roletschek",
-      "license": "CC BY 3.0"
     },
     {
       "name": "14_33_29_ouv_schoenenbourg",
@@ -2806,17 +2192,6 @@
       "license": "GFDL 1.2"
     },
     {
-      "name": "15_09_2018_panorama_du_chateau_de_brest",
-      "page": "https://commons.wikimedia.org/wiki/File:15-09-2018_-_Panorama_du_Chateau_de_Brest.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/ab/15-09-2018_-_Panorama_du_Chateau_de_Brest.jpg",
-      "width": 13326,
-      "height": 4508,
-      "mime": "image/jpeg",
-      "sha1": "e45e4dcaa69f08dfba7668c02ade7f852cccb269",
-      "author": "S. DÉNIEL",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "15_10_28_pont_bac_de_roda_barcelona_ralfr_wma_3105",
       "page": "https://commons.wikimedia.org/wiki/File:15-10-28-Pont_Bac_de_Roda_Barcelona-RalfR-WMA_3105.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/8/8e/15-10-28-Pont_Bac_de_Roda_Barcelona-RalfR-WMA_3105.jpg",
@@ -2924,17 +2299,6 @@
       "mime": "image/jpeg",
       "sha1": "5f004265c6ff9963efb7f30c853083f9071c82a0",
       "author": "Heinrich Bünting",
-      "license": "Public domain"
-    },
-    {
-      "name": "1583_portrait_of_sir_francis_drake",
-      "page": "https://commons.wikimedia.org/wiki/File:1583_portrait_of_Sir_Francis_Drake.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a9/1583_portrait_of_Sir_Francis_Drake.jpg",
-      "width": 7454,
-      "height": 9498,
-      "mime": "image/jpeg",
-      "sha1": "958757d0a4fe71a1ad4e69aefe3f64eb1b8ad337",
-      "author": "Jodocus Hondius I",
       "license": "Public domain"
     },
     {
@@ -3059,17 +2423,6 @@
       "license": "Public domain"
     },
     {
-      "name": "1665_girl_with_a_pearl_earring",
-      "page": "https://commons.wikimedia.org/wiki/File:1665_Girl_with_a_Pearl_Earring.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/1665_Girl_with_a_Pearl_Earring.jpg",
-      "width": 12285,
-      "height": 14550,
-      "mime": "image/jpeg",
-      "sha1": "863e60ca490e9e58214f2ecc5931d2d9b837f6d8",
-      "author": "Johannes Vermeer",
-      "license": "Public domain"
-    },
-    {
       "name": "168_banded_mongoose_in_etosha_national_park_photo_by_giles_laure",
       "page": "https://commons.wikimedia.org/wiki/File:168_Banded_mongoose_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/94/168_Banded_mongoose_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -3147,17 +2500,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "178_male_african_bush_elephant_in_etosha_national_park_photo_by",
-      "page": "https://commons.wikimedia.org/wiki/File:178_Male_African_bush_elephant_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/94/178_Male_African_bush_elephant_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8213,
-      "height": 5475,
-      "mime": "image/jpeg",
-      "sha1": "9e76d0a2ef4b720c6a22446ca5524136a1df5f5a",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "179_male_african_bush_elephants_drinking_in_etosha_national_park",
       "page": "https://commons.wikimedia.org/wiki/File:179_Male_African_bush_elephants_drinking_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/b/b0/179_Male_African_bush_elephants_drinking_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -3213,17 +2555,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "184_angolan_giraffe_licking_its_nose_in_etosha_national_park_pho",
-      "page": "https://commons.wikimedia.org/wiki/File:184_Angolan_giraffe_licking_its_nose_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/56/184_Angolan_giraffe_licking_its_nose_in_Etosha_National_Park_Photo_by_Giles_Laurent.jpg",
-      "width": 8112,
-      "height": 5408,
-      "mime": "image/jpeg",
-      "sha1": "8d3e0d23dd0dfa1df8b8255dac176b176a12d9dd",
-      "author": "Giles Laurent",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "189_red_and_green_macaw_couple_flying_in_chapada_dos_guimar_es_n",
       "page": "https://commons.wikimedia.org/wiki/File:189_Red-and-green_macaw_couple_flying_in_Chapada_dos_Guimar%C3%A3es_National_Park_Photo_by_Giles_Laurent.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/5/5d/189_Red-and-green_macaw_couple_flying_in_Chapada_dos_Guimar%C3%A3es_National_Park_Photo_by_Giles_Laurent.jpg",
@@ -3233,17 +2564,6 @@
       "sha1": "83c13e69312a2ad6de9022493844b6c7efb7c71c",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1899_poster_of_mme_m_sissieretta_jones",
-      "page": "https://commons.wikimedia.org/wiki/File:1899_poster_of_Mme._M._Sissieretta_Jones.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/81/1899_poster_of_Mme._M._Sissieretta_Jones.jpg",
-      "width": 7728,
-      "height": 11848,
-      "mime": "image/jpeg",
-      "sha1": "e07fb208f759eaca2a8be453cb34dd7f5f598779",
-      "author": "Adam Cuerden",
-      "license": "Public domain"
     },
     {
       "name": "19_11_09_alte_nationalgalerie_dsf4154",
@@ -3288,17 +2608,6 @@
       "sha1": "b8867d1a10110a27cf2646ac76c1050dd57556c8",
       "author": "Giles Laurent",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "1936_survey_of_india_map_of_highlands_of_tibet_and_surrounding_r",
-      "page": "https://commons.wikimedia.org/wiki/File:1936_Survey_of_India_map_of_Highlands_of_Tibet_and_Surrounding_Regions.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/79/1936_Survey_of_India_map_of_Highlands_of_Tibet_and_Surrounding_Regions.jpg",
-      "width": 16406,
-      "height": 11715,
-      "mime": "image/jpeg",
-      "sha1": "312a36198dcea66555bcb66de00e2afff3a555ef",
-      "author": "Survey of India",
-      "license": "Public domain"
     },
     {
       "name": "194_white_nosed_coati_at_the_beach_in_yucat_n_photo_by_giles_lau",
@@ -3354,17 +2663,6 @@
       "sha1": "f45bc958529a347c5ab9221f0e078101f2f9eeda",
       "author": "Julian Herzog (Website)",
       "license": "CC BY 4.0"
-    },
-    {
-      "name": "1963_airstream_trailer_in_joshua_tree_dllu",
-      "page": "https://commons.wikimedia.org/wiki/File:1963_Airstream_trailer_in_Joshua_Tree_dllu.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/24/1963_Airstream_trailer_in_Joshua_Tree_dllu.jpg",
-      "width": 8164,
-      "height": 5442,
-      "mime": "image/jpeg",
-      "sha1": "dc95954867522dd6d8101b5d3e5a7dc6fdfb8f9b",
-      "author": "Dllu",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "198_granite_rock_in_la_digue_island_at_sunset_photo_by_giles_lau",
@@ -3521,17 +2819,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "20101229_naqsh_e_rostam_shiraz_iran_more_panoramic",
-      "page": "https://commons.wikimedia.org/wiki/File:20101229_Naqsh_e_Rostam_Shiraz_Iran_more_Panoramic.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/11/20101229_Naqsh_e_Rostam_Shiraz_Iran_more_Panoramic.jpg",
-      "width": 9500,
-      "height": 2641,
-      "mime": "image/jpeg",
-      "sha1": "11ef8751cc6a84d35a525b0b7680c2bfbc5a63e8",
-      "author": "User:Ggia",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "2011_el_golfo_charco_de_los_clicos_lanzarote_g07",
       "page": "https://commons.wikimedia.org/wiki/File:2011_-_El_Golfo_-_Charco_de_los_Clicos_-Lanzarote_-_G07.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/7e/2011_-_El_Golfo_-_Charco_de_los_Clicos_-Lanzarote_-_G07.jpg",
@@ -3609,17 +2896,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "2011_08_02_15_07_48_switzerland_diavolezza_11vl",
-      "page": "https://commons.wikimedia.org/wiki/File:2011-08-02_15-07-48_Switzerland_Diavolezza_11vl.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/2011-08-02_15-07-48_Switzerland_Diavolezza_11vl.jpg",
-      "width": 14897,
-      "height": 3628,
-      "mime": "image/jpeg",
-      "sha1": "c532179b8bd5d52372a793e9e257f6444cad6a55",
-      "author": "NOTE: This image is a panorama of Diavolezza consisting of 11 frames that were merged or stitched in Panorama Studio. As a result, this image necessarily underwent some form of digital manipulation. These manipulations may include blending, blurring, cloning, and color and perspective adjustments. As a result of these adjustments, the image content may be slightly different from reality at the points where multiple images were combined. This manipulation is often required due to lens, perspective, and parallax distortions.",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "20110102_kharanaq_old_city_iran",
       "page": "https://commons.wikimedia.org/wiki/File:20110102_Kharanaq_old_city_Iran.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/6/63/20110102_Kharanaq_old_city_Iran.jpg",
@@ -3653,17 +2929,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "20110711_pierre_loti_hill_view_istanbul_turkey_panorama",
-      "page": "https://commons.wikimedia.org/wiki/File:20110711_Pierre_Loti_hill_view_Istanbul_Turkey_Panorama.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/cd/20110711_Pierre_Loti_hill_view_Istanbul_Turkey_Panorama.jpg",
-      "width": 11764,
-      "height": 2196,
-      "mime": "image/jpeg",
-      "sha1": "baa4eb221fe4e4a3e55e10388b47291a7e5138cf",
-      "author": "User:Ggia",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "20110725_budha_eyes_closeup_bodhnath_stupa_kathmandu_nepal",
       "page": "https://commons.wikimedia.org/wiki/File:20110725_Budha_eyes_closeup_Bodhnath_Stupa_Kathmandu_Nepal.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/c/cd/20110725_Budha_eyes_closeup_Bodhnath_Stupa_Kathmandu_Nepal.jpg",
@@ -3671,17 +2936,6 @@
       "height": 5666,
       "mime": "image/jpeg",
       "sha1": "d17c2ec794fe1606c321d73ab3bc99db0ec0cbfe",
-      "author": "User:Ggia",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "20110810_north_face_of_everest_tibet_china_panoramic",
-      "page": "https://commons.wikimedia.org/wiki/File:20110810_North_Face_of_Everest_Tibet_China_Panoramic.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/20110810_North_Face_of_Everest_Tibet_China_Panoramic.jpg",
-      "width": 8533,
-      "height": 2924,
-      "mime": "image/jpeg",
-      "sha1": "d63cd59fc310ceb91f902d2a1b08726834e85a5f",
       "author": "User:Ggia",
       "license": "CC BY-SA 3.0"
     },
@@ -3772,17 +3026,6 @@
       "sha1": "f594a9ac2c569ae8bf29f7d641c6db6a76024376",
       "author": "Kreuzschnabel",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "2013_02_05_13_54_49_fort_roppe",
-      "page": "https://commons.wikimedia.org/wiki/File:2013-02-05_13-54-49-fort-roppe.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5a/2013-02-05_13-54-49-fort-roppe.jpg",
-      "width": 17946,
-      "height": 2666,
-      "mime": "image/jpeg",
-      "sha1": "9c383f2a19bba61155fe2a521143da44ec786fa8",
-      "author": "Thomas Bresson",
-      "license": "CC BY 3.0"
     },
     {
       "name": "2013_08_07_04_23_26_foudre_belfort",
@@ -4148,17 +3391,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "2014_09_29_reichsbr_cke_donau_city_sunken_city",
-      "page": "https://commons.wikimedia.org/wiki/File:2014-09-29_-_Reichsbr%C3%BCcke-Donau_City-Sunken_City.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c3/2014-09-29_-_Reichsbr%C3%BCcke-Donau_City-Sunken_City.jpg",
-      "width": 11962,
-      "height": 6200,
-      "mime": "image/jpeg",
-      "sha1": "8710ee68e0c985392b8a1ee65e9a8602c9affe17",
-      "author": "Hubertl",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "2014_12_24_10_28_21_ouv_g",
       "page": "https://commons.wikimedia.org/wiki/File:2014-12-24_10-28-21_ouv-g.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/b/b9/2014-12-24_10-28-21_ouv-g.jpg",
@@ -4221,17 +3453,6 @@
       "height": 2612,
       "mime": "image/jpeg",
       "sha1": "921abcb79ca6eccc810ef45db65cb0668c9d1154",
-      "author": "Jacek Halicki",
-      "license": "CC BY-SA 3.0 pl"
-    },
-    {
-      "name": "2015_g_ry_z_ote_z_bor_wkowej",
-      "page": "https://commons.wikimedia.org/wiki/File:2015_G%C3%B3ry_Z%C5%82ote_z_Bor%C3%B3wkowej.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d7/2015_G%C3%B3ry_Z%C5%82ote_z_Bor%C3%B3wkowej.jpg",
-      "width": 8370,
-      "height": 3534,
-      "mime": "image/jpeg",
-      "sha1": "720afb69bb29efe622d228f738830447e1b95803",
       "author": "Jacek Halicki",
       "license": "CC BY-SA 3.0 pl"
     },
@@ -4819,17 +4040,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "2018_ch_teau_fort_de_lourdes",
-      "page": "https://commons.wikimedia.org/wiki/File:2018_-_Ch%C3%A2teau_fort_de_Lourdes.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/73/2018_-_Ch%C3%A2teau_fort_de_Lourdes.jpg",
-      "width": 13250,
-      "height": 3540,
-      "mime": "image/jpeg",
-      "sha1": "c1cf81120de947bdd3368b43388b8e9e9dfccb44",
-      "author": "Moahim",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "2018_magstr_de_street_in_evening",
       "page": "https://commons.wikimedia.org/wiki/File:2018_-_Magstr%C3%A6de_street_in_evening.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/2018_-_Magstr%C3%A6de_street_in_evening.jpg",
@@ -5215,17 +4425,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "2019_parc_national_des_pyrenees_refuge_des_espuguettes",
-      "page": "https://commons.wikimedia.org/wiki/File:2019_-_Parc_national_des_Pyrenees_-_refuge_des_Espuguettes.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c4/2019_-_Parc_national_des_Pyrenees_-_refuge_des_Espuguettes.jpg",
-      "width": 10075,
-      "height": 4405,
-      "mime": "image/jpeg",
-      "sha1": "1aea9ab02b8d37a3ee3054130eda44a96de3db2a",
-      "author": "Moahim",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "2019_urania_am_abend_am_donaukanal",
       "page": "https://commons.wikimedia.org/wiki/File:2019_-_Urania_am_Abend_am_Donaukanal.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/93/2019_-_Urania_am_Abend_am_Donaukanal.jpg",
@@ -5255,17 +4454,6 @@
       "height": 3302,
       "mime": "image/jpeg",
       "sha1": "5080cd10ed77a3191acad748a3807ec3e9e39253",
-      "author": "Moahim",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "2019_02",
-      "page": "https://commons.wikimedia.org/wiki/File:2019_-_%D0%9D%D0%9F%D0%9F_%D0%9F%D0%BE%D0%B4%D1%96%D0%BB%D1%8C%D1%81%D1%8C%D0%BA%D1%96_%D0%A2%D0%BE%D0%B2%D1%82%D1%80%D0%B8_-_02.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6f/2019_-_%D0%9D%D0%9F%D0%9F_%D0%9F%D0%BE%D0%B4%D1%96%D0%BB%D1%8C%D1%81%D1%8C%D0%BA%D1%96_%D0%A2%D0%BE%D0%B2%D1%82%D1%80%D0%B8_-_02.jpg",
-      "width": 12590,
-      "height": 4732,
-      "mime": "image/jpeg",
-      "sha1": "b82f532d78f9c8d9b4c1e6011aedfd51cca730a9",
       "author": "Moahim",
       "license": "CC BY-SA 4.0"
     },
@@ -5323,17 +4511,6 @@
       "sha1": "a1b8167ee32e9a26b175ad3f02b785e5e6038d66",
       "author": "Gordon Leggett",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "2019_11_16_glockenspiel_neues_m_nchner_rathaus_img_7463_edit_chr",
-      "page": "https://commons.wikimedia.org/wiki/File:2019-11-16,_Glockenspiel,_Neues_M%C3%BCnchner_Rathaus,_IMG_7463_edit_Christoph_Braun.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ef/2019-11-16%2C_Glockenspiel%2C_Neues_M%C3%BCnchner_Rathaus%2C_IMG_7463_edit_Christoph_Braun.jpg",
-      "width": 5576,
-      "height": 8256,
-      "mime": "image/jpeg",
-      "sha1": "498d7eb585f71fd20a74537fcacae2ff3ad33d60",
-      "author": "Christoph Braun",
-      "license": "CC0"
     },
     {
       "name": "2019_11_30_marienallee_dahlem_7978",
@@ -5840,17 +5017,6 @@
       "sha1": "300a96a07dfa8353d0c1127cefbd756edcbf80ce",
       "author": "Jacek Halicki",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "2024_solar_eclipse_over_cleveland_terminal_tower_53650722351",
-      "page": "https://commons.wikimedia.org/wiki/File:2024_Solar_Eclipse_over_Cleveland_Terminal_Tower_-_53650722351.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/2024_Solar_Eclipse_over_Cleveland_Terminal_Tower_-_53650722351.jpg",
-      "width": 8256,
-      "height": 5504,
-      "mime": "image/jpeg",
-      "sha1": "d46407baffedbc2830965337d75b5275d5194ba8",
-      "author": "EDrost88",
-      "license": "CC BY 2.0"
     },
     {
       "name": "2024_04_15_k_ln_hauptbahnhof_3956167a3956",
@@ -6502,17 +5668,6 @@
       "license": "Public domain"
     },
     {
-      "name": "30_doradus_tarantula_nebula",
-      "page": "https://commons.wikimedia.org/wiki/File:30_Doradus,_Tarantula_Nebula.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/78/30_Doradus%2C_Tarantula_Nebula.jpg",
-      "width": 20323,
-      "height": 16259,
-      "mime": "image/jpeg",
-      "sha1": "c81ebd84fea8178afd3613d772c689a3ad20e2f8",
-      "author": "NASA, ESA, ESO, D. Lennon and E. Sabbi (ESA/STScI), J. Anderson, S. E. de Mink, R. van der Marel, T. Sohn, and N. Walborn (STScI), N. Bastian (Excellence Cluster, Munich), L. Bedin (INAF, Padua), E. Bressert (ESO), P. Crowther (Sheffield), A. de Koter (Amsterdam), C. Evans (UKATC/STFC, Edinburgh), A. Herrero (IAC, Tenerife), N. Langer (AifA, Bonn), I. Platais (JHU) and H. Sana (Amsterdam)",
-      "license": "Public domain"
-    },
-    {
       "name": "30_68_german_air_force_eurofighter_typhoon_ef2000_ila_berlin_201",
       "page": "https://commons.wikimedia.org/wiki/File:30%2B68_German_Air_Force_Eurofighter_Typhoon_EF2000_ILA_Berlin_2016_06.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/8/8b/30%2B68_German_Air_Force_Eurofighter_Typhoon_EF2000_ILA_Berlin_2016_06.jpg",
@@ -6522,28 +5677,6 @@
       "sha1": "e241b195a614d3696f06f53e14d524866da77540",
       "author": "Julian Herzog (Website)",
       "license": "CC BY 4.0"
-    },
-    {
-      "name": "30a_sammlung_eybl_gro_britannien_alfred_leete_1882_1933_britons",
-      "page": "https://commons.wikimedia.org/wiki/File:30a_Sammlung_Eybl_Gro%C3%9Fbritannien._Alfred_Leete_(1882%E2%80%931933)_Britons_(Kitchener)_wants_you_(Briten_Kitchener_braucht_Euch)._1914_(Nachdruck),_74_x_50_cm._(Slg.Nr._552).jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/30a_Sammlung_Eybl_Gro%C3%9Fbritannien._Alfred_Leete_%281882%E2%80%931933%29_Britons_%28Kitchener%29_wants_you_%28Briten_Kitchener_braucht_Euch%29._1914_%28Nachdruck%29%2C_74_x_50_cm._%28Slg.Nr._552%29.jpg",
-      "width": 5981,
-      "height": 8934,
-      "mime": "image/jpeg",
-      "sha1": "771c1564db8ab2ae5ab4a696aa8366b70c167dcb",
-      "author": "A. Erhardt",
-      "license": "Public domain"
-    },
-    {
-      "name": "30b_sammlung_eybl_usa_james_montgomery_flagg_1877_1960_i_want_yo",
-      "page": "https://commons.wikimedia.org/wiki/File:30b_Sammlung_Eybl_USA_James_Montgomery_Flagg_(1877-1960)_I_want_you_for_U.S._Army._1917._101_x_76_cm._(Coll..Nr._3116).jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d6/30b_Sammlung_Eybl_USA_James_Montgomery_Flagg_%281877-1960%29_I_want_you_for_U.S._Army._1917._101_x_76_cm._%28Coll..Nr._3116%29.jpg",
-      "width": 6246,
-      "height": 8361,
-      "mime": "image/jpeg",
-      "sha1": "c99c97e51884ff06ebea83dd302eb09211616380",
-      "author": "James Montgomery Flagg",
-      "license": "Public domain"
     },
     {
       "name": "30th_st_moritz_polo_world_cup_on_snow_20140202_cartier_vs_ralph",
@@ -6568,39 +5701,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "33_bloor_east_entrance_2025_l1007263",
-      "page": "https://commons.wikimedia.org/wiki/File:33_Bloor_East,_Entrance_(2025)-L1007263.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5b/33_Bloor_East%2C_Entrance_%282025%29-L1007263.jpg",
-      "width": 8458,
-      "height": 6042,
-      "mime": "image/jpeg",
-      "sha1": "f953663943c225f48cbc330a9fa6a45d495cee3f",
-      "author": "Frank Schulenburg",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "360_degree_panorama_of_the_southern_sky",
-      "page": "https://commons.wikimedia.org/wiki/File:360-degree_Panorama_of_the_Southern_Sky.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f4/360-degree_Panorama_of_the_Southern_Sky.jpg",
-      "width": 15204,
-      "height": 4620,
-      "mime": "image/jpeg",
-      "sha1": "c4fcf15762931124f2951cfe527b79c31b7f32f8",
-      "author": "ESO/H.H. Heyer",
-      "license": "CC BY 4.0"
-    },
-    {
-      "name": "360_hochalppass_panorama",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_Hochalppass_Panorama.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f6/360%C2%B0_Hochalppass_Panorama.jpg",
-      "width": 12500,
-      "height": 2332,
-      "mime": "image/jpeg",
-      "sha1": "54893a96f7cfe9c143378f79ef3d5fd99ddd9567",
-      "author": "böhringer friedrich",
-      "license": "CC BY-SA 2.5"
-    },
-    {
       "name": "360_mohnenfluh_oberlech_panorama",
       "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_Mohnenfluh_Oberlech_Panorama.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/6/68/360%C2%B0_Mohnenfluh_Oberlech_Panorama.jpg",
@@ -6609,83 +5709,6 @@
       "mime": "image/jpeg",
       "sha1": "bd59d9b02242904cf7a8365e0fa1ac24ca7d392b",
       "author": "böhringer friedrich",
-      "license": "CC BY-SA 2.5"
-    },
-    {
-      "name": "360_panorama_mit_hl_maria_und_gh_fetz_auf_dem_b_dele",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_Panorama_mit_hl_Maria_und_Gh_Fetz_auf_dem_B%C3%B6dele.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/cf/360%C2%B0_Panorama_mit_hl_Maria_und_Gh_Fetz_auf_dem_B%C3%B6dele.jpg",
-      "width": 10200,
-      "height": 2197,
-      "mime": "image/jpeg",
-      "sha1": "a40d88cd3c237fe2907749daa5d29b153fe369c7",
-      "author": "Feel free to use my photos, but please mention me as the author and if you want send me a message. or (rufre@lenz-nenning.at)",
-      "license": "CC BY-SA 3.0 at"
-    },
-    {
-      "name": "360_panorama_vom_hochgolling",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_Panorama_vom_Hochgolling.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/0e/360%C2%B0_Panorama_vom_Hochgolling.jpg",
-      "width": 14456,
-      "height": 2500,
-      "mime": "image/jpeg",
-      "sha1": "61a97c77c894501cabd20562da897154a96c2b4d",
-      "author": "Jörg Braukmann",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "360_panoramas_estonian_university_of_life_sciences_research",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_panoramas_Estonian_University_of_Life_Sciences,_research.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/fa/360%C2%B0_panoramas_Estonian_University_of_Life_Sciences%2C_research.jpg",
-      "width": 15260,
-      "height": 7630,
-      "mime": "image/jpeg",
-      "sha1": "75e412871f2d785a83f4920fbcd41eede9fcceb0",
-      "author": "Lauri Veerde",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "360_vom_schesaplana_massiv",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0_vom_Schesaplana-Massiv.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ee/360%C2%B0_vom_Schesaplana-Massiv.jpg",
-      "width": 13311,
-      "height": 2250,
-      "mime": "image/jpeg",
-      "sha1": "310d98fdf771a8761226bdafebb66d264da6e3f5",
-      "author": "Jörg Braukmann",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "360_panorama_vom_tour_de_moron",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%B0-Panorama_vom_Tour_de_Moron.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/98/360%C2%B0-Panorama_vom_Tour_de_Moron.jpg",
-      "width": 40911,
-      "height": 2350,
-      "mime": "image/jpeg",
-      "sha1": "687e9d2cbd0d964cf3f76b95896506eb4b6c82b7",
-      "author": "Jörg Braukmann",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "360_pano_auenfeld_hochtannberg",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%BA_Pano_Auenfeld_Hochtannberg.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/34/360%C2%BA_Pano_Auenfeld_Hochtannberg.jpg",
-      "width": 21239,
-      "height": 4402,
-      "mime": "image/jpeg",
-      "sha1": "524fb4a9f62088ede8965877bcd2277cb8f8f3ca",
-      "author": "Alexander Vonbun",
-      "license": "CC BY-SA 2.5"
-    },
-    {
-      "name": "360_panorama_saulakopf",
-      "page": "https://commons.wikimedia.org/wiki/File:360%C2%BA_Panorama_Saulakopf.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/3f/360%C2%BA_Panorama_Saulakopf.jpg",
-      "width": 22921,
-      "height": 4510,
-      "mime": "image/jpeg",
-      "sha1": "10ae687a08b050ddc33f91785ead7b16305ff97f",
-      "author": "Alexander Vonbun",
       "license": "CC BY-SA 2.5"
     },
     {
@@ -6788,28 +5811,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "5_panel_mosaic_of_the_northern_summer_milky_way",
-      "page": "https://commons.wikimedia.org/wiki/File:5_panel_mosaic_of_the_northern_summer_Milky_Way.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2d/5_panel_mosaic_of_the_northern_summer_Milky_Way.jpg",
-      "width": 16875,
-      "height": 3750,
-      "mime": "image/jpeg",
-      "sha1": "1353412771283ea3618717eaa3aae8d74b0a365c",
-      "author": "Brainandforce",
-      "license": "CC BY 4.0"
-    },
-    {
-      "name": "5000_rupiah_bill_2001_series_2009_date_processed_obverse_and_rev",
-      "page": "https://commons.wikimedia.org/wiki/File:5000_rupiah_bill,_2001_series_(2009_date),_processed,_obverse_and_reverse.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/88/5000_rupiah_bill%2C_2001_series_%282009_date%29%2C_processed%2C_obverse_and_reverse.jpg",
-      "width": 8374,
-      "height": 7780,
-      "mime": "image/jpeg",
-      "sha1": "e9bad1c31f50dc4171a35d0f423a9585cdcca175",
-      "author": "Crisco 1492, scanning a banknote by Bank Indonesia",
-      "license": "Public domain"
-    },
-    {
       "name": "50pfg_koeln2",
       "page": "https://commons.wikimedia.org/wiki/File:50pfg-koeln2.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/c/c0/50pfg-koeln2.jpg",
@@ -6818,17 +5819,6 @@
       "mime": "image/jpeg",
       "sha1": "d95eb29bbe4753f35589387131e6eb92cc24ee58",
       "author": "issued by the City of Cologne, reproduced by Palauenc05",
-      "license": "Public domain"
-    },
-    {
-      "name": "55_cancri_e_final_1_30",
-      "page": "https://commons.wikimedia.org/wiki/File:55_Cancri_e_Final_1_30.png",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/8e/55_Cancri_e_Final_1_30.png",
-      "width": 8161,
-      "height": 11761,
-      "mime": "image/png",
-      "sha1": "16c5fcded1c52ee5689b1729bfd123051489d8a8",
-      "author": "NASA/JPL-CalTech Artist:Joby Harris",
       "license": "Public domain"
     },
     {
@@ -6887,17 +5877,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "7_collection_eybl_great_britain_e_kealey_women_of_britain_say_go",
-      "page": "https://commons.wikimedia.org/wiki/File:7_Collection_Eybl_Great_Britain_-_E._Kealey_-_Women_of_Britain_say_%E2%80%93_GO.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e4/7_Collection_Eybl_Great_Britain_-_E._Kealey_-_Women_of_Britain_say_%E2%80%93_GO.jpg",
-      "width": 5966,
-      "height": 8925,
-      "mime": "image/jpeg",
-      "sha1": "25119b7970cb1b793657bc4af29269f2925acb43",
-      "author": "Edgar James Kealey / Hill, Siffken & Co.",
-      "license": "Public domain"
-    },
-    {
       "name": "7_more_london_riverside_at_dusk_london_uk_diliff",
       "page": "https://commons.wikimedia.org/wiki/File:7_More_London_Riverside_at_dusk,_London,_UK_-_Diliff.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/3/39/7_More_London_Riverside_at_dusk%2C_London%2C_UK_-_Diliff.jpg",
@@ -6929,28 +5908,6 @@
       "sha1": "2e23d6329ef6ca5255779f7929d829a40c041511",
       "author": "Virtual-Pano",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "79_qu_bec_juin_2009",
-      "page": "https://commons.wikimedia.org/wiki/File:79_-_Qu%C3%A9bec_-_Juin_2009.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c8/79_-_Qu%C3%A9bec_-_Juin_2009.jpg",
-      "width": 15262,
-      "height": 3628,
-      "mime": "image/jpeg",
-      "sha1": "77a3932063eb3624d6c5817fa09cba3bf7ac07ea",
-      "author": "Martin St-Amant (S23678)",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "80_machu_picchu_juin_2009_edit",
-      "page": "https://commons.wikimedia.org/wiki/File:80_-_Machu_Picchu_-_Juin_2009_-_edit.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/62/80_-_Machu_Picchu_-_Juin_2009_-_edit.jpg",
-      "width": 10000,
-      "height": 9760,
-      "mime": "image/jpeg",
-      "sha1": "7fabe234797f360b5c6f0512e39ee589b52d93cd",
-      "author": "Martin St-Amant (S23678)",
-      "license": "CC BY-SA 3.0"
     },
     {
       "name": "80_391_5003_kyiv_volodymyrska_hirka_rb",
@@ -7041,28 +5998,6 @@
       "license": "CC BY 4.0"
     },
     {
-      "name": "99_machu_picchu_juin_2009_edit3",
-      "page": "https://commons.wikimedia.org/wiki/File:99_-_Machu_Picchu_-_Juin_2009.edit3.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9f/99_-_Machu_Picchu_-_Juin_2009.edit3.jpg",
-      "width": 9187,
-      "height": 4100,
-      "mime": "image/jpeg",
-      "sha1": "fb7df51070f5cb4342521c1799df515c631fa6ef",
-      "author": "Martin St-Amant (S23678)",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "a_360_degree_panorama_of_a_unique_cloudscape_over_la_silla",
-      "page": "https://commons.wikimedia.org/wiki/File:A_360_degree_panorama_of_a_unique_cloudscape_over_La_Silla.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/9b/A_360_degree_panorama_of_a_unique_cloudscape_over_La_Silla.jpg",
-      "width": 28186,
-      "height": 4183,
-      "mime": "image/jpeg",
-      "sha1": "532fca03a2a512f06e47de9af5892684881ecc76",
-      "author": "ESO/F. Kamphues",
-      "license": "CC BY 4.0"
-    },
-    {
       "name": "a_balinese_girl_posing_in_a_flower_field",
       "page": "https://commons.wikimedia.org/wiki/File:A_Balinese_girl_posing_in_a_flower_field.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/a3/A_Balinese_girl_posing_in_a_flower_field.jpg",
@@ -7115,17 +6050,6 @@
       "mime": "image/jpeg",
       "sha1": "0c2329498758bb246d461c87aeca165731ceee14",
       "author": "NASA Earth Observatory images by Joshua Stevens, using Landsat data from the U.S. Geological Survey. Story by Adam Voiland.",
-      "license": "Public domain"
-    },
-    {
-      "name": "a_girl_defending_herself_against_eros_by_william_adolphe_bouguer",
-      "page": "https://commons.wikimedia.org/wiki/File:A_Girl_Defending_Herself_against_Eros,_by_William-Adolphe_Bouguereau.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/22/A_Girl_Defending_Herself_against_Eros%2C_by_William-Adolphe_Bouguereau.jpg",
-      "width": 9102,
-      "height": 12994,
-      "mime": "image/jpeg",
-      "sha1": "2a139df1af64238da5ea57edeb80d104d0e820d4",
-      "author": "William-Adolphe Bouguereau",
       "license": "Public domain"
     },
     {
@@ -7182,50 +6106,6 @@
       "sha1": "fe0885fbb55e6a428939a546a0d5cf52bba6b106",
       "author": "Angelica Kauffmann",
       "license": "Public domain"
-    },
-    {
-      "name": "a_southern_chain_gang_c1903_restore",
-      "page": "https://commons.wikimedia.org/wiki/File:A_Southern_chain_gang_c1903-restore.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/12/A_Southern_chain_gang_c1903-restore.jpg",
-      "width": 7402,
-      "height": 9252,
-      "mime": "image/jpeg",
-      "sha1": "9d748e109d470b96db22352b4f8b15a48d03fd27",
-      "author": "Detroit Publishing Co. , publisher",
-      "license": "Public domain"
-    },
-    {
-      "name": "a_sunday_on_la_grande_jatte_georges_seurat_1884",
-      "page": "https://commons.wikimedia.org/wiki/File:A_Sunday_on_La_Grande_Jatte,_Georges_Seurat,_1884.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7d/A_Sunday_on_La_Grande_Jatte%2C_Georges_Seurat%2C_1884.jpg",
-      "width": 20000,
-      "height": 13313,
-      "mime": "image/jpeg",
-      "sha1": "31091d2cd90d2694093e400020df2f9cce4e4ed0",
-      "author": "Georges Seurat",
-      "license": "Public domain"
-    },
-    {
-      "name": "a_very_wet_badger_51283095909",
-      "page": "https://commons.wikimedia.org/wiki/File:A_Very_Wet_Badger_(51283095909).jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/02/A_Very_Wet_Badger_%2851283095909%29.jpg",
-      "width": 8192,
-      "height": 5464,
-      "mime": "image/jpeg",
-      "sha1": "f9ff2f4a5d3d38abf89fcbb311795217aad3f9b5",
-      "author": "Andy Morffew from Itchen Abbas, Hampshire, UK",
-      "license": "CC BY 2.0"
-    },
-    {
-      "name": "a_arte_de_portas_abertas_2025",
-      "page": "https://commons.wikimedia.org/wiki/File:A_artE_de_pORtas_abERtas_--_2025.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2f/A_artE_de_pORtas_abERtas_--_2025.jpg",
-      "width": 13844,
-      "height": 17096,
-      "mime": "image/jpeg",
-      "sha1": "36b21ff267e66b1fede06ae33abb899d6aa5737a",
-      "author": "Dietmar Rabich",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "a_big_male_addax_showing_as_the_power_of_his_horns",
@@ -7303,17 +6183,6 @@
       "sha1": "f0398e25811b87bf9c12ea69c62fbf1514f7f8dd",
       "author": "W.carter",
       "license": "CC0"
-    },
-    {
-      "name": "a_floral_fantasy_of_animals_and_birds_india_mughal",
-      "page": "https://commons.wikimedia.org/wiki/File:A_floral_fantasy_of_animals_and_birds,_India,_Mughal.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/0/02/A_floral_fantasy_of_animals_and_birds%2C_India%2C_Mughal.jpg",
-      "width": 10297,
-      "height": 14695,
-      "mime": "image/jpeg",
-      "sha1": "63773c6bdd7da8206200bf88b9bcd5e1df14d8fa",
-      "author": "UnknownUnknown / Howard Agriesti, Cleveland Museum of Art‎",
-      "license": "Public domain"
     },
     {
       "name": "a_girl_putting_flowers_to_armenian_genocide_memorial_view_from_t",
@@ -7424,17 +6293,6 @@
       "sha1": "80f0793c951573ba28787c2e9d646eab093b3c95",
       "author": "Janeklass",
       "license": "CC BY 4.0"
-    },
-    {
-      "name": "a_room_in_tabatabai_house_kashan_iran",
-      "page": "https://commons.wikimedia.org/wiki/File:A_room_in_Tabatabai_House,_Kashan,_Iran.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5e/A_room_in_Tabatabai_House%2C_Kashan%2C_Iran.jpg",
-      "width": 11934,
-      "height": 7464,
-      "mime": "image/jpeg",
-      "sha1": "aa1bae4731b6793ceda9ecc99531e2d72eb95586",
-      "author": "Amir Pashaei",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "a_shape_created_using_light_painting",
@@ -7624,17 +6482,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "agad_janusz_i_starszy_nadaje_mieszczanom_warszawskim_przywilej_n",
-      "page": "https://commons.wikimedia.org/wiki/File:AGAD_Janusz_I_Starszy_nadaje_mieszczanom_warszawskim_przywilej_na_wybudowanie_lazni.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a8/AGAD_Janusz_I_Starszy_nadaje_mieszczanom_warszawskim_przywilej_na_wybudowanie_lazni.jpg",
-      "width": 11539,
-      "height": 7624,
-      "mime": "image/jpeg",
-      "sha1": "2034e0b965c92b7e594687f0df253566a95c31d9",
-      "author": "Janusz I, ks. wiski, warszawski, zakroczymski i ciechanowski",
-      "license": "Public domain"
-    },
-    {
       "name": "aidaperla_in_rotterdam_september_2019",
       "page": "https://commons.wikimedia.org/wiki/File:AIDAperla_in_Rotterdam_-_September_2019.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/f/fb/AIDAperla_in_Rotterdam_-_September_2019.jpg",
@@ -7712,17 +6559,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "aachener_dom_oktogon_barbarossaleuchter_blick_altar_2026",
-      "page": "https://commons.wikimedia.org/wiki/File:Aachener-Dom-Oktogon-Barbarossaleuchter-Blick-Altar-2026.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d3/Aachener-Dom-Oktogon-Barbarossaleuchter-Blick-Altar-2026.jpg",
-      "width": 5504,
-      "height": 8256,
-      "mime": "image/jpeg",
-      "sha1": "59e75719e1633f98f3c5b52d2d599336429a9905",
-      "author": "Tuxyso",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "aalupi_j_rv_2013_08",
       "page": "https://commons.wikimedia.org/wiki/File:Aalupi_j%C3%A4rv_2013_08.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/95/Aalupi_j%C3%A4rv_2013_08.jpg",
@@ -7767,17 +6603,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "abad_a_neum_nster_ciudad_de_luxemburgo_luxemburgo_2023_12_17_dd",
-      "page": "https://commons.wikimedia.org/wiki/File:Abad%C3%ADa_Neum%C3%BCnster,_ciudad_de_Luxemburgo,_Luxemburgo,_2023-12-17,_DD_22-24_HDR.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/87/Abad%C3%ADa_Neum%C3%BCnster%2C_ciudad_de_Luxemburgo%2C_Luxemburgo%2C_2023-12-17%2C_DD_22-24_HDR.jpg",
-      "width": 8144,
-      "height": 5262,
-      "mime": "image/jpeg",
-      "sha1": "74ac6e702dc71424e9bbac5ccd07a112a2ec723f",
-      "author": "Diego Delso",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "abad_a_de_saint_germain_des_pr_s_par_s_francia_2022_11_01_dd_20",
       "page": "https://commons.wikimedia.org/wiki/File:Abad%C3%ADa_de_Saint-Germain-des-Pr%C3%A9s,_Par%C3%ADs,_Francia,_2022-11-01,_DD_20-22_HDR.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Abad%C3%ADa_de_Saint-Germain-des-Pr%C3%A9s%2C_Par%C3%ADs%2C_Francia%2C_2022-11-01%2C_DD_20-22_HDR.jpg",
@@ -7798,17 +6623,6 @@
       "sha1": "1f4f42675c6a3466b48b833f43506fd02f72148c",
       "author": "Bijay chaurasia",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "abandoned_building_kolmannskuppe_namibia",
-      "page": "https://commons.wikimedia.org/wiki/File:Abandoned_building,_Kolmannskuppe,_Namibia.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/Abandoned_building%2C_Kolmannskuppe%2C_Namibia.jpg",
-      "width": 8677,
-      "height": 5785,
-      "mime": "image/jpeg",
-      "sha1": "df369d3bf3138a5e6d8f5e6116175fb4ae377645",
-      "author": "James Kerwin Photographic",
-      "license": "CC BY 2.0"
     },
     {
       "name": "abandoned_bus_in_san_pedro_de_atacama_unsplash",
@@ -7910,28 +6724,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "abbotsbury_dorset_uk_may_2012",
-      "page": "https://commons.wikimedia.org/wiki/File:Abbotsbury,_Dorset,_UK_-_May_2012.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/b/b7/Abbotsbury%2C_Dorset%2C_UK_-_May_2012.jpg",
-      "width": 9702,
-      "height": 3564,
-      "mime": "image/jpeg",
-      "sha1": "2d065611708c039eb6da000a7d75229f587219a0",
-      "author": "Diliff",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "abbotsford_house_study_room",
-      "page": "https://commons.wikimedia.org/wiki/File:Abbotsford_House_Study_Room.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/13/Abbotsford_House_Study_Room.jpg",
-      "width": 8687,
-      "height": 5791,
-      "mime": "image/jpeg",
-      "sha1": "bb48a9160e57185e1c2a2ea6fd50e362ed5c3b41",
-      "author": "Michael D Beckwith",
-      "license": "CC0"
-    },
-    {
       "name": "abeille_entrain_de_butiner_2",
       "page": "https://commons.wikimedia.org/wiki/File:Abeille_entrain_de_butiner_2.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/79/Abeille_entrain_de_butiner_2.jpg",
@@ -7941,17 +6733,6 @@
       "sha1": "abf3c8497540a01aa89caf8625626e56fadad975",
       "author": "Skander zarrad",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "abfertigen_einer_meldung_durch_brieftauben_ch_bar_3240471_restor",
-      "page": "https://commons.wikimedia.org/wiki/File:Abfertigen_einer_Meldung_durch_Brieftauben_-_CH-BAR_-_3240471_-_restoration.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/4a/Abfertigen_einer_Meldung_durch_Brieftauben_-_CH-BAR_-_3240471_-_restoration.jpg",
-      "width": 5786,
-      "height": 8170,
-      "mime": "image/jpeg",
-      "sha1": "316cd3706275ea393ebee8222e2c8bb5fa1c62bc",
-      "author": "UnknownUnknown - Restoration by Adam Cuerden",
-      "license": "CC BY-SA 3.0 ch"
     },
     {
       "name": "abraxas_sylvata_pargi_t_hnikvaksik_keila",
@@ -7998,28 +6779,6 @@
       "license": "CC BY 4.0"
     },
     {
-      "name": "abtei_seckau_basilika_innenraum_06",
-      "page": "https://commons.wikimedia.org/wiki/File:Abtei_Seckau_Basilika_Innenraum_06.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/8f/Abtei_Seckau_Basilika_Innenraum_06.jpg",
-      "width": 7229,
-      "height": 10844,
-      "mime": "image/jpeg",
-      "sha1": "0ac0a5fcf1d367adfe748280a8cf8a5b04bd1950",
-      "author": "Uoaei1",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "abtei_seckau_basilika_innenraum_08",
-      "page": "https://commons.wikimedia.org/wiki/File:Abtei_Seckau_Basilika_Innenraum_08.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/35/Abtei_Seckau_Basilika_Innenraum_08.jpg",
-      "width": 11714,
-      "height": 9521,
-      "mime": "image/jpeg",
-      "sha1": "e6bbbfc0bac85409b29356ae15cc5a168f6ab085",
-      "author": "Uoaei1",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "abtei_seckau_basilika_kreuzigungsgruppe_02",
       "page": "https://commons.wikimedia.org/wiki/File:Abtei_Seckau_Basilika_Kreuzigungsgruppe_02.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/9d/Abtei_Seckau_Basilika_Kreuzigungsgruppe_02.jpg",
@@ -8039,17 +6798,6 @@
       "mime": "image/jpeg",
       "sha1": "5a2a4b2febabca74c34f776011b68ee6a6899a80",
       "author": "DXR",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "abyaneh_ir_n_2016_09_19_dd_13_15_pan",
-      "page": "https://commons.wikimedia.org/wiki/File:Abyaneh,_Ir%C3%A1n,_2016-09-19,_DD_13-15_PAN.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/81/Abyaneh%2C_Ir%C3%A1n%2C_2016-09-19%2C_DD_13-15_PAN.jpg",
-      "width": 13829,
-      "height": 4393,
-      "mime": "image/jpeg",
-      "sha1": "ea3505166880109290f0d756bd10530c09d25690",
-      "author": "Diego Delso",
       "license": "CC BY-SA 4.0"
     },
     {
@@ -8075,28 +6823,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "acanthocardia_echinata_05",
-      "page": "https://commons.wikimedia.org/wiki/File:Acanthocardia_echinata_05.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/44/Acanthocardia_echinata_05.jpg",
-      "width": 14200,
-      "height": 6400,
-      "mime": "image/jpeg",
-      "sha1": "ec463d0c2b48cf7444608b93198936579cd14dea",
-      "author": "H. Zell",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "acanthocardia_echinata_06",
-      "page": "https://commons.wikimedia.org/wiki/File:Acanthocardia_echinata_06.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/15/Acanthocardia_echinata_06.jpg",
-      "width": 14000,
-      "height": 6600,
-      "mime": "image/jpeg",
-      "sha1": "e3dcdd432d24875673cb741b5d9c926408564e00",
-      "author": "H. Zell",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "acanthosaura_cardamomensis_khao_khitchakut_national_park",
       "page": "https://commons.wikimedia.org/wiki/File:Acanthosaura_cardamomensis_-_Khao_Khitchakut_National_Park.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/d/d7/Acanthosaura_cardamomensis_-_Khao_Khitchakut_National_Park.jpg",
@@ -8106,28 +6832,6 @@
       "sha1": "5256eebba64a9c10ddb2038b7eb5062abd7f2ce6",
       "author": "Rushenb",
       "license": "CC BY-SA 2.0"
-    },
-    {
-      "name": "acavus_haemastoma_fastuosa_01",
-      "page": "https://commons.wikimedia.org/wiki/File:Acavus_haemastoma_fastuosa_01.JPG",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a3/Acavus_haemastoma_fastuosa_01.JPG",
-      "width": 10000,
-      "height": 5755,
-      "mime": "image/jpeg",
-      "sha1": "b1b3718cd059aa4f776f44f822e262bec2811f10",
-      "author": "H. Zell",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "acavus_haemastoma_haemastoma_01",
-      "page": "https://commons.wikimedia.org/wiki/File:Acavus_haemastoma_haemastoma_01.JPG",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/61/Acavus_haemastoma_haemastoma_01.JPG",
-      "width": 11000,
-      "height": 5953,
-      "mime": "image/jpeg",
-      "sha1": "e859f9a41d269f07c4cf699e1f04ccf1f54dd312",
-      "author": "H. Zell",
-      "license": "CC BY-SA 3.0"
     },
     {
       "name": "acc_s_plage_sainte_marie_r_island_august_2015",
@@ -8148,17 +6852,6 @@
       "height": 6000,
       "mime": "image/jpeg",
       "sha1": "240bc04795d1328b2a16a3cc992028686dadeb1e",
-      "author": "Ivar Leidus",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "achacha_fruits_and_seed",
-      "page": "https://commons.wikimedia.org/wiki/File:Achacha_fruits_and_seed.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/80/Achacha_fruits_and_seed.jpg",
-      "width": 8256,
-      "height": 5504,
-      "mime": "image/jpeg",
-      "sha1": "b2cc7ac66d14492c913209d193929c9532242e77",
       "author": "Ivar Leidus",
       "license": "CC BY-SA 4.0"
     },
@@ -8284,17 +6977,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "acueducto_de_segovia_01",
-      "page": "https://commons.wikimedia.org/wiki/File:Acueducto_de_Segovia_01.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/19/Acueducto_de_Segovia_01.jpg",
-      "width": 20736,
-      "height": 13824,
-      "mime": "image/jpeg",
-      "sha1": "043fa815f568670e080ca672da447299b34472ae",
-      "author": "David Corral Gadea",
-      "license": "CC BY-SA 3.0 es"
-    },
-    {
       "name": "acueducto_segovia_espa_a_2024_06_14_dd_10",
       "page": "https://commons.wikimedia.org/wiki/File:Acueducto,_Segovia,_Espa%C3%B1a,_2024-06-14,_DD_10.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/d/dc/Acueducto%2C_Segovia%2C_Espa%C3%B1a%2C_2024-06-14%2C_DD_10.jpg",
@@ -8302,17 +6984,6 @@
       "height": 5516,
       "mime": "image/jpeg",
       "sha1": "27b4ec117c61cca79f690821927350827e84803b",
-      "author": "Diego Delso",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "acueductos_subterr_neos_de_cantalloc_nazca_per_2015_07_29_dd_09",
-      "page": "https://commons.wikimedia.org/wiki/File:Acueductos_subterr%C3%A1neos_de_Cantalloc,_Nazca,_Per%C3%BA,_2015-07-29,_DD_09.JPG",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/8a/Acueductos_subterr%C3%A1neos_de_Cantalloc%2C_Nazca%2C_Per%C3%BA%2C_2015-07-29%2C_DD_09.JPG",
-      "width": 8427,
-      "height": 5694,
-      "mime": "image/jpeg",
-      "sha1": "6c255cc77842e8070c6c73674bf9dc1f1b0e3b79",
       "author": "Diego Delso",
       "license": "CC BY-SA 4.0"
     },
@@ -8328,17 +6999,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "adam_savage_416506_by_christopher_michel_1172025_02",
-      "page": "https://commons.wikimedia.org/wiki/File:Adam_Savage_416506_by_Christopher_Michel_1172025_02.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/af/Adam_Savage_416506_by_Christopher_Michel_1172025_02.jpg",
-      "width": 11656,
-      "height": 8742,
-      "mime": "image/jpeg",
-      "sha1": "48c6626ace6047b0329432883a8d5c1414a8cb2e",
-      "author": "Christopher Michel",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "adam_thoroughgood_house_south_lr",
       "page": "https://commons.wikimedia.org/wiki/File:Adam_Thoroughgood_House_-_South_LR.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/a1/Adam_Thoroughgood_House_-_South_LR.jpg",
@@ -8348,17 +7008,6 @@
       "sha1": "8c8b0ce4adca70205a71c12cbfb3038098702a9c",
       "author": "PumpkinSky",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "adams_synchronological_chart_1881",
-      "page": "https://commons.wikimedia.org/wiki/File:Adams_Synchronological_Chart,_1881.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/71/Adams_Synchronological_Chart%2C_1881.jpg",
-      "width": 50195,
-      "height": 5347,
-      "mime": "image/jpeg",
-      "sha1": "87e11cb38be14fc8b51cad7ebc2a1ad1b5519657",
-      "author": "Sebastian C. Adams",
-      "license": "Public domain"
     },
     {
       "name": "adarga_nymphaea_alba_ciudad_ho_chi_minh_vietnam_2013_08_14_dd_01",
@@ -8383,17 +7032,6 @@
       "license": "CC BY-SA 2.0"
     },
     {
-      "name": "adeline_ravoux_by_vincent_van_gogh_cleveland_museum_of_art_1958",
-      "page": "https://commons.wikimedia.org/wiki/File:Adeline_Ravoux,_by_Vincent_van_Gogh,_Cleveland_Museum_of_Art,_1958.31.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/de/Adeline_Ravoux%2C_by_Vincent_van_Gogh%2C_Cleveland_Museum_of_Art%2C_1958.31.jpg",
-      "width": 11512,
-      "height": 11476,
-      "mime": "image/jpeg",
-      "sha1": "c6f39fa55366173a1c75aa5f144604bf490529e3",
-      "author": "Vincent van Gogh",
-      "license": "Public domain"
-    },
-    {
       "name": "adelpha_cytherea_mhnt",
       "page": "https://commons.wikimedia.org/wiki/File:Adelpha_cytherea_MHNT.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/a4/Adelpha_cytherea_MHNT.jpg",
@@ -8402,17 +7040,6 @@
       "mime": "image/jpeg",
       "sha1": "1296897ee9738515d4d1f74f894bb1b25d336e12",
       "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "adelsdorf_kirche_altarraum_20210801_rm_160111",
-      "page": "https://commons.wikimedia.org/wiki/File:Adelsdorf_Kirche_Altarraum-20210801-RM-160111.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d2/Adelsdorf_Kirche_Altarraum-20210801-RM-160111.jpg",
-      "width": 10335,
-      "height": 7751,
-      "mime": "image/jpeg",
-      "sha1": "16ca3950e793955e55a394ea71e2b0c2c2f81a8a",
-      "author": "Ermell",
       "license": "CC BY-SA 4.0"
     },
     {
@@ -8491,39 +7118,6 @@
       "sha1": "1c0c86ecf840b7ec398225c0ce689cc6a672fb80",
       "author": "Diliff",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "admiralty_building_central_frieze",
-      "page": "https://commons.wikimedia.org/wiki/File:Admiralty_Building_Central_Frieze.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f5/Admiralty_Building_Central_Frieze.jpg",
-      "width": 14000,
-      "height": 2222,
-      "mime": "image/jpeg",
-      "sha1": "3f98ef5d4d9643b2e8f26365c1ccdaf768434451",
-      "author": "Ivan Ivanovich Terebenyov",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "admiralty_extension_from_horse_guards_parade_sept_2006",
-      "page": "https://commons.wikimedia.org/wiki/File:Admiralty_Extension_from_Horse_Guards_Parade_-_Sept_2006.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c7/Admiralty_Extension_from_Horse_Guards_Parade_-_Sept_2006.jpg",
-      "width": 10420,
-      "height": 4829,
-      "mime": "image/jpeg",
-      "sha1": "793d2d0d26d1c377696f791d56f124fa6bf3af8b",
-      "author": "Diliff",
-      "license": "CC BY 2.5"
-    },
-    {
-      "name": "admiring_turkish_lamps_on_arab_street",
-      "page": "https://commons.wikimedia.org/wiki/File:Admiring_Turkish_Lamps_on_Arab_Street.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f2/Admiring_Turkish_Lamps_on_Arab_Street.jpg",
-      "width": 8192,
-      "height": 5464,
-      "mime": "image/jpeg",
-      "sha1": "529eba69adb70ff6d488153904b940da786f67f8",
-      "author": "Henry Vante",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "admont_ortsansicht",
@@ -8658,28 +7252,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "aellopos_fadus_mhnt_cut_2010_0_273_manicor_amazonas_brazil_male",
-      "page": "https://commons.wikimedia.org/wiki/File:Aellopos_fadus_MHNT_CUT_2010_0_273_Manicor%C3%A9_Amazonas_Brazil_male.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/79/Aellopos_fadus_MHNT_CUT_2010_0_273_Manicor%C3%A9_Amazonas_Brazil_male.jpg",
-      "width": 7450,
-      "height": 9913,
-      "mime": "image/jpeg",
-      "sha1": "27e278548b9362f3b96f816fa54d2ddb914210f6",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "aellopos_fadus_mhnt_cut_2010_0_273_rio_veruellio_amazonas_brazil",
-      "page": "https://commons.wikimedia.org/wiki/File:Aellopos_fadus_MHNT_CUT_2010_0_273_Rio_veruellio_Amazonas_Brazil_female.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Aellopos_fadus_MHNT_CUT_2010_0_273_Rio_veruellio_Amazonas_Brazil_female.jpg",
-      "width": 7706,
-      "height": 9662,
-      "mime": "image/jpeg",
-      "sha1": "dbb6d1fc65422b198cc72229483c75024c79e817",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "aeolacris_caternaulti_mhnt_dos",
       "page": "https://commons.wikimedia.org/wiki/File:Aeolacris_caternaulti_MHNT_dos.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/5/58/Aeolacris_caternaulti_MHNT_dos.jpg",
@@ -8711,17 +7283,6 @@
       "sha1": "a1e687b77406789b1797f6e3985d33bfedfbc48d",
       "author": "Taxiarchos228",
       "license": "CC BY 3.0"
-    },
-    {
-      "name": "aerial_view_of_peaks_of_khumbu_ngozumpa_glacier_and_gokyo_lakes",
-      "page": "https://commons.wikimedia.org/wiki/File:Aerial_View_of_Peaks_of_Khumbu,_Ngozumpa_Glacier_and_Gokyo_Lakes_(crop).jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/92/Aerial_View_of_Peaks_of_Khumbu%2C_Ngozumpa_Glacier_and_Gokyo_Lakes_%28crop%29.jpg",
-      "width": 9170,
-      "height": 4585,
-      "mime": "image/jpeg",
-      "sha1": "83ecd110a04cb5696d695793764d3ef247c74edb",
-      "author": "Original: Megaurab09 Derivative work: UnpetitproleX",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "aerial_view_sanshan_island_hailing_island_jiangcheng_district_ya",
@@ -8920,17 +7481,6 @@
       "sha1": "a4096a982eb2517c5b87b83a568f8729607d1651",
       "author": "Dominicus Johannes Bergsma",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "affresco_di_gioacchino_martorana_palazzo_butera_palermo_quadrato",
-      "page": "https://commons.wikimedia.org/wiki/File:Affresco_di_Gioacchino_Martorana_Palazzo_Butera_Palermo_quadrato.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/83/Affresco_di_Gioacchino_Martorana_Palazzo_Butera_Palermo_quadrato.jpg",
-      "width": 9077,
-      "height": 9337,
-      "mime": "image/jpeg",
-      "sha1": "7f353a8df30e301ee729d491b6a627c5f4d9b5c5",
-      "author": "This Photo was taken by Wolfgang Moroder. Feel free to use my photos, but please mention me as the author and send me a message. This image is not in the public domain. Please respect the copyright protection. It may only be used according to the rules mentioned here. This specifically excludes use in social media, if applicable terms of the licenses listed here not appropriate. Please do not upload an updated image here without consultation with the Author. The author would like to make corrections only at his own source. This ensures that the changes are preserved.Please if you think that any changes should be required, please inform the author.Otherwise you can upload a new image with a new name. Please use one of the templates derivative or extract.",
-      "license": "CC BY-SA 3.0"
     },
     {
       "name": "afgevallen_kastanje_van_een_tamme_kastanje_castanea_sativa_24_10",
@@ -9208,28 +7758,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "agence_rol_24_4_21_concours_de_machines_bnf",
-      "page": "https://commons.wikimedia.org/wiki/File:Agence_Rol,_24.4.21,_concours_de_machines_-_BnF.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d0/Agence_Rol%2C_24.4.21%2C_concours_de_machines_-_BnF.jpg",
-      "width": 8212,
-      "height": 5762,
-      "mime": "image/jpeg",
-      "sha1": "996f49823dfb12d5e93749c9f1027a8f825f5512",
-      "author": "Agence Rol",
-      "license": "Public domain"
-    },
-    {
-      "name": "agerostrea_ungulata_01",
-      "page": "https://commons.wikimedia.org/wiki/File:Agerostrea_ungulata_01.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/3/37/Agerostrea_ungulata_01.jpg",
-      "width": 17400,
-      "height": 6600,
-      "mime": "image/jpeg",
-      "sha1": "8f6f2f8ff913a525a5bb848ac1050648e06f57ec",
-      "author": "H. Zell",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "agfa_optima_1a_01",
       "page": "https://commons.wikimedia.org/wiki/File:Agfa-Optima-1A-01.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/f/fc/Agfa-Optima-1A-01.jpg",
@@ -9239,17 +7767,6 @@
       "sha1": "a0490bb7ac23d21624e393fdfec4d0846675664f",
       "author": "CEphoto, Uwe Aranas",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "agha_bozorg_mosque_kashan_iran",
-      "page": "https://commons.wikimedia.org/wiki/File:Agha_Bozorg_Mosque,_Kashan,_Iran.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a6/Agha_Bozorg_Mosque%2C_Kashan%2C_Iran.jpg",
-      "width": 10302,
-      "height": 10037,
-      "mime": "image/jpeg",
-      "sha1": "0251eca80c24747aa2818bfa2877bc4ba6e8fb1f",
-      "author": "Amirpashaei",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "aglais_io_mitterbach_01",
@@ -9340,28 +7857,6 @@
       "license": "CC0"
     },
     {
-      "name": "agrias_claudina_claudina_mhnt",
-      "page": "https://commons.wikimedia.org/wiki/File:Agrias_claudina_claudina_MHNT.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Agrias_claudina_claudina_MHNT.jpg",
-      "width": 9930,
-      "height": 4095,
-      "mime": "image/jpeg",
-      "sha1": "f8bdd0684c647548474f9a4b1eedf4162be8a898",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "agrias_narcissus_narcissus_mhnt",
-      "page": "https://commons.wikimedia.org/wiki/File:Agrias_narcissus_narcissus_MHNT.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/8/8a/Agrias_narcissus_narcissus_MHNT.jpg",
-      "width": 11909,
-      "height": 4338,
-      "mime": "image/jpeg",
-      "sha1": "2dc754e210d0c1463b05beaeec0c6bbc45081189",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "agriocnemis_falcifera_2017_10_22_1465",
       "page": "https://commons.wikimedia.org/wiki/File:Agriocnemis_falcifera_2017_10_22_1465.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/5/54/Agriocnemis_falcifera_2017_10_22_1465.jpg",
@@ -9381,17 +7876,6 @@
       "mime": "image/jpeg",
       "sha1": "942446415d056b5caa6e67469cdfd553303469ec",
       "author": "Jeevan Jose, Kerala, India",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "aguarales_de_valpalmas_zaragoza_espa_a_2015_01_06_dd_06_11_pan",
-      "page": "https://commons.wikimedia.org/wiki/File:Aguarales_de_Valpalmas,_Zaragoza,_Espa%C3%B1a,_2015-01-06,_DD_06-11_PAN.JPG",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/90/Aguarales_de_Valpalmas%2C_Zaragoza%2C_Espa%C3%B1a%2C_2015-01-06%2C_DD_06-11_PAN.JPG",
-      "width": 14746,
-      "height": 3341,
-      "mime": "image/jpeg",
-      "sha1": "dd87c1f44e3ee8005863e46670330f70f0b71c80",
-      "author": "Diego Delso",
       "license": "CC BY-SA 4.0"
     },
     {
@@ -9439,17 +7923,6 @@
       "license": "CC BY-SA 2.0"
     },
     {
-      "name": "ahuriri_river_before_sunrise_canterbury_new_zealand",
-      "page": "https://commons.wikimedia.org/wiki/File:Ahuriri_River_before_sunrise,_Canterbury,_New_Zealand.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2e/Ahuriri_River_before_sunrise%2C_Canterbury%2C_New_Zealand.jpg",
-      "width": 12379,
-      "height": 3251,
-      "mime": "image/jpeg",
-      "sha1": "a0d95484af30a9b4eae749dd5d2e2115023b9c3b",
-      "author": "Michal Klajban",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "aialik_glacier_pano_2",
       "page": "https://commons.wikimedia.org/wiki/File:Aialik_glacier_pano_2.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/9d/Aialik_glacier_pano_2.jpg",
@@ -9492,17 +7965,6 @@
       "sha1": "055b82df03ad5b1ffe98273d5346f5a283a986ee",
       "author": "H. Zell",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "aina_kari_near_zarih_of_fatima_masumeh_shrine_qom_iran",
-      "page": "https://commons.wikimedia.org/wiki/File:Aina-kari_near_Zarih_of_Fatima_Masumeh_Shrine,_Qom,_Iran.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/46/Aina-kari_near_Zarih_of_Fatima_Masumeh_Shrine%2C_Qom%2C_Iran.jpg",
-      "width": 11304,
-      "height": 7882,
-      "mime": "image/jpeg",
-      "sha1": "ffe8f3d953a89a15cfb271a5722432a6bf13e043",
-      "author": "Amir Pashaei",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "air_national_guard_wraps_up_training_at_global_dragon_150319_z_s",
@@ -9626,17 +8088,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "akademie_von_athen",
-      "page": "https://commons.wikimedia.org/wiki/File:Akademie_von_Athen.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/ca/Akademie_von_Athen.jpg",
-      "width": 11314,
-      "height": 9749,
-      "mime": "image/jpeg",
-      "sha1": "ed1a15c11814628e636d0a6d7e6c751cb8688b97",
-      "author": "Thomas Wolf, www.foto-tw.de",
-      "license": "CC BY-SA 3.0 de"
-    },
-    {
       "name": "akademietheater_dsc_0654w",
       "page": "https://commons.wikimedia.org/wiki/File:Akademietheater-DSC_0654w.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/a/ad/Akademietheater-DSC_0654w.jpg",
@@ -9712,17 +8163,6 @@
       "sha1": "be8ce1321d83a95abe79e381a60f8e20273e4634",
       "author": "Kabelleger",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "akropolis_mit_umgebung",
-      "page": "https://commons.wikimedia.org/wiki/File:Akropolis_mit_Umgebung.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1e/Akropolis_mit_Umgebung.jpg",
-      "width": 8923,
-      "height": 4415,
-      "mime": "image/jpeg",
-      "sha1": "d1e4a4dbd5ff2630352c6d7b87bf4a761d32e687",
-      "author": "Thomas Wolf, www.foto-tw.de",
-      "license": "CC BY-SA 3.0 de"
     },
     {
       "name": "aks_the_reflection_taj_mahal",
@@ -9824,17 +8264,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "albarrac_n_teruel_espa_a_2014_01_10_dd_022_025_pan",
-      "page": "https://commons.wikimedia.org/wiki/File:Albarrac%C3%ADn,_Teruel,_Espa%C3%B1a,_2014-01-10,_DD_022-025_PAN.JPG",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6e/Albarrac%C3%ADn%2C_Teruel%2C_Espa%C3%B1a%2C_2014-01-10%2C_DD_022-025_PAN.JPG",
-      "width": 12812,
-      "height": 2470,
-      "mime": "image/jpeg",
-      "sha1": "338eb173da2ea8c87cdfd703912a6dde298bb1b3",
-      "author": "Diego Delso",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "albarrac_n_teruel_espa_a_2014_01_10_dd_051",
       "page": "https://commons.wikimedia.org/wiki/File:Albarrac%C3%ADn,_Teruel,_Espa%C3%B1a,_2014-01-10,_DD_051.JPG",
       "url": "https://upload.wikimedia.org/wikipedia/commons/1/12/Albarrac%C3%ADn%2C_Teruel%2C_Espa%C3%B1a%2C_2014-01-10%2C_DD_051.JPG",
@@ -9890,28 +8319,6 @@
       "license": "Public domain"
     },
     {
-      "name": "albert_bridge_at_night_london_uk_diliff",
-      "page": "https://commons.wikimedia.org/wiki/File:Albert_Bridge_at_night,_London,_UK_-_Diliff.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e3/Albert_Bridge_at_night%2C_London%2C_UK_-_Diliff.jpg",
-      "width": 8645,
-      "height": 4178,
-      "mime": "image/jpeg",
-      "sha1": "e9c7577fe86692405bff62f831b981720682d0e2",
-      "author": "Diliff",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "albert_edelfelt_the_luxembourg_gardens_paris",
-      "page": "https://commons.wikimedia.org/wiki/File:Albert_Edelfelt_-_The_Luxembourg_Gardens,_Paris.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/53/Albert_Edelfelt_-_The_Luxembourg_Gardens%2C_Paris.jpg",
-      "width": 8724,
-      "height": 6528,
-      "mime": "image/jpeg",
-      "sha1": "7b4ae70ebc7cd9eb51359b95f2a640888e195332",
-      "author": "Albert Edelfelt",
-      "license": "Public domain"
-    },
-    {
       "name": "albert_einstein_head_cleaned",
       "page": "https://commons.wikimedia.org/wiki/File:Albert_Einstein_Head_cleaned.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/2/28/Albert_Einstein_Head_cleaned.jpg",
@@ -9945,17 +8352,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "albert_pierre_ren_maignan_jules_massenet_ariane",
-      "page": "https://commons.wikimedia.org/wiki/File:Albert_Pierre-Ren%C3%A9_Maignan_-_Jules_Massenet_-_Ariane.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/94/Albert_Pierre-Ren%C3%A9_Maignan_-_Jules_Massenet_-_Ariane.jpg",
-      "width": 7156,
-      "height": 10285,
-      "mime": "image/jpeg",
-      "sha1": "e65e30d38c6ea7c8932f1cbe57624ee260da9013",
-      "author": "Albert Pierre-René Maignan (1845-1908), restored by Adam Cuerden",
-      "license": "Public domain"
-    },
-    {
       "name": "alberta_iel_12_20120728_05",
       "page": "https://commons.wikimedia.org/wiki/File:Alberta_iel%C4%81_12_20120728-05.JPG",
       "url": "https://upload.wikimedia.org/wikipedia/commons/1/1e/Alberta_iel%C4%81_12_20120728-05.JPG",
@@ -9976,28 +8372,6 @@
       "sha1": "9c8bcafe6f2a0944c22521094649237c44e39226",
       "author": "PierreSelim",
       "license": "CC BY 4.0"
-    },
-    {
-      "name": "albi_panorama_sunset_panini_general",
-      "page": "https://commons.wikimedia.org/wiki/File:Albi_Panorama_Sunset_Panini_General.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/b/bd/Albi_Panorama_Sunset_Panini_General.jpg",
-      "width": 10334,
-      "height": 3769,
-      "mime": "image/jpeg",
-      "sha1": "eb7ee3caa4ee2774a556e602ad34da2dcd50b210",
-      "author": "Benh LIEU SONG (Flickr)",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "albi_sainte_c_cile_cathedral_roodscreen_2009_06_25",
-      "page": "https://commons.wikimedia.org/wiki/File:Albi_Sainte-C%C3%A9cile_Cathedral_Roodscreen_2009-06-25.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6f/Albi_Sainte-C%C3%A9cile_Cathedral_Roodscreen_2009-06-25.jpg",
-      "width": 14652,
-      "height": 9675,
-      "mime": "image/jpeg",
-      "sha1": "2f0e4e10e7bfd402e5ab9c702d496d489f1c3a1a",
-      "author": "Benh LIEU SONG (Flickr)",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "albizia_saman_trunk_leaning_over_the_water_on_a_mekong_bank_in_s",
@@ -10022,17 +8396,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "alcatraz_kitchen_2023_l1003585",
-      "page": "https://commons.wikimedia.org/wiki/File:Alcatraz_Kitchen_(2023)-L1003585.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7d/Alcatraz_Kitchen_%282023%29-L1003585.jpg",
-      "width": 9528,
-      "height": 6328,
-      "mime": "image/jpeg",
-      "sha1": "e15b31a3ad51d52bd550dce7c841b96ef85b6045",
-      "author": "Frank Schulenburg",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "alcatraz_recreation_yard_nw_view",
       "page": "https://commons.wikimedia.org/wiki/File:Alcatraz_recreation_yard,_NW_view.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/2/22/Alcatraz_recreation_yard%2C_NW_view.jpg",
@@ -10042,17 +8405,6 @@
       "sha1": "536004915976699e01ac95b2bd240bf209b7279c",
       "author": "Photograph: Radomianin",
       "license": "Public domain"
-    },
-    {
-      "name": "alcaud_n_culiblanco_eurocephalus_ruppelli_parque_nacional_de_tar",
-      "page": "https://commons.wikimedia.org/wiki/File:Alcaud%C3%B3n_culiblanco_(Eurocephalus_ruppelli),_parque_nacional_de_Tarangire,_Tanzania,_2024-05-25,_DD_71.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/9/92/Alcaud%C3%B3n_culiblanco_%28Eurocephalus_ruppelli%29%2C_parque_nacional_de_Tarangire%2C_Tanzania%2C_2024-05-25%2C_DD_71.jpg",
-      "width": 8688,
-      "height": 5792,
-      "mime": "image/jpeg",
-      "sha1": "8ba151e20a81140e67d24b84508f8ecde106fcf6",
-      "author": "Diego Delso",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "alcazaba_1_almeria_spain",
@@ -10086,17 +8438,6 @@
       "sha1": "1163caf720a5232888dfcae6ae58624843fa3ddd",
       "author": "JJ Harrison (https://www.jjharrison.com.au/)",
       "license": "CC BY 3.0"
-    },
-    {
-      "name": "alcoba_a_october_2021_1",
-      "page": "https://commons.wikimedia.org/wiki/File:Alcoba%C3%A7a_October_2021-1.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/f/fb/Alcoba%C3%A7a_October_2021-1.jpg",
-      "width": 9286,
-      "height": 5666,
-      "mime": "image/jpeg",
-      "sha1": "2db71caea62f51a2a38d3a39fb693c160ccda619",
-      "author": "Alvesgaspar",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "alc_zar_seville_april_2019_11",
@@ -10165,17 +8506,6 @@
       "license": "Public domain"
     },
     {
-      "name": "alexander_von_humboldt_diagram_of_a_cross_section_of_the_earth_s",
-      "page": "https://commons.wikimedia.org/wiki/File:Alexander_von_Humboldt_-_Diagram_of_a_cross-section_of_the_earth%27s_crust_-_rectified.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/7/7d/Alexander_von_Humboldt_-_Diagram_of_a_cross-section_of_the_earth%27s_crust_-_rectified.jpg",
-      "width": 20182,
-      "height": 8501,
-      "mime": "image/jpeg",
-      "sha1": "764d9439abf022f5d6915f8fa914fc4b3d07e22b",
-      "author": "Alexander von Humboldt",
-      "license": "Public domain"
-    },
-    {
       "name": "alfombra_de_algas_amarillas_parque_nacional_ras_muhammad_egipto",
       "page": "https://commons.wikimedia.org/wiki/File:Alfombra_de_algas_amarillas,_parque_nacional_Ras_Muhammad,_Egipto,_2022-03-27,_DD_42.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/7/7b/Alfombra_de_algas_amarillas%2C_parque_nacional_Ras_Muhammad%2C_Egipto%2C_2022-03-27%2C_DD_42.jpg",
@@ -10195,17 +8525,6 @@
       "mime": "image/jpeg",
       "sha1": "11f4dca3b85df01351d354288fa5c22456b70287",
       "author": "Alfred T. Palmer Restoration: Adam Cuerden",
-      "license": "Public domain"
-    },
-    {
-      "name": "alfredo_edel_jules_massenet_le_mage",
-      "page": "https://commons.wikimedia.org/wiki/File:Alfredo_Edel_-_Jules_Massenet_-_Le_mage.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/68/Alfredo_Edel_-_Jules_Massenet_-_Le_mage.jpg",
-      "width": 7318,
-      "height": 10443,
-      "mime": "image/jpeg",
-      "sha1": "78ae2b95fd5ed80c8d4e090547ddda9e3529acaf",
-      "author": "Alfredo Edel Colorno / Adam Cuerden",
       "license": "Public domain"
     },
     {
@@ -10231,28 +8550,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "alhambra_evening_panorama_mirador_san_nicolas_srgb_1",
-      "page": "https://commons.wikimedia.org/wiki/File:Alhambra_evening_panorama_Mirador_San_Nicolas_sRGB-1.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/cf/Alhambra_evening_panorama_Mirador_San_Nicolas_sRGB-1.jpg",
-      "width": 10172,
-      "height": 2160,
-      "mime": "image/jpeg",
-      "sha1": "2e3c25db07f76b771ab10403b6ab481c6c120d41",
-      "author": "Slaunger",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "ali_gholi_agha_hammam_isfahan_iran",
-      "page": "https://commons.wikimedia.org/wiki/File:Ali_Gholi_Agha_hammam,_Isfahan,_Iran.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/13/Ali_Gholi_Agha_hammam%2C_Isfahan%2C_Iran.jpg",
-      "width": 10428,
-      "height": 9257,
-      "mime": "image/jpeg",
-      "sha1": "a9b416f608dd1bd03603394faea5010610997586",
-      "author": "Amirpashaei",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "alice_c_evans_national_photo_company_portrait_circa_1915",
       "page": "https://commons.wikimedia.org/wiki/File:Alice_C._Evans,_National_Photo_Company_portrait,_circa_1915.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/e/e1/Alice_C._Evans%2C_National_Photo_Company_portrait%2C_circa_1915.jpg",
@@ -10272,17 +8569,6 @@
       "mime": "image/jpeg",
       "sha1": "404b44ae2eac5f21442d8f4aad645b8f723b44c6",
       "author": "The U.S. Lithograph Co., Russell-Morgan Print, Cincinnati & New York. Restored by Adam Cuerden",
-      "license": "Public domain"
-    },
-    {
-      "name": "alice_paul_1915_by_harris_ewing",
-      "page": "https://commons.wikimedia.org/wiki/File:Alice_Paul_(1915)_by_Harris_%26_Ewing.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5e/Alice_Paul_%281915%29_by_Harris_%26_Ewing.jpg",
-      "width": 6780,
-      "height": 9175,
-      "mime": "image/jpeg",
-      "sha1": "aadc9a79d683880f093cf3dab09ef842f79e19ea",
-      "author": "Harris & Ewing (photographic firm) Adam Cuerden - Restoration",
       "license": "Public domain"
     },
     {
@@ -10341,17 +8627,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "all_saints_margaret_street_interior_2_london_uk_diliff",
-      "page": "https://commons.wikimedia.org/wiki/File:All_Saints_Margaret_Street_Interior_2,_London,_UK_-_Diliff.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/44/All_Saints_Margaret_Street_Interior_2%2C_London%2C_UK_-_Diliff.jpg",
-      "width": 13904,
-      "height": 12803,
-      "mime": "image/jpeg",
-      "sha1": "3b5a7f1505cd143683f8a6c4f7abd680518d861b",
-      "author": "Diliff",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "all_souls_day_celebration_01",
       "page": "https://commons.wikimedia.org/wiki/File:All_Souls%27_Day_celebration_01.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/9/9e/All_Souls%27_Day_celebration_01.jpg",
@@ -10363,17 +8638,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "allegory_treaty_of_the_pyrenees_giovanni_francesco_romanelli_lou",
-      "page": "https://commons.wikimedia.org/wiki/File:Allegory_Treaty_of_the_Pyrenees_-_Giovanni_Francesco_Romanelli_-_Louvre,_INV_20349.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6f/Allegory_Treaty_of_the_Pyrenees_-_Giovanni_Francesco_Romanelli_-_Louvre%2C_INV_20349.jpg",
-      "width": 6718,
-      "height": 8624,
-      "mime": "image/jpeg",
-      "sha1": "59f8ddda2a99d1c7f659fef2f81d071a7928df48",
-      "author": "Terragio67",
-      "license": "Public domain"
-    },
-    {
       "name": "allehandaborgen_may_2014",
       "page": "https://commons.wikimedia.org/wiki/File:Allehandaborgen_May_2014.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/03/Allehandaborgen_May_2014.jpg",
@@ -10383,17 +8647,6 @@
       "sha1": "9ce57efcdb9568b999f0eeefaf5a405d8ffb2acd",
       "author": "Arild Vågen",
       "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "alley_behind_boat_quay_singapore_l1003686",
-      "page": "https://commons.wikimedia.org/wiki/File:Alley_behind_Boat_Quay,_Singapore-L1003686.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/b/b3/Alley_behind_Boat_Quay%2C_Singapore-L1003686.jpg",
-      "width": 5879,
-      "height": 8852,
-      "mime": "image/jpeg",
-      "sha1": "f8adcbd2d6d475cef084143b6825a65a97a7eacc",
-      "author": "Frank Schulenburg",
-      "license": "CC BY-SA 4.0"
     },
     {
       "name": "alleyway_from_york_street_london_ontario_2026_07_31_black_and_wh",
@@ -10482,17 +8735,6 @@
       "sha1": "5bc3dd1ef2d1d06c8565d5375cf39c0589c932c4",
       "author": "Didier Descouens",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "almeida_j_nior_saudade_longing_google_art_project",
-      "page": "https://commons.wikimedia.org/wiki/File:Almeida_J%C3%BAnior_-_Saudade_(Longing)_-_Google_Art_Project.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/5/53/Almeida_J%C3%BAnior_-_Saudade_%28Longing%29_-_Google_Art_Project.jpg",
-      "width": 15036,
-      "height": 30000,
-      "mime": "image/jpeg",
-      "sha1": "c9a666d7b133c001de7cec351badc636eab51fe1",
-      "author": "José Ferraz de Almeida Júnior",
-      "license": "Public domain"
     },
     {
       "name": "almeida_march_2026_1",
@@ -10605,17 +8847,6 @@
       "license": "CC BY-SA 4.0"
     },
     {
-      "name": "alouatta_seniculus_global",
-      "page": "https://commons.wikimedia.org/wiki/File:Alouatta_seniculus_Global.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/ca/Alouatta_seniculus_Global.jpg",
-      "width": 13785,
-      "height": 8000,
-      "mime": "image/jpeg",
-      "sha1": "c9cb42e1d6596eff52abf8d6d0b3926f1953ad42",
-      "author": "Didier Descouens",
-      "license": "CC BY-SA 4.0"
-    },
-    {
       "name": "alouette_de_clotbey_jebil_np",
       "page": "https://commons.wikimedia.org/wiki/File:Alouette_de_Clotbey_Jebil_NP.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/3/36/Alouette_de_Clotbey_Jebil_NP.jpg",
@@ -10625,17 +8856,6 @@
       "sha1": "598d0e67d5b644a2bb45348839cba04ef2fe0daf",
       "author": "El Golli Mohamed",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "alpbachtal_panorama",
-      "page": "https://commons.wikimedia.org/wiki/File:Alpbachtal_Panorama.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/4b/Alpbachtal_Panorama.jpg",
-      "width": 11820,
-      "height": 4583,
-      "mime": "image/jpeg",
-      "sha1": "b0c1cd894b88ab546fed04d28216e54f619acc07",
-      "author": "Ximeg",
-      "license": "CC BY-SA 3.0"
     },
     {
       "name": "alpenmurmeltier_marmota_marmota_of_r_tikon_5",
@@ -10704,17 +8924,6 @@
       "license": "CC BY-SA 3.0"
     },
     {
-      "name": "alpsee_pindarplatz_hohenschwangau_castle_alpenrose_neuschwanstei",
-      "page": "https://commons.wikimedia.org/wiki/File:Alpsee_-_Pindarplatz_-_Hohenschwangau_Castle_-_Alpenrose_-_Neuschwanstein_Castle_01.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/c/c7/Alpsee_-_Pindarplatz_-_Hohenschwangau_Castle_-_Alpenrose_-_Neuschwanstein_Castle_01.jpg",
-      "width": 22981,
-      "height": 4982,
-      "mime": "image/jpeg",
-      "sha1": "7fe6b82a2c17299c2c46cf09e6ad35b782e1f649",
-      "author": "Llez",
-      "license": "CC BY-SA 3.0"
-    },
-    {
       "name": "altaner_p_s_ndre_ringgade",
       "page": "https://commons.wikimedia.org/wiki/File:Altaner_p%C3%A5_s%C3%B8ndre_ringgade.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/Altaner_p%C3%A5_s%C3%B8ndre_ringgade.jpg",
@@ -10757,28 +8966,6 @@
       "sha1": "842bc7cab6d989c681c5ad71ffb5b84cbc4cd05a",
       "author": "Wilfredor",
       "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "altare_del_ss_sacramento_michelangelo_grigoletti_vantini_duomo_n",
-      "page": "https://commons.wikimedia.org/wiki/File:Altare_del_SS_Sacramento_Michelangelo_Grigoletti_Vantini_duomo_nuovo_Brescia.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/4/42/Altare_del_SS_Sacramento_Michelangelo_Grigoletti_Vantini_duomo_nuovo_Brescia.jpg",
-      "width": 7310,
-      "height": 9627,
-      "mime": "image/jpeg",
-      "sha1": "ee45bd6cbe0079b465a0ec9a0ec13b011ca2c3b9",
-      "author": "This Photo was taken by Wolfgang Moroder. Feel free to use my photos, but please mention me as the author and send me a message. This image is not in the public domain. Please respect the copyright protection. It may only be used according to the rules mentioned here. This specifically excludes use in social media, if applicable terms of the licenses listed here not appropriate. Please do not upload an updated image here without consultation with the Author. The author would like to make corrections only at his own source. This ensures that the changes are preserved.Please if you think that any changes should be required, please inform the author.Otherwise you can upload a new image with a new name. Please use one of the templates derivative or extract.",
-      "license": "CC BY-SA 3.0"
-    },
-    {
-      "name": "alte_bibliothek_bebelplatz_berlin_mitte_150926_ako",
-      "page": "https://commons.wikimedia.org/wiki/File:Alte_Bibliothek,_Bebelplatz,_Berlin-Mitte,_150926,_ako.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1f/Alte_Bibliothek%2C_Bebelplatz%2C_Berlin-Mitte%2C_150926%2C_ako.jpg",
-      "width": 9000,
-      "height": 3531,
-      "mime": "image/jpeg",
-      "sha1": "8f659d063eb4f82914ac67225003d84c9fda8fc9",
-      "author": "Ansgar Koreng",
-      "license": "CC BY 3.0 de"
     },
     {
       "name": "alte_kirche_st_salvator_pellworm_17",
@@ -10877,17 +9064,6 @@
       "mime": "image/jpeg",
       "sha1": "e20ff42dc52c5e9edcbd35d13fb48ff8c14c6674",
       "author": "Isiwal",
-      "license": "CC BY-SA 4.0"
-    },
-    {
-      "name": "altenkunstadt_mari_geburt_252031",
-      "page": "https://commons.wikimedia.org/wiki/File:Altenkunstadt_Mari%C3%A4_Geburt_252031.jpg",
-      "url": "https://upload.wikimedia.org/wikipedia/commons/1/1d/Altenkunstadt_Mari%C3%A4_Geburt_252031.jpg",
-      "width": 7000,
-      "height": 9333,
-      "mime": "image/jpeg",
-      "sha1": "b8f31e0c15875d9f448e5c7cb990ce53b6eabf15",
-      "author": "Ermell",
       "license": "CC BY-SA 4.0"
     },
     {

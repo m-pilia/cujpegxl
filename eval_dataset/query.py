@@ -4,11 +4,12 @@
 """Build eval_dataset/sources.json from Wikimedia Commons featured pictures.
 
 Selects direct file members of the "Featured pictures on Wikimedia Commons"
-category whose resolution is at least 3840x2160 and whose mime type is a
-supported raster format, and records permalinks plus author/license metadata
-so prepare_dataset.py can fetch the originals on demand. The committed
-sources.json snapshot is the source of truth; re-running the query against a
-live Commons may legitimately produce a different set.
+category whose resolution is at least 3840x2160 and at most 8000x8000, and
+whose mime type is a supported raster format, and records permalinks plus
+author/license metadata so prepare_dataset.py can fetch the originals on
+demand. The committed sources.json snapshot is the source of truth;
+re-running the query against a live Commons may legitimately produce a
+different set.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ USER_AGENT = "cujpegxl-eval-dataset/1.0 (cujpegxl project metadata query)"
 CATEGORY_TITLE = "Category:Featured pictures on Wikimedia Commons"
 MIN_WIDTH = 3840
 MIN_HEIGHT = 2160
+MAX_WIDTH = 8000
+MAX_HEIGHT = 8000
 ALLOWED_MIMES = ("image/jpeg", "image/png", "image/tiff")
 MEMBERS_PAGE_SIZE = 500
 IMAGEINFO_BATCH = 50
@@ -148,6 +151,8 @@ def parse_imageinfo(response):
             continue
         if info.get("width", 0) < MIN_WIDTH or info.get("height", 0) < MIN_HEIGHT:
             continue
+        if info.get("width", 0) > MAX_WIDTH or info.get("height", 0) > MAX_HEIGHT:
+            continue
         ext = info.get("extmetadata", {})
         records.append(
             FileRecord(
@@ -222,6 +227,8 @@ def build_sources_doc(records, num_images, generated):
             "category": CATEGORY_TITLE,
             "min_width": MIN_WIDTH,
             "min_height": MIN_HEIGHT,
+            "max_width": MAX_WIDTH,
+            "max_height": MAX_HEIGHT,
             "mimes": list(ALLOWED_MIMES),
         },
         "files": files,

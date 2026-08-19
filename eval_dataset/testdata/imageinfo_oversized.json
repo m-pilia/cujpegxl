@@ -1,0 +1,46 @@
+{
+  "query": {
+    "pages": {
+      "1007": {
+        "pageid": 1007,
+        "ns": 6,
+        "title": "File:Gigapixel panorama.jpg",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Gigapixel_panorama.jpg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Gigapixel_panorama.jpg",
+            "width": 20323,
+            "height": 16259,
+            "mime": "image/jpeg",
+            "sha1": "7777777777777777777777777777777777777777",
+            "extmetadata": {
+              "Artist": {"value": "Gigapixel Author", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC BY-SA 4.0", "source": "commons-templates"}
+            }
+          }
+        ]
+      },
+      "1008": {
+        "pageid": 1008,
+        "ns": 6,
+        "title": "File:Vertical stitch.png",
+        "imagerepository": "local",
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/2/2b/Vertical_stitch.png",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Vertical_stitch.png",
+            "width": 5000,
+            "height": 8000,
+            "mime": "image/png",
+            "sha1": "8888888888888888888888888888888888888888",
+            "extmetadata": {
+              "Artist": {"value": "Stitch Author", "source": "commons-templates"},
+              "LicenseShortName": {"value": "CC0", "source": "commons-templates"}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

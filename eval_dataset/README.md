@@ -1,9 +1,9 @@
 # Eval dataset
 
 A ~1000-image corpus of Wikimedia Commons featured pictures
-(≥ 3840×2160 raster originals) for quality benchmarking. Only metadata is
-committed (`sources.json`); pixel data is fetched on demand and never enters
-the repository.
+(≥ 3840×2160, ≤ 8000×8000 raster originals) for quality benchmarking. Only
+metadata is committed (`sources.json`); pixel data is fetched on demand and
+never enters the repository.
 
 Pipeline (pass absolute paths: under `bazelisk run` the working directory is
 the runfiles tree, not the workspace):

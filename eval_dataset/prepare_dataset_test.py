@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import email.message
+import io
 import json
 import pathlib
+import struct
 import tempfile
 import time
 import unittest
 import urllib.error
+import zlib
 from unittest import mock
 
 import numpy as np
@@ -199,6 +202,21 @@ class RateLimitTest(unittest.TestCase):
 
 
 class BuildMasterTest(unittest.TestCase):
+    def test_opens_originals_exceeding_pillow_default_pixel_guard(self):
+        # 13400x13400 exceeds Pillow's default decompression-bomb threshold;
+        # the header is patched rather than the pixels materialized, as
+        # Image.open only parses the header before the guard fires.
+        buffer = io.BytesIO()
+        Image.new("RGB", (1, 1), "red").save(buffer, format="PNG")
+        data = bytearray(buffer.getvalue())
+        struct.pack_into(">II", data, 16, 13400, 13400)
+        struct.pack_into(">I", data, 29, zlib.crc32(bytes(data[12:29])))
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "huge.png"
+            source.write_bytes(data)
+            with Image.open(source) as handle:
+                self.assertEqual(handle.size, (13400, 13400))
+
     def test_produces_4k_master_honoring_exif_orientation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

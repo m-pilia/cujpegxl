@@ -39,6 +39,11 @@ from PIL import Image, ImageOps
 
 import corpus_prep as cp
 
+# Every original is sha1-verified against the curated sources.json before
+# Pillow decodes it, and featured-picture scans legitimately exceed Pillow's
+# default decompression-bomb threshold (~179 Mpixels), so disable the guard.
+Image.MAX_IMAGE_PIXELS = None
+
 USER_AGENT = "cujpegxl-eval-dataset/1.0"
 MIME_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/tiff": "tif"}
 

@@ -141,6 +141,10 @@ class ParseImageinfoTest(unittest.TestCase):
         records = query.parse_imageinfo(_load("imageinfo_rejected.json"))
         self.assertEqual(records, [])
 
+    def test_filters_oversized_images(self):
+        records = query.parse_imageinfo(_load("imageinfo_oversized.json"))
+        self.assertEqual([r.title for r in records], ["File:Vertical stitch.png"])
+
 
 class CollectRecordsTest(unittest.TestCase):
     def test_paginates_and_filters(self):
@@ -177,6 +181,8 @@ class BuildSourcesDocTest(unittest.TestCase):
         self.assertEqual(doc["generated"], "2026-08-18")
         self.assertEqual(doc["constraints"]["min_width"], 3840)
         self.assertEqual(doc["constraints"]["min_height"], 2160)
+        self.assertEqual(doc["constraints"]["max_width"], 8000)
+        self.assertEqual(doc["constraints"]["max_height"], 8000)
         self.assertEqual(doc["constraints"]["mimes"], list(query.ALLOWED_MIMES))
 
     def test_deduplicates_identical_names(self):
@@ -210,6 +216,8 @@ class BuildSourcesDocTest(unittest.TestCase):
                 self.assertIn(key, entry)
             self.assertGreaterEqual(entry["width"], 3840)
             self.assertGreaterEqual(entry["height"], 2160)
+            self.assertLessEqual(entry["width"], query.MAX_WIDTH)
+            self.assertLessEqual(entry["height"], query.MAX_HEIGHT)
 
 
 class MainTest(unittest.TestCase):
