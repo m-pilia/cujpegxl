@@ -340,31 +340,47 @@ __device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
     return c.amd[sym] + rn;
 }
 
-// LSB-first write of `n_bits` of `value` at absolute bit position `pos` into the
-// 32-bit word buffer, via atomicOr so concurrent writers of disjoint bit ranges
-// (adjacent runs sharing a byte) compose. Requires n_bits <= 31 and a
-// zero-initialized buffer.
-__device__ void atomic_put_bits(unsigned int* words, unsigned long long pos, std::uint32_t n_bits,
-                                std::uint32_t value) {
-    while (n_bits > 0) {
-        const unsigned long long word{pos >> 5};
-        const std::uint32_t bit_in_word{static_cast<std::uint32_t>(pos & 31)};
-        const std::uint32_t take{min(n_bits, 32u - bit_in_word)};
-        const std::uint32_t chunk{value & ((1u << take) - 1u)};
-        atomicOr(&words[word], chunk << bit_in_word);
-        value >>= take;
-        n_bits -= take;
-        pos += take;
-    }
-}
-
-struct AtomicBitWriter {
+// LSB-first bit packer for a thread's single contiguous run of bits. A run owns a
+// known absolute bit range [pos, end); its interior 32-bit words belong to it
+// alone and are written with plain stores, while the (at most one) word at each
+// end that a run shares with an adjacent run is composed with atomicOr. Since the
+// output region is pre-zeroed and the shared bit sub-ranges are disjoint, the OR
+// reproduces the reference byte layout with two atomics per run instead of one
+// per symbol chunk. Bits are staged in `acc` (valid low bits counted by `fill`);
+// each `put` appends up to 32 bits and flushes any completed words. `finish` must
+// be called once after the run's items to emit the trailing partial word.
+struct RunBitWriter {
     unsigned int* words;
-    unsigned long long pos;
+    unsigned long long word_idx;
+    unsigned long long acc;
+    std::uint32_t fill;
+    bool first_shared;
+
+    __device__ RunBitWriter(unsigned int* out_words, unsigned long long pos)
+        : words{out_words},
+          word_idx{pos >> 5},
+          acc{0},
+          fill{static_cast<std::uint32_t>(pos & 31)},
+          first_shared{(pos & 31) != 0} {}
 
     __device__ void put(std::uint32_t n_bits, std::uint32_t value) {
-        atomic_put_bits(words, pos, n_bits, value);
-        pos += n_bits;
+        const std::uint32_t mask{n_bits >= 32 ? ~0u : ((1u << n_bits) - 1u)};
+        acc |= static_cast<unsigned long long>(value & mask) << fill;
+        fill += n_bits;
+        while (fill >= 32) {
+            const unsigned int word{static_cast<unsigned int>(acc)};
+            if (first_shared) {
+                if (word != 0) {
+                    atomicOr(&words[word_idx], word);
+                }
+                first_shared = false;
+            } else {
+                words[word_idx] = word;
+            }
+            acc >>= 32;
+            fill -= 32;
+            ++word_idx;
+        }
     }
 
     __device__ void put_blob(const std::uint8_t* blob, std::uint32_t n_bits) {
@@ -377,10 +393,21 @@ struct AtomicBitWriter {
             put(rem, blob[full] & ((1u << rem) - 1u));
         }
     }
+
+    // The trailing partial word (if any) is shared with the next run, so it is
+    // always composed via atomicOr rather than stored.
+    __device__ void finish() {
+        if (fill != 0) {
+            const unsigned int word{static_cast<unsigned int>(acc)};
+            if (word != 0) {
+                atomicOr(&words[word_idx], word);
+            }
+        }
+    }
 };
 
 // Emits item k at the writer's current position.
-__device__ void dc_item_emit(const DcCtx& c, std::size_t k, AtomicBitWriter& w) {
+__device__ void dc_item_emit(const DcCtx& c, std::size_t k, RunBitWriter& w) {
     if (k == 0) {
         w.put_blob(c.pre, c.pre_bits);
         return;
@@ -630,10 +657,11 @@ __global__ void dc_chunk_emit_kernel(
 
     const unsigned long long base{(static_cast<unsigned long long>(group_offsets[g]) << 3) +
                                   chunk_base[g * DC_CHUNKS + blockIdx.y]};
-    AtomicBitWriter w{reinterpret_cast<unsigned int*>(out), base + run_off};
+    RunBitWriter w{reinterpret_cast<unsigned int*>(out), base + run_off};
     for (std::size_t k{a0}; k < a1; ++k) {
         dc_item_emit(c, k, w);
     }
+    w.finish();
 }
 
 // --- Mixed-block AC path ------------------------------------------------------
@@ -827,7 +855,7 @@ __device__ std::uint32_t ac_item_bits(const AcGroupCtx& c, std::size_t i) {
     return total;
 }
 
-__device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, AtomicBitWriter& w) {
+__device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, RunBitWriter& w) {
     std::size_t bx{}, by{};
     int ch{};
     std::uint32_t predicted{};
@@ -892,11 +920,12 @@ __global__ void group_emit_kernel(const std::int16_t* ac, const std::int8_t* acs
     const std::size_t k0{min(static_cast<std::size_t>(threadIdx.x) * r, c.n_items)};
     const std::size_t k1{min(k0 + r, c.n_items)};
     const unsigned long long run_off{run_offsets[g * blockDim.x + threadIdx.x]};
-    AtomicBitWriter w{reinterpret_cast<unsigned int*>(out),
-                      (static_cast<unsigned long long>(group_offsets[g]) << 3) + run_off};
+    RunBitWriter w{reinterpret_cast<unsigned int*>(out),
+                   (static_cast<unsigned long long>(group_offsets[g]) << 3) + run_off};
     for (std::size_t k{k0}; k < k1; ++k) {
         ac_item_emit(c, k, w);
     }
+    w.finish();
 }
 
 }  // namespace
