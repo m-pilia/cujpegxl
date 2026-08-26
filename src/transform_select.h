@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <cuda_fp16.h>
+
 namespace cujpegxl {
 
 // Bounded transform-type selection: a quadtree over the square candidate
@@ -17,13 +19,15 @@ namespace cujpegxl {
 // (deterministic tie-break). Large candidates are considered only where they fit
 // fully within the image; edge regions fall back to smaller sizes.
 //
-// `y` is a width*height float plane (device). `acs` (device, bw*bh int8, bw =
-// width/8, bh = height/8, block raster) receives the per-8x8 decision in the
-// vardct_layout.h encoding: a first-block holds its side (8/16/32), every block
-// it covers holds ACS_COVERED. `distance` sets the proxy quantizer. width/height
-// are multiples of 8. Deterministic. Returns false on a CUDA error.
+// `y` is a width*height float plane (device). `coeffs` receives the selected Y
+// coefficients in the Y plane of three channel-major FP16 covered-block planes.
+// `acs` (device, bw*bh int8, bw = width/8, bh = height/8, block raster) receives
+// the per-8x8 decision in the vardct_layout.h encoding: a first-block holds its
+// side (8/16/32), every block it covers holds ACS_COVERED. `distance` sets the
+// proxy quantizer. width/height are multiples of 8. Deterministic. Returns false
+// on a CUDA error.
 bool select_transforms(const float* y, std::size_t width, std::size_t height, float distance,
-                       std::int8_t* acs);
+                       __half* coeffs, std::int8_t* acs);
 
 // Host reference running the identical per-region decision, for validation.
 void select_transforms_host(const float* y, std::size_t width, std::size_t height, float distance,

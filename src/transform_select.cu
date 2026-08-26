@@ -10,6 +10,7 @@
 #include "quant_calibration.h"
 #include "quant_weights_dct8.h"
 #include "transform_select_impl.cuh"
+#include "vardct_layout.h"
 
 namespace cujpegxl {
 namespace {
@@ -65,7 +66,8 @@ __device__ const float* basis_for(int n) {
 // n/px0/py0 (the internal __syncthreads must not diverge).
 __device__ float coop_block_ac_cost(const float* __restrict__ y, std::size_t width, std::size_t px0,
                                     std::size_t py0, int n, float qgsf, float lambda, float* basis,
-                                    float* rows, float* pd, float* pr, int tid, int nthreads) {
+                                    float* rows, float* pd, float* pr, __half* ystore, int tid,
+                                    int nthreads) {
     __syncthreads();
     const float* src_basis{basis_for(n)};
     for (int e{tid}; e < n * n; e += nthreads) {
@@ -94,12 +96,13 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, std::size_t wid
     for (int e{tid}; e < n * n; e += nthreads) {
         const int fx{e / n};
         const int fy{e % n};
-        if (fx < m && fy < m) {
-            continue;
-        }
         float coeff{0.0f};
         for (int r{0}; r < n; ++r) {
             coeff += basis[fy * n + r] * rows[fx * n + r];
+        }
+        ystore[e] = __float2half(coeff);
+        if (fx < m && fy < m) {
+            continue;
         }
         int sx{static_cast<int>(lround(fx * 8.0 / n))};
         int sy{static_cast<int>(lround(fy * 8.0 / n))};
@@ -134,6 +137,7 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, std::size_t wid
 __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_t width,
                                          std::size_t bw, std::size_t bh, std::size_t rbw,
                                          std::size_t rbh, float qgsf, float lambda,
+                                         __half* __restrict__ ycoeffs,
                                          std::int8_t* __restrict__ acs) {
     const std::size_t region{static_cast<std::size_t>(blockIdx.x)};
     if (region >= rbw * rbh) {
@@ -149,6 +153,9 @@ __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_
     __shared__ float cost8[16];
     __shared__ float cost16[4];
     __shared__ float cost32;
+    __shared__ __half ystore8[16 * 64];
+    __shared__ __half ystore16[4 * 256];
+    __shared__ __half ystore32[1024];
 
     const int tid{static_cast<int>(threadIdx.x)};
     const int nthreads{static_cast<int>(blockDim.x)};
@@ -165,7 +172,7 @@ __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_
         const std::size_t bby{rby + 2 * static_cast<std::size_t>(qy) + dy};
         const bool exist{bbx < bw && bby < bh};
         const float c{exist ? coop_block_ac_cost(y, width, bbx * 8, bby * 8, 8, qgsf, lambda, basis,
-                                                 rows, pd, pr, tid, nthreads)
+                                                 rows, pd, pr, ystore8 + idx * 64, tid, nthreads)
                             : INF};
         if (tid == 0) {
             cost8[idx] = c;
@@ -180,7 +187,7 @@ __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_
         const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
         const bool fit16{bx + 2 <= bw && by + 2 <= bh};
         const float c{fit16 ? coop_block_ac_cost(y, width, bx * 8, by * 8, 16, qgsf, lambda, basis,
-                                                 rows, pd, pr, tid, nthreads)
+                                                 rows, pd, pr, ystore16 + q * 256, tid, nthreads)
                             : INF};
         if (tid == 0) {
             cost16[q] = c;
@@ -190,72 +197,100 @@ __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_
 
     const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
     const float c32{fit32 ? coop_block_ac_cost(y, width, rbx * 8, rby * 8, 32, qgsf, lambda, basis,
-                                               rows, pd, pr, tid, nthreads)
+                                               rows, pd, pr, ystore32, tid, nthreads)
                           : INF};
-    if (tid != 0) {
-        return;
-    }
-    cost32 = c32;
+    if (tid == 0) {
+        cost32 = c32;
 
-    float split_cost{0.0f};
-    int quad_choice[2][2];
-    for (int qy{0}; qy < 2; ++qy) {
-        for (int qx{0}; qx < 2; ++qx) {
-            const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
-            const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
-            float sum8{0.0f};
-            bool any8{false};
-            for (int dy{0}; dy < 2; ++dy) {
-                for (int dx{0}; dx < 2; ++dx) {
-                    const std::size_t bbx{bx + dx};
-                    const std::size_t bby{by + dy};
-                    if (bbx < bw && bby < bh) {
-                        sum8 += cost8[qy * 8 + qx * 4 + dy * 2 + dx];
-                        any8 = true;
+        float split_cost{0.0f};
+        int quad_choice[2][2];
+        for (int qy{0}; qy < 2; ++qy) {
+            for (int qx{0}; qx < 2; ++qx) {
+                const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
+                const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
+                float sum8{0.0f};
+                bool any8{false};
+                for (int dy{0}; dy < 2; ++dy) {
+                    for (int dx{0}; dx < 2; ++dx) {
+                        const std::size_t bbx{bx + dx};
+                        const std::size_t bby{by + dy};
+                        if (bbx < bw && bby < bh) {
+                            sum8 += cost8[qy * 8 + qx * 4 + dy * 2 + dx];
+                            any8 = true;
+                        }
                     }
                 }
+                if (!any8) {
+                    quad_choice[qy][qx] = -1;
+                    continue;
+                }
+                const bool fit16{bx + 2 <= bw && by + 2 <= bh};
+                const float c16{cost16[qy * 2 + qx]};
+                if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
+                    quad_choice[qy][qx] = 16;
+                    split_cost += c16;
+                } else {
+                    quad_choice[qy][qx] = 8;
+                    split_cost += sum8;
+                }
             }
-            if (!any8) {
-                quad_choice[qy][qx] = -1;
-                continue;
-            }
-            const bool fit16{bx + 2 <= bw && by + 2 <= bh};
-            const float c16{cost16[qy * 2 + qx]};
-            if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
-                quad_choice[qy][qx] = 16;
-                split_cost += c16;
-            } else {
-                quad_choice[qy][qx] = 8;
-                split_cost += sum8;
+        }
+
+        if (fit32 && cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS) {
+            write_first_block(acs, bw, rbx, rby, 32);
+        } else {
+            for (int qy{0}; qy < 2; ++qy) {
+                for (int qx{0}; qx < 2; ++qx) {
+                    const int choice{quad_choice[qy][qx]};
+                    if (choice < 0) {
+                        continue;
+                    }
+                    const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
+                    const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
+                    if (choice == 16) {
+                        write_first_block(acs, bw, bx, by, 16);
+                        continue;
+                    }
+                    for (int dy{0}; dy < 2; ++dy) {
+                        for (int dx{0}; dx < 2; ++dx) {
+                            const std::size_t bbx{bx + dx};
+                            const std::size_t bby{by + dy};
+                            if (bbx < bw && bby < bh) {
+                                acs[bby * bw + bbx] = 8;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+    __syncthreads();
 
-    if (fit32 && cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS) {
-        write_first_block(acs, bw, rbx, rby, 32);
-        return;
-    }
-    for (int qy{0}; qy < 2; ++qy) {
-        for (int qx{0}; qx < 2; ++qx) {
-            const int choice{quad_choice[qy][qx]};
-            if (choice < 0) {
-                continue;
-            }
-            const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
-            const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
-            if (choice == 16) {
-                write_first_block(acs, bw, bx, by, 16);
-                continue;
-            }
-            for (int dy{0}; dy < 2; ++dy) {
-                for (int dx{0}; dx < 2; ++dx) {
-                    const std::size_t bbx{bx + dx};
-                    const std::size_t bby{by + dy};
-                    if (bbx < bw && bby < bh) {
-                        acs[bby * bw + bbx] = 8;
-                    }
-                }
-            }
+    for (int p{0}; p < 16; ++p) {
+        const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
+        const std::size_t by{rby + static_cast<std::size_t>(p / 4)};
+        if (bx >= bw || by >= bh) {
+            continue;
+        }
+        const int n{acs[by * bw + bx]};
+        if (n == ACS_COVERED) {
+            continue;
+        }
+
+        const std::size_t lx{bx - rbx};
+        const std::size_t ly{by - rby};
+        const __half* src{nullptr};
+        if (n == 32) {
+            src = ystore32;
+        } else if (n == 16) {
+            const std::size_t q{(ly / 2) * 2 + lx / 2};
+            src = ystore16 + q * 256;
+        } else {
+            const std::size_t idx{((ly / 2) * 2 + lx / 2) * 4 + (ly % 2) * 2 + lx % 2};
+            src = ystore8 + idx * 64;
+        }
+        for (int raw{tid}; raw < n * n; raw += nthreads) {
+            ycoeffs[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))] = src[raw];
         }
     }
 }
@@ -263,7 +298,7 @@ __global__ void select_transforms_kernel(const float* __restrict__ y, std::size_
 }  // namespace
 
 bool select_transforms(const float* y, std::size_t width, std::size_t height, float distance,
-                       std::int8_t* acs) {
+                       __half* coeffs, std::int8_t* acs) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t rbw{region_grid(bw)};
@@ -275,8 +310,9 @@ bool select_transforms(const float* y, std::size_t width, std::size_t height, fl
     ensure_select_basis();
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>(rbw * rbh)};
+    __half* ycoeffs{coeffs + bw * bh * COEFFS_PER_BLOCK};
     select_transforms_kernel<<<blocks, threads>>>(y, width, bw, bh, rbw, rbh, qgsf,
-                                                  TRANSFORM_SELECT_LAMBDA, acs);
+                                                  TRANSFORM_SELECT_LAMBDA, ycoeffs, acs);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};

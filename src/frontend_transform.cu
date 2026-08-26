@@ -113,7 +113,7 @@ __global__ void variable_forward_dct_kernel(const float* __restrict__ xyb, std::
 
         const std::size_t px0{bx * 8};
         const std::size_t py0{by * 8};
-        for (int c{0}; c < 3; ++c) {
+        for (int c{0}; c < 3; c += 2) {
             const float* src{xyb + c * plane};
             __half* dst{coeffs + c * cplane};
             // Row pass: rows[fx*n + r] = sum_col basis[fx][col] * pixel[r][col].
@@ -184,7 +184,7 @@ bool frontend_transform(const std::uint8_t* luma, std::size_t luma_pitch,
         gaborish_kernel<<<blocks, threads>>>(xyb, width, height, sharp);
         ok = cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
     }
-    ok = ok && select_transforms(sharp + plane, width, height, distance, acs);  // Y plane
+    ok = ok && select_transforms(sharp + plane, width, height, distance, coeffs, acs);  // Y plane
     ok = ok && variable_forward_dct(sharp, width, height, acs, coeffs);
 
     cudaFreeAsync(xyb, 0);

@@ -19,17 +19,21 @@ std::vector<std::int8_t> select_device(const std::vector<float>& y, std::size_t 
                                        std::size_t height, float distance) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
+    const std::size_t coeff_count{3 * bw * bh * COEFFS_PER_BLOCK};
     float* d_y{nullptr};
     std::int8_t* d_acs{nullptr};
+    __half* d_coeffs{nullptr};
     cudaMalloc(&d_y, y.size() * sizeof(float));
     cudaMalloc(&d_acs, bw * bh);
+    cudaMalloc(&d_coeffs, coeff_count * sizeof(__half));
     cudaMemset(d_acs, -1, bw * bh);
     cudaMemcpy(d_y, y.data(), y.size() * sizeof(float), cudaMemcpyHostToDevice);
-    EXPECT_TRUE(select_transforms(d_y, width, height, distance, d_acs));
+    EXPECT_TRUE(select_transforms(d_y, width, height, distance, d_coeffs, d_acs));
     std::vector<std::int8_t> acs(bw * bh);
     cudaMemcpy(acs.data(), d_acs, bw * bh, cudaMemcpyDeviceToHost);
     cudaFree(d_y);
     cudaFree(d_acs);
+    cudaFree(d_coeffs);
     return acs;
 }
 

@@ -12,10 +12,11 @@
 namespace cujpegxl {
 
 // Runs the forward variable-size DCT of a planar XYB float image under a
-// per-block transform decision, writing the unquantized coefficients as FP16 in
-// the covered-block layout (src/vardct_layout): for each first-block of side N its
-// N*N coefficients (forward_dctN transposed-raster layout) scatter across its
-// covered 8x8 positions' 64-slot regions; covered blocks own no coefficients.
+// per-block transform decision, writing the unquantized X and B coefficients as
+// FP16 in the covered-block layout (src/vardct_layout): for each first-block of
+// side N its N*N coefficients (forward_dctN transposed-raster layout) scatter
+// across its covered 8x8 positions' 64-slot regions; covered blocks own no
+// coefficients. The Y coefficients are emitted by select_transforms.
 //
 // `xyb` is three tightly packed width*height float planes (X, Y, B). `acs` is the
 // per-8x8-block transform signal (width/8 * height/8, block raster; first-block
