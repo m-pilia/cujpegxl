@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_binary(
+    name = "stage_profiler",
+    srcs = ["stage_profiler.cc"],
+    tags = ["gpu"],
+    testonly = True,
+    deps = [
+        "//src:ac_context",
+        "//src:entropy",
+        "//src:frontend_fused",
+        "//src:frontend_quantize",
+        "//src:frontend_transform",
+        "//src:quant_consts",
+        "//src:transform_select",
+        "//src:vardct_layout",
+        "//src:xyb",
+        "//src/bitstream:frame_assembly",
+    ],
+)
