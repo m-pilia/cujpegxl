@@ -176,32 +176,50 @@ __device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_
     return e;
 }
 
+__device__ unsigned long long block_scan_exclusive(unsigned long long val, unsigned long long* sh,
+                                                   unsigned long long& total);
+
+constexpr int FIRST_BLOCK_THREADS = 512;
+
 // Fills, per DcGroup, the global block indices of its first-blocks in group
-// raster order (fb_pos[g*stride + i]) and their count (fb_count[g]). One thread
-// per group; a null acs means every block is a DCT8 first-block. The AcMetadata
-// emitter reads these to map an ACS/QF channel column (a first-block ordinal)
-// back to its block.
+// raster order (fb_pos[g*stride + i]) and their count (fb_count[g]); a null acs
+// means every block is a DCT8 first-block. The AcMetadata emitter reads these to
+// map an ACS/QF channel column (a first-block ordinal) back to its block.
+//
+// One thread block per group compacts the group's positions cooperatively: each
+// tile of blockDim positions is scanned so every first-block lands at its raster
+// ordinal (running base carried across tiles), reproducing the serial order
+// without the single-thread scan of the whole (up to 256x256) group.
 __global__ void build_first_blocks_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
                                           std::size_t xdg, std::size_t num_groups,
                                           std::size_t stride, std::size_t* fb_pos,
                                           std::size_t* fb_count) {
-    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
+    const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
     }
     const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
-    std::size_t cnt{0};
-    for (std::size_t by{0}; by < e.gbh; ++by) {
-        for (std::size_t bx{0}; bx < e.gbw; ++bx) {
-            const std::size_t block{(e.by0 + by) * bw + (e.bx0 + bx)};
-            const int side{acs == nullptr ? 8 : acs[block]};
-            if (side != ACS_COVERED) {
-                fb_pos[g * stride + cnt] = block;
-                ++cnt;
-            }
+    const std::size_t n{e.gbw * e.gbh};
+    __shared__ unsigned long long sh[FIRST_BLOCK_THREADS];
+    std::size_t base{0};
+    for (std::size_t tile{0}; tile < n; tile += blockDim.x) {
+        const std::size_t li{tile + threadIdx.x};
+        std::size_t block{0};
+        unsigned long long flag{0};
+        if (li < n) {
+            block = (e.by0 + li / e.gbw) * bw + (e.bx0 + li % e.gbw);
+            flag = (acs == nullptr || acs[block] != ACS_COVERED) ? 1ull : 0ull;
         }
+        unsigned long long total{0};
+        const unsigned long long excl{block_scan_exclusive(flag, sh, total)};
+        if (li < n && flag != 0) {
+            fb_pos[g * stride + base + static_cast<std::size_t>(excl)] = block;
+        }
+        base += static_cast<std::size_t>(total);
     }
-    fb_count[g] = cnt;
+    if (threadIdx.x == 0) {
+        fb_count[g] = base;
+    }
 }
 
 constexpr int DC_EMIT_THREADS = 512;
@@ -1150,11 +1168,8 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
         cudaFreeAsync(chunk_base, 0);
     };
 
-    const unsigned int fb_threads{64};
-    const unsigned int fb_blocks{
-        static_cast<unsigned int>((num_groups + fb_threads - 1) / fb_threads)};
-    build_first_blocks_kernel<<<fb_blocks, fb_threads>>>(acs, bw, bh, xdg, num_groups, fb_stride,
-                                                         fb_pos, fb_count);
+    build_first_blocks_kernel<<<static_cast<unsigned int>(num_groups), FIRST_BLOCK_THREADS>>>(
+        acs, bw, bh, xdg, num_groups, fb_stride, fb_pos, fb_count);
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
