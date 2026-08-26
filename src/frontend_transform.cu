@@ -101,8 +101,11 @@ __global__ void variable_forward_dct_kernel(const float* __restrict__ xyb, std::
             for (int e{tid}; e < n * n; e += nthreads) {
                 const int k{e / n};
                 const int t{e % n};
-                const float g{k == 0 ? 1.0f / n : 1.4142135623730951f / n};
-                basis[e] = g * cosf(3.14159265358979323846f * (t + 0.5f) * k / n);
+                // Double-derived basis narrowed to float, bit-identical to the
+                // transform selector's g_basis: this lets the chosen-size DCT
+                // coefficients agree with the selection RD proxy that decided them.
+                const double g{k == 0 ? 1.0 / n : 1.4142135623730950488 / n};
+                basis[e] = static_cast<float>(g * cos(3.14159265358979323846 * (t + 0.5) * k / n));
             }
             cur_basis_n = n;
             __syncthreads();
