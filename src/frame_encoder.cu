@@ -125,7 +125,13 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     }
     std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
     std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE, 0);
-    std::vector<std::int8_t> acs_host(bw * bh, 8);
+    // Per-DcGroup first-block counts (drive the AcMetadata `count` field) reduced
+    // on-device, replacing the host count loop and the full acs D2H copy.
+    std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
+    std::vector<std::size_t> fbc(num_dc, 0);
+    if (!d_fbc || !dc_first_block_counts(acs, width, height, d_fbc)) {
+        return false;
+    }
     if ((!ac_plan.ready &&
          cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
                     cudaMemcpyDeviceToHost) != cudaSuccess) ||
@@ -133,27 +139,11 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(acs_host.data(), acs, bw * bh, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaMemcpy(fbc.data(), d_fbc, num_dc * sizeof(std::size_t), cudaMemcpyDeviceToHost) !=
+            cudaSuccess) {
         return false;
     }
     entropy.gpu_us += us_since(entropy_gpu_start);
-
-    // Per-DcGroup first-block counts drive the AcMetadata `count` field.
-    const std::size_t xdg{(bw + 255) / 256};
-    std::vector<std::size_t> fbc(num_dc, 0);
-    for (std::size_t g{0}; g < num_dc; ++g) {
-        const std::size_t bx0{(g % xdg) * 256};
-        const std::size_t by0{(g / xdg) * 256};
-        const std::size_t dgw{std::min<std::size_t>(256, bw - bx0)};
-        const std::size_t dgh{std::min<std::size_t>(256, bh - by0)};
-        for (std::size_t by{by0}; by < by0 + dgh; ++by) {
-            for (std::size_t bx{bx0}; bx < bx0 + dgw; ++bx) {
-                if (acs_host[by * bw + bx] != ACS_COVERED) {
-                    ++fbc[g];
-                }
-            }
-        }
-    }
 
     const Clock::time_point entropy_cpu_start{Clock::now()};
     if (!ac_plan.ready) {

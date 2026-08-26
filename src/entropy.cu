@@ -222,6 +222,38 @@ __global__ void build_first_blocks_kernel(const std::int8_t* acs, std::size_t bw
     }
 }
 
+// One thread block per DcGroup reduces its first-block count (blocks whose
+// transform is not ACS_COVERED) into counts[g].
+__global__ void dc_first_block_count_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                            std::size_t xdg, std::size_t num_groups,
+                                            std::size_t* counts) {
+    const std::size_t g{blockIdx.x};
+    if (g >= num_groups) {
+        return;
+    }
+    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
+    const std::size_t n{e.gbw * e.gbh};
+    unsigned long long local{0};
+    for (std::size_t li{threadIdx.x}; li < n; li += blockDim.x) {
+        const std::size_t block{(e.by0 + li / e.gbw) * bw + (e.bx0 + li % e.gbw)};
+        if (acs == nullptr || acs[block] != ACS_COVERED) {
+            ++local;
+        }
+    }
+    __shared__ unsigned long long sh[FIRST_BLOCK_THREADS];
+    sh[threadIdx.x] = local;
+    __syncthreads();
+    for (unsigned int s{blockDim.x / 2}; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sh[threadIdx.x] += sh[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        counts[g] = static_cast<std::size_t>(sh[0]);
+    }
+}
+
 constexpr int DC_EMIT_THREADS = 512;
 
 // A DcGroup holds up to 256x256 blocks, so a single thread block per group leaves
@@ -858,7 +890,8 @@ __device__ int ac_item(const AcGroupCtx& c, std::size_t i, std::size_t& bx, std:
     const int side{c.acs == nullptr ? 8 : c.acs[block]};
     plane = c.ac + static_cast<std::size_t>(ch) * c.nblocks * COEFFS_PER_BLOCK;
     predicted = ac_predicted_nzeros_dev(c.nz_grid, ch, c.nblocks, c.bw, bx, by);
-    nzeros = static_cast<std::uint32_t>(c.nz_exact[static_cast<std::size_t>(ch) * c.nblocks + block]);
+    nzeros =
+        static_cast<std::uint32_t>(c.nz_exact[static_cast<std::size_t>(ch) * c.nblocks + block]);
     return side;
 }
 
@@ -906,8 +939,8 @@ __device__ void ac_item_emit(const AcGroupCtx& c, std::size_t i, RunBitWriter& w
 
 __global__ void group_size_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                   const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                                  std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xg,
-                                  std::size_t num_groups, const std::uint8_t* depth,
+                                  std::size_t bw, std::size_t bh, std::size_t nblocks,
+                                  std::size_t xg, std::size_t num_groups, const std::uint8_t* depth,
                                   const std::uint8_t* context_map, std::uint32_t* group_sizes,
                                   unsigned long long* run_offsets) {
     const std::size_t g{blockIdx.x};
@@ -934,8 +967,8 @@ __global__ void group_size_kernel(const std::int16_t* ac, const std::int8_t* acs
 
 __global__ void group_emit_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                   const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                                  std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xg,
-                                  std::size_t num_groups, const std::uint8_t* depth,
+                                  std::size_t bw, std::size_t bh, std::size_t nblocks,
+                                  std::size_t xg, std::size_t num_groups, const std::uint8_t* depth,
                                   const std::uint16_t* bits_table, const std::uint8_t* context_map,
                                   const unsigned long long* run_offsets, std::uint8_t* out,
                                   const std::uint32_t* group_offsets) {
@@ -1085,8 +1118,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
 
     group_emit_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg,
                                                  num_groups, depth, bits, context_map, run_offsets,
-                                                 out,
-                                                 group_offsets);
+                                                 out, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
     free_run();
     return ok;
@@ -1106,6 +1138,17 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height) {
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t ydg{(bh + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     return xdg * ydg;
+}
+
+bool dc_first_block_counts(const std::int8_t* acs, std::size_t width, std::size_t height,
+                           std::size_t* counts) {
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
+    const std::size_t num_groups{dc_num_groups(width, height)};
+    dc_first_block_count_kernel<<<static_cast<unsigned int>(num_groups), FIRST_BLOCK_THREADS>>>(
+        acs, bw, bh, xdg, num_groups, counts);
+    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
 }
 
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,

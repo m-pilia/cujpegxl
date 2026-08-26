@@ -52,6 +52,14 @@ bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, std::size_
 // image, including partial edge groups. width/height must be multiples of 8.
 std::size_t dc_num_groups(std::size_t width, std::size_t height);
 
+// Per-DcGroup count of first-blocks (blocks whose transform is not ACS_COVERED),
+// which drives the AcMetadata `count` field. `acs` is the per-8x8 transform signal
+// (nullptr = all 8x8, so every block counts). `counts` is a device buffer of
+// dc_num_groups std::size_t. Replaces the host-side count loop and its full acs
+// device-to-host copy. Deterministic. Returns false on a CUDA error.
+bool dc_first_block_counts(const std::int8_t* acs, std::size_t width, std::size_t height,
+                           std::size_t* counts);
+
 // Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
 // Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer
 // (device; three channel-major planes X, Y, B; one DC per block; blocks in raster
