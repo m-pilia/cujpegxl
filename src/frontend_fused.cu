@@ -31,21 +31,26 @@ constexpr int CELLS = 2 * TB;
 constexpr int TILE_SAMPLES = TILE_PX * TILE_PX;
 constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
-constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = 3 * PAD_SAMPLES + CELLS * CELLS + 8;
 constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
 constexpr std::size_t SELECT_YSTORE_HALFS = 16 * 8 * 8 + 4 * 16 * 16 + 32 * 32;
 constexpr std::size_t SELECT_YSTORE_FLOATS =
     (SELECT_YSTORE_HALFS * sizeof(__half) + sizeof(float) - 1) / sizeof(float);
 constexpr std::size_t SELECT_WORKSPACE_PEAK =
     TILE_SAMPLES + 2 * 32 * 32 + 2 * FRONTEND_THREADS + SELECT_COST_FLOATS + SELECT_YSTORE_FLOATS;
-constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = 2 * PAD_SAMPLES + TILE_SAMPLES + 2 * 32 * 32;
-constexpr std::size_t WORKSPACE_FLOATS = 2 * PAD_SAMPLES + 3 * TILE_SAMPLES;
+constexpr std::size_t RESIDENT_X_B_OFFSET = SELECT_WORKSPACE_PEAK;
+constexpr std::size_t RESIDENT_X_B_PEAK = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
+constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_SAMPLES + PAD_SAMPLES + CELLS * CELLS + 8;
+constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = std::max(LOAD_AQ_LOCAL_PEAK, RESIDENT_X_B_PEAK);
+constexpr std::size_t SELECT_X_B_WORKSPACE_PEAK = RESIDENT_X_B_PEAK;
+constexpr std::size_t X_B_DCT_LOCAL_PEAK = 3 * TILE_SAMPLES;
+constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = std::max(X_B_DCT_LOCAL_PEAK, RESIDENT_X_B_PEAK);
+constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_PEAK;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 static_assert(LOAD_AQ_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
-static_assert(SELECT_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
+static_assert(SELECT_X_B_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
 static_assert(X_B_DCT_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
-static_assert(WORKSPACE_FLOATS ==
-              std::max({LOAD_AQ_WORKSPACE_PEAK, SELECT_WORKSPACE_PEAK, X_B_DCT_WORKSPACE_PEAK}));
+static_assert(WORKSPACE_FLOATS == std::max({LOAD_AQ_WORKSPACE_PEAK, SELECT_X_B_WORKSPACE_PEAK,
+                                            X_B_DCT_WORKSPACE_PEAK}));
 
 __device__ float g_basis8[8 * 8];
 __device__ float g_basis16[16 * 16];
@@ -400,11 +405,12 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
                                       std::int32_t* __restrict__ quant_field) {
     extern __shared__ __align__(16) unsigned char workspace_bytes[];
     float* workspace{reinterpret_cast<float*>(workspace_bytes)};
-    float* sh_y{workspace};
-    float* sh_x{sh_y + PAD_SAMPLES};
-    float* sh_b{sh_x + PAD_SAMPLES};
-    float* sh_pre{sh_b + PAD_SAMPLES};
+    float* sharp_y{workspace};
+    float* sh_y{sharp_y + TILE_SAMPLES};
+    float* sh_pre{sh_y + PAD_SAMPLES};
     float* sh_red{sh_pre + CELLS * CELLS};
+    float* raw_x{workspace + RESIDENT_X_B_OFFSET};
+    float* raw_b{raw_x + PAD_SAMPLES};
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
     const std::size_t tby0{static_cast<std::size_t>(blockIdx.y) * TB};
@@ -427,8 +433,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         float bo{};
         nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
         sh_y[i] = yo;
-        sh_x[i] = xo;
-        sh_b[i] = bo;
+        raw_x[i] = xo;
+        raw_b[i] = bo;
     }
     __syncthreads();
 
@@ -475,8 +481,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             const int fy{tid / 8};
             const int idx{(y0 + fy) * PAD + x0 + fx};
             const float yv{sh_y[idx]};
-            const float xv{sh_x[idx]};
-            const float bv{sh_b[idx]};
+            const float xv{raw_x[idx]};
+            const float bv{raw_b[idx]};
 
             constexpr float valmin{0.0206f};
             float hf_part{0.0f};
@@ -544,15 +550,9 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         __syncthreads();
     }
 
-    float* sharp_y{sh_x};
     gaborish_tile(sh_y, sharp_y, tid);
     __syncthreads();
-    for (int i{tid}; i < TILE_SAMPLES; i += FRONTEND_THREADS) {
-        workspace[i] = sharp_y[i];
-    }
-    __syncthreads();
 
-    sharp_y = workspace;
     float* basis{sharp_y + TILE_SAMPLES};
     float* rows{basis + 32 * 32};
     float* pd{rows + 32 * 32};
@@ -563,27 +563,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     select_and_store_y(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows, pd,
                        pr, costs, ystore, coeffs + cplane, acs, tid);
 
-    float* raw_x{workspace};
-    float* raw_b{raw_x + PAD_SAMPLES};
-    for (int i{tid}; i < PAD_SAMPLES; i += FRONTEND_THREADS) {
-        const int lx{i % PAD};
-        const int ly{i / PAD};
-        long gx{static_cast<long>(px0) + lx - HALO};
-        long gy{static_cast<long>(py0) + ly - HALO};
-        gx = gx < 0 ? 0 : (gx >= static_cast<long>(width) ? static_cast<long>(width) - 1 : gx);
-        gy = gy < 0 ? 0 : (gy >= static_cast<long>(height) ? static_cast<long>(height) - 1 : gy);
-        const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
-        const float2 c{tex2D<float2>(chroma_tex, (gx + 0.5f) * 0.5f, (gy + 0.5f) * 0.5f)};
-        float xo{};
-        float yo{};
-        float bo{};
-        nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
-        raw_x[i] = xo;
-        raw_b[i] = bo;
-    }
-    __syncthreads();
-
-    float* sharp{raw_b + PAD_SAMPLES};
+    float* sharp{workspace};
     basis = sharp + TILE_SAMPLES;
     rows = basis + 32 * 32;
     gaborish_tile(raw_x, sharp, tid);
