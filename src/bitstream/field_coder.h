@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "bit_sink.h"
 #include "bit_writer.h"
 
 namespace cujpegxl::bitstream {
@@ -35,15 +36,18 @@ struct U32Enc {
     Distr d[4];
 };
 
-inline void write_bool(BitWriter& w, bool value) {
+template <typename W>
+CUJPEGXL_BS_HD void write_bool(W& w, bool value) {
     w.write(1, value ? 1 : 0);
 }
 
-inline void write_bits(BitWriter& w, std::size_t bits, std::uint32_t value) {
+template <typename W>
+CUJPEGXL_BS_HD void write_bits(W& w, std::size_t bits, std::uint32_t value) {
     w.write(bits, value);
 }
 
-inline void write_u32(BitWriter& w, const U32Enc& enc, std::uint32_t value) {
+template <typename W>
+CUJPEGXL_BS_HD void write_u32(W& w, const U32Enc& enc, std::uint32_t value) {
     std::uint32_t best_selector{0};
     std::size_t best_bits{64};
     for (std::uint32_t s{0}; s < 4; ++s) {

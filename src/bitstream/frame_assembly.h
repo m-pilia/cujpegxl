@@ -42,6 +42,17 @@ AcGlobalResult build_ac_global(const std::uint32_t* ac_histograms, const std::ui
 // The byte-aligned DcGlobal section.
 std::vector<std::uint8_t> build_dc_global(const QuantParams& qp);
 
+// The serialized AC context map (write_best_prefix_context_map over the fixed
+// ac_cluster map, AC_NUM_CLUSTERS clusters). It is data-independent, so the
+// device AcGlobal build blits these bits instead of rebuilding the 7425-entry map
+// per frame. `bytes` holds ceil(nbits/8) bytes, LSB-first, with the final byte's
+// unused high bits zeroed.
+struct AcContextMapBlob {
+    std::vector<std::uint8_t> bytes{};
+    std::size_t nbits{0};
+};
+AcContextMapBlob build_ac_context_map_blob();
+
 // Per-DcGroup header blobs and prefix codes for the device DcGroup emitter,
 // flattened to match dc_encode_groups' inputs. `dc_histograms` and
 // `acmeta_histograms` are the device per-DcGroup token histograms (each

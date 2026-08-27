@@ -284,6 +284,30 @@ cc_test(
 )
 
 cuda_library(
+    name = "prefix_build",
+    srcs = ["prefix_build.cu"],
+    hdrs = ["prefix_build.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":ac_context",
+        "//src/bitstream",
+    ],
+)
+
+cc_test(
+    name = "prefix_build_gpu_test",
+    srcs = ["prefix_build_gpu_test.cc"],
+    tags = ["gpu"],
+    deps = [
+        ":ac_context",
+        ":entropy",
+        ":prefix_build",
+        "//src/bitstream:frame_assembly",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cuda_library(
     name = "frame_encoder",
     srcs = [
         "frame_encoder.cu",
@@ -297,6 +321,7 @@ cuda_library(
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",
+        ":prefix_build",
         ":quant_consts",
         ":vardct_layout",
         "//src/bitstream",

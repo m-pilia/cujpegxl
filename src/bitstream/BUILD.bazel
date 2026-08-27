@@ -21,16 +21,23 @@ cc_library(
         "prefix_code.cc",
     ],
     hdrs = [
+        "bit_sink.h",
         "bit_writer.h",
         "codestream.h",
         "container.h",
         "context_map.h",
         "field_coder.h",
+        "frame_assembly.h",
         "histogram_writer.h",
         "hybrid_uint.h",
         "prefix_code.h",
+        "serialize_impl.h",
     ],
     copts = RUNTIME_COPTS,
+    deps = [
+        "//src:ac_context",
+        "//src:dc_predict",
+    ],
 )
 
 cc_test(
