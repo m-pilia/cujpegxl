@@ -11,6 +11,7 @@
 #include "adaptive_quant_impl.cuh"
 #include "gaborish.h"
 #include "quant_calibration.h"
+#include "quant_weights_dct8.h"
 #include "transform_select_impl.cuh"
 #include "vardct_layout.h"
 #include "xyb_impl.cuh"
@@ -111,8 +112,8 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
                        in[(y + 2) * PAD + x - 1] + in[(y + 2) * PAD + x + 1]};
         const float d4{in[(y - 2) * PAD + x - 2] + in[(y - 2) * PAD + x + 2] +
                        in[(y + 2) * PAD + x - 2] + in[(y + 2) * PAD + x + 2]};
-        out[i] = GAB_WC * in[y * PAD + x] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg +
-                 GAB_WL * l8 + GAB_WD2 * d4;
+        out[i] = GAB_WC * in[y * PAD + x] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 +
+                 GAB_WD2 * d4;
     }
 }
 
@@ -180,8 +181,8 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py
 __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
                                    std::size_t bw, std::size_t bh, float qgsf, float lambda,
                                    float* basis, float* rows, float* pd, float* pr, float* costs,
-                                   __half* ystore, __half* ycoeffs,
-                                   std::int8_t* __restrict__ acs, int tid) {
+                                   __half* ystore, __half* ycoeffs, std::int8_t* __restrict__ acs,
+                                   int tid) {
     float* cost8{costs};
     float* cost16{cost8 + 16};
     float* cost32{cost16 + 4};
@@ -198,10 +199,10 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
         const std::size_t bbx{rbx + 2 * static_cast<std::size_t>(qx) + dx};
         const std::size_t bby{rby + 2 * static_cast<std::size_t>(qy) + dy};
         const bool exist{bbx < bw && bby < bh};
-        const float c{exist ? coop_block_ac_cost(y, 16 * qx + 8 * dx, 16 * qy + 8 * dy, 8,
-                                                 qgsf, lambda, basis, rows, pd, pr,
-                                                 ystore8 + idx * 64, tid)
-                            : INF};
+        const float c{exist
+                          ? coop_block_ac_cost(y, 16 * qx + 8 * dx, 16 * qy + 8 * dy, 8, qgsf,
+                                               lambda, basis, rows, pd, pr, ystore8 + idx * 64, tid)
+                          : INF};
         if (tid == 0) {
             cost8[idx] = c;
         }
@@ -214,8 +215,8 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
         const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
         const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
         const bool fit16{bx + 2 <= bw && by + 2 <= bh};
-        const float c{fit16 ? coop_block_ac_cost(y, qx * 16, qy * 16, 16, qgsf, lambda, basis,
-                                                 rows, pd, pr, ystore16 + q * 256, tid)
+        const float c{fit16 ? coop_block_ac_cost(y, qx * 16, qy * 16, 16, qgsf, lambda, basis, rows,
+                                                 pd, pr, ystore16 + q * 256, tid)
                             : INF};
         if (tid == 0) {
             cost16[q] = c;
@@ -224,9 +225,9 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
     }
 
     const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
-    const float c32{fit32 ? coop_block_ac_cost(y, 0, 0, 32, qgsf, lambda, basis, rows, pd, pr,
-                                               ystore32, tid)
-                          : INF};
+    const float c32{
+        fit32 ? coop_block_ac_cost(y, 0, 0, 32, qgsf, lambda, basis, rows, pd, pr, ystore32, tid)
+              : INF};
     if (tid == 0) {
         *cost32 = c32;
 
@@ -325,9 +326,8 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
 }
 
 __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, std::size_t rby,
-                                std::size_t bw, std::size_t bh,
-                                const std::int8_t* __restrict__ acs, float* basis, float* rows,
-                                __half* dst, int tid) {
+                                std::size_t bw, std::size_t bh, const std::int8_t* __restrict__ acs,
+                                float* basis, float* rows, __half* dst, int tid) {
     int cur_basis_n{0};
     for (int p{0}; p < 16; ++p) {
         const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
@@ -584,8 +584,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                      std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                     float distance, __half* coeffs, std::int8_t* acs,
-                     std::int32_t* quant_field) {
+                     float distance, __half* coeffs, std::int8_t* acs, std::int32_t* quant_field) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
 

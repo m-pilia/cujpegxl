@@ -100,42 +100,6 @@ std::vector<__half> upload_coeffs(const Frame& f, __half** d_coeffs, std::int8_t
     return f.coeffs;
 }
 
-TEST(FrontendQuantize, CflEstimateDeviceMatchesHost) {
-    const Frame f{make_frame()};
-    const std::size_t cmw{(BW + 7) / 8};
-    const std::size_t cmh{(BH + 7) / 8};
-    __half* d_coeffs{nullptr};
-    std::int8_t* d_acs{nullptr};
-    upload_coeffs(f, &d_coeffs, &d_acs);
-    std::int8_t* d_mx{nullptr};
-    std::int8_t* d_mb{nullptr};
-    cudaMalloc(&d_mx, cmw * cmh);
-    cudaMalloc(&d_mb, cmw * cmh);
-    ASSERT_TRUE(estimate_cfl_covered(d_coeffs, d_acs, WIDTH, HEIGHT, d_mx, d_mb));
-    std::vector<std::int8_t> dev_mx(cmw * cmh);
-    std::vector<std::int8_t> dev_mb(cmw * cmh);
-    cudaMemcpy(dev_mx.data(), d_mx, cmw * cmh, cudaMemcpyDeviceToHost);
-    cudaMemcpy(dev_mb.data(), d_mb, cmw * cmh, cudaMemcpyDeviceToHost);
-
-    std::vector<std::int8_t> host_mx(cmw * cmh);
-    std::vector<std::int8_t> host_mb(cmw * cmh);
-    estimate_cfl_covered_host(f.coeffs.data(), f.acs.data(), WIDTH, HEIGHT, host_mx.data(),
-                              host_mb.data());
-    EXPECT_EQ(dev_mx, host_mx);
-    EXPECT_EQ(dev_mb, host_mb);
-    // The correlated signal yields a non-trivial X factor somewhere.
-    bool any_nonzero{false};
-    for (std::int8_t v : dev_mx) {
-        any_nonzero = any_nonzero || v != 0;
-    }
-    EXPECT_TRUE(any_nonzero);
-
-    cudaFree(d_coeffs);
-    cudaFree(d_acs);
-    cudaFree(d_mx);
-    cudaFree(d_mb);
-}
-
 // The residual+quantize kernel round-trips each AC chroma coefficient to within
 // half a quant step with CfL correctly inverted, and reconstructs the LLF DC
 // within half a DC step, across the mixed tiling.

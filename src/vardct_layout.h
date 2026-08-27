@@ -61,16 +61,6 @@ CUJPEGXL_VL_HD inline std::size_t covered_plane_slot(std::size_t block_dim, std:
     return block * COEFFS_PER_BLOCK + slot;
 }
 
-// Scatters a first-block's `block_dim*block_dim` coefficients (raw layout) into
-// `plane` (a full channel plane, bw*bh*COEFFS_PER_BLOCK slots) at block (bx, by).
-void scatter_covered_block(std::size_t block_dim, std::size_t bx, std::size_t by, std::size_t bw,
-                           const float* coeffs, float* plane);
-
-// Inverse of scatter_covered_block: gathers the first-block's coefficients back
-// into `coeffs` (raw layout) from `plane`.
-void gather_covered_block(std::size_t block_dim, std::size_t bx, std::size_t by, std::size_t bw,
-                          const float* plane, float* coeffs);
-
 // Orthonormal 1D DCT-II basis entry O[k][n] for an M-point transform.
 CUJPEGXL_VL_HD inline double vl_ortho_basis(std::size_t m, std::size_t k, std::size_t n) {
     const double md{static_cast<double>(m)};

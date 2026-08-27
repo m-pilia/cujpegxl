@@ -25,8 +25,7 @@ namespace cujpegxl {
 // are device addresses. Deterministic. Returns false on a CUDA error.
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                      std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                     float distance, __half* coeffs, std::int8_t* acs,
-                     std::int32_t* quant_field);
+                     float distance, __half* coeffs, std::int8_t* acs, std::int32_t* quant_field);
 
 }  // namespace cujpegxl
 

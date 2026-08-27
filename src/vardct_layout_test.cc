@@ -12,25 +12,6 @@
 namespace cujpegxl {
 namespace {
 
-// A first-block's coefficients scatter into, and gather back from, the covered
-// blocks' storage without loss, for every square size.
-TEST(CoveredBlockLayout, ScatterGatherRoundTrip) {
-    const std::size_t bw{8};
-    const std::size_t bh{8};
-    std::vector<float> plane(bw * bh * COEFFS_PER_BLOCK, -1.0f);
-    for (std::size_t block_dim : {8, 16, 32}) {
-        const std::size_t count{block_dim * block_dim};
-        std::vector<float> coeffs(count);
-        for (std::size_t i{0}; i < count; ++i) {
-            coeffs[i] = static_cast<float>(i) + 0.5f;
-        }
-        scatter_covered_block(block_dim, 0, 0, bw, coeffs.data(), plane.data());
-        std::vector<float> back(count, 0.0f);
-        gather_covered_block(block_dim, 0, 0, bw, plane.data(), back.data());
-        EXPECT_EQ(coeffs, back) << "block_dim=" << block_dim;
-    }
-}
-
 // The raw-index -> plane-slot map is a bijection onto exactly the covered
 // blocks' slots (no collisions, no spill outside the covered region).
 TEST(CoveredBlockLayout, SlotMapIsBijectionOverCoveredRegion) {

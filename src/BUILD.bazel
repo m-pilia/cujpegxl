@@ -32,10 +32,12 @@ cc_library(
     hdrs = ["xyb_impl.cuh"],
 )
 
-# Standalone stage kernel retained as a conformance-test harness over the shared
-# opsin transform (xyb_impl.cuh); the production path is the fused front-end.
+# Standalone stage kernel retained as the libjxl-oracle conformance harness over
+# the shared opsin transform (xyb_impl.cuh); the production path is the fused
+# front-end.
 cuda_library(
     name = "xyb",
+    testonly = True,
     srcs = ["xyb.cu"],
     hdrs = ["xyb.h"],
     copts = RUNTIME_COPTS,
@@ -59,7 +61,6 @@ cc_library(
 
 cc_library(
     name = "vardct_layout",
-    srcs = ["vardct_layout.cc"],
     hdrs = ["vardct_layout.h"],
     copts = RUNTIME_COPTS,
 )
@@ -83,62 +84,7 @@ cc_test(
 cc_library(
     name = "transform_select_impl",
     hdrs = ["transform_select_impl.cuh"],
-    deps = [
-        ":quant_consts",
-        ":vardct_layout",
-    ],
-)
-
-cuda_library(
-    name = "transform_select",
-    testonly = True,
-    srcs = ["transform_select.cu"],
-    hdrs = ["transform_select.h"],
-    copts = RUNTIME_COPTS,
-    deps = [
-        ":quant_consts",
-        ":transform_select_impl",
-        ":vardct_layout",
-    ],
-)
-
-cc_test(
-    name = "transform_select_gpu_test",
-    srcs = ["transform_select_gpu_test.cc"],
-    tags = ["gpu"],
-    deps = [
-        ":transform_select",
-        ":vardct_layout",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cuda_library(
-    name = "frontend_transform",
-    testonly = True,
-    srcs = ["frontend_transform.cu"],
-    hdrs = [
-        "frontend_transform.h",
-        "gaborish.h",
-    ],
-    copts = RUNTIME_COPTS,
-    deps = [
-        ":transform_select",
-        ":vardct_layout",
-        ":xyb",
-    ],
-)
-
-cc_test(
-    name = "frontend_transform_gpu_test",
-    srcs = ["frontend_transform_gpu_test.cc"],
-    tags = ["gpu"],
-    deps = [
-        ":frontend_transform",
-        ":transform_select",
-        ":vardct_layout",
-        "@googletest//:gtest_main",
-    ],
+    deps = [":vardct_layout"],
 )
 
 cc_library(
@@ -166,15 +112,6 @@ cc_test(
         ":ac_context",
         "@googletest//:gtest_main",
     ],
-)
-
-cuda_library(
-    name = "cfl_cuda",
-    testonly = True,
-    srcs = ["cfl.cu"],
-    hdrs = ["cfl_estimate.h"],
-    copts = RUNTIME_COPTS,
-    deps = [":cfl"],
 )
 
 cc_binary(
@@ -205,18 +142,6 @@ cc_test(
         ":frontend_quantize",
         ":quant_consts",
         ":vardct_layout",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "cfl_gpu_test",
-    srcs = ["cfl_gpu_test.cc"],
-    tags = ["gpu"],
-    deps = [
-        ":cfl",
-        ":cfl_cuda",
-        ":quant_consts",
         "@googletest//:gtest_main",
     ],
 )
@@ -273,18 +198,6 @@ cc_binary(
     testonly = True,
     srcs = ["quant_weights_dump.cc"],
     deps = [":quant_consts"],
-)
-
-cc_test(
-    name = "vardct_quant_test",
-    srcs = ["vardct_quant_test.cc"],
-    deps = [
-        ":cfl",
-        ":coeff_order",
-        ":quant_consts",
-        ":vardct_layout",
-        "@googletest//:gtest_main",
-    ],
 )
 
 # Standalone quantizer kernel retained as the self-consistency-test harness over
@@ -398,9 +311,9 @@ cc_test(
     deps = [
         ":frame_encoder",
         "//src/bitstream:frame_assembly",
+        "@googletest//:gtest_main",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
     ],
 )
 
@@ -431,7 +344,6 @@ cc_library(
     name = "cujpegxl_lib",
     srcs = ["cujpegxl.cc"],
     copts = RUNTIME_COPTS,
-    alwayslink = True,
     deps = [
         ":capability",
         ":capability_cuda",
@@ -439,6 +351,7 @@ cc_library(
         "//:cujpegxl_headers",
         "//src/bitstream:frame_assembly",
     ],
+    alwayslink = True,
 )
 
 cc_test(
@@ -448,9 +361,9 @@ cc_test(
     deps = [
         ":cujpegxl_lib",
         "//:cujpegxl_headers",
+        "@googletest//:gtest_main",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
-        "@googletest//:gtest_main",
     ],
 )
 

@@ -15,14 +15,12 @@ namespace cujpegxl {
 // 64x64 color tile from the FP16 covered-block coefficients. Each first-block's
 // AC coefficients (the block's covered-block slots, excluding its low-frequency
 // corner) contribute to the regression of its top-left color tile. `coeffs` are
-// three channel-major FP16 covered-block planes (see variable_forward_dct); `acs`
+// three channel-major FP16 covered-block planes (see encode_frontend); `acs`
 // the per-8x8 transform signal. `ytox_map`/`ytob_map` (ceil(width/64) *
 // ceil(height/64) int8) receive the maps. Deterministic. Returns false on a CUDA
-// error. The host variant runs the identical per-tile core for validation.
+// error.
 bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::size_t width,
                           std::size_t height, std::int8_t* ytox_map, std::int8_t* ytob_map);
-void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std::size_t width,
-                               std::size_t height, std::int8_t* ytox_map, std::int8_t* ytob_map);
 
 // Residual + quantize + DC-via-LLF: quantizes the FP16 covered-block
 // coefficients into int16 AC (covered-block layout) and int32 DC (per 8x8 block,

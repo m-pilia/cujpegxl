@@ -29,7 +29,6 @@ inline constexpr float CFL_BASE_X = 0.0f;                          // base_corre
 inline constexpr float CFL_BASE_B = 1.0f;  // base_correlation_b (kYToBRatio)
 inline constexpr int CFL_MAP_MIN = -128;   // ImageSB (signed int8) range
 inline constexpr int CFL_MAP_MAX = 127;
-inline constexpr std::size_t CFL_COLOR_TILE_BLOCKS = 8;  // kColorTileDimInBlocks (64px)
 
 // Matches libjxl ColorCorrelation::YtoXRatio/YtoBRatio bit-for-bit (base plus map
 // times the precomputed reciprocal color scale).
@@ -61,35 +60,6 @@ CUJPEGXL_CFL_HD inline void cfl_maps_from_sums(double sxy, double syy, double sb
     const float db{syy > 0.0 ? static_cast<float>(sby / syy) : 0.0f};
     *ytox_map = cfl_quantize_factor(fx);
     *ytob_map = cfl_quantize_factor(db);
-}
-
-// Closed-form per-tile estimation over `count` AC coefficients (X, Y, B, matched
-// order): the least-squares slopes minimizing the X and B residual energy,
-// quantized to the color map. Y-to-X regresses X on Y; Y-to-B regresses the
-// residual over the base correlation (B - base_b*Y) on Y. Sums accumulate in
-// double for determinism.
-CUJPEGXL_CFL_HD inline void cfl_estimate(const float* x, const float* y, const float* b,
-                                         std::size_t count, int* ytox_map, int* ytob_map) {
-    double sxy{0.0};
-    double syy{0.0};
-    double sby{0.0};
-    for (std::size_t i{0}; i < count; ++i) {
-        const double yy{y[i]};
-        sxy += static_cast<double>(x[i]) * yy;
-        syy += yy * yy;
-        sby += (static_cast<double>(b[i]) - CFL_BASE_B * yy) * yy;
-    }
-    cfl_maps_from_sums(sxy, syy, sby, ytox_map, ytob_map);
-}
-
-// AC quantization helpers shared with the front-end: q = round(coeff * qgsf / w),
-// where qgsf = quant_field * global_scale and w is the per-coefficient dequant
-// weight. The inverse reproduces the decoder's dequantized value.
-CUJPEGXL_CFL_HD inline int cfl_quantize_coeff(float coeff, float weight, float qgsf) {
-    return static_cast<int>(lrintf(coeff * qgsf / weight));
-}
-CUJPEGXL_CFL_HD inline float cfl_dequantize_coeff(int q, float weight, float qgsf) {
-    return static_cast<float>(q) * weight / qgsf;
 }
 
 }  // namespace cujpegxl

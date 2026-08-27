@@ -124,8 +124,9 @@ int main(int argc, char** argv) {
     using namespace cujpegxl;
     const Args args{parse_args(argc, argv)};
     if (args.inputs.empty()) {
-        std::fprintf(stderr, "usage: stage_profiler --dims=WxH [--iterations=N] [--warmup=N] "
-                             "[--distance=F] <file.nv12> [...]\n");
+        std::fprintf(stderr,
+                     "usage: stage_profiler --dims=WxH [--iterations=N] [--warmup=N] "
+                     "[--distance=F] <file.nv12> [...]\n");
         return 2;
     }
 
@@ -188,7 +189,8 @@ int main(int argc, char** argv) {
 
     for (int it{0}; it < args.warmup + args.iterations; ++it) {
         const bool record{it >= args.warmup};
-        const std::vector<std::uint8_t>& frame{frames[static_cast<std::size_t>(it) % frames.size()]};
+        const std::vector<std::uint8_t>& frame{
+            frames[static_cast<std::size_t>(it) % frames.size()]};
         cudaMemcpy(d_luma, frame.data(), ysize, cudaMemcpyHostToDevice);
         cudaMemcpy(d_chroma, frame.data() + ysize, ysize / 2, cudaMemcpyHostToDevice);
 
@@ -207,9 +209,8 @@ int main(int argc, char** argv) {
         // Entropy histograms.
         timed(s_ach, record, [&] { ac_build_histogram(d_ac16, d_acs, width, height, d_ac_hist); });
         timed(s_dch, record, [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist); });
-        timed(s_amh, record, [&] {
-            acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist);
-        });
+        timed(s_amh, record,
+              [&] { acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist); });
 
         std::vector<std::uint32_t> ac_hist(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE);
         std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE);
@@ -335,8 +336,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,   &s_ach, &s_dch, &s_amh, &s_d2h,
-                          &s_host, &s_up,  &s_ace, &s_dce, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_cfl,  &s_qz, &s_ach, &s_dch, &s_amh,
+                          &s_d2h, &s_host, &s_up, &s_ace, &s_dce, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {

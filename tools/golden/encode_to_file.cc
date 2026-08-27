@@ -34,7 +34,9 @@ void check_cuda(cudaError_t err, const char* what) {
     }
 }
 
-std::string value_of(const std::string& arg) { return arg.substr(arg.find('=') + 1); }
+std::string value_of(const std::string& arg) {
+    return arg.substr(arg.find('=') + 1);
+}
 
 std::vector<std::uint8_t> read_file(const std::string& path, std::size_t expected) {
     std::vector<std::uint8_t> buf(expected);

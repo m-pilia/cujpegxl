@@ -44,12 +44,11 @@ constexpr int CFL_TILE_POSITIONS = 64;
 
 // FP32 regression partials for the single 8x8 block position (bx, by): the
 // first-block's non-LLF AC coefficients accumulated in raw order (0 if the
-// position is out of image or covered). Shared by device and host so the tile
-// reduction is bit-identical either side.
-__host__ __device__ inline void cfl_block_partial(const __half* coeffs, std::size_t cplane,
-                                                  const std::int8_t* acs, std::size_t bw,
-                                                  std::size_t bh, std::size_t bx, std::size_t by,
-                                                  float& sxy, float& syy, float& sby) {
+// position is out of image or covered).
+__device__ inline void cfl_block_partial(const __half* coeffs, std::size_t cplane,
+                                         const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                         std::size_t bx, std::size_t by, float& sxy, float& syy,
+                                         float& sby) {
     sxy = 0.0f;
     syy = 0.0f;
     sby = 0.0f;
@@ -215,37 +214,6 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;
-}
-
-void estimate_cfl_covered_host(const __half* coeffs, const std::int8_t* acs, std::size_t width,
-                               std::size_t height, std::int8_t* ytox_map, std::int8_t* ytob_map) {
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t cmw{ceil_div(bw, 8)};
-    const std::size_t cmh{ceil_div(bh, 8)};
-    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    for (std::size_t tile{0}; tile < cmw * cmh; ++tile) {
-        float rxy[CFL_TILE_POSITIONS];
-        float ryy[CFL_TILE_POSITIONS];
-        float rby[CFL_TILE_POSITIONS];
-        for (int t{0}; t < CFL_TILE_POSITIONS; ++t) {
-            const std::size_t bx{(tile % cmw) * 8 + static_cast<std::size_t>(t % 8)};
-            const std::size_t by{(tile / cmw) * 8 + static_cast<std::size_t>(t / 8)};
-            cfl_block_partial(coeffs, cplane, acs, bw, bh, bx, by, rxy[t], ryy[t], rby[t]);
-        }
-        for (int s{CFL_TILE_POSITIONS / 2}; s > 0; s >>= 1) {
-            for (int t{0}; t < s; ++t) {
-                rxy[t] += rxy[t + s];
-                ryy[t] += ryy[t + s];
-                rby[t] += rby[t + s];
-            }
-        }
-        int mx{0};
-        int mb{0};
-        cfl_maps_from_sums(rxy[0], ryy[0], rby[0], &mx, &mb);
-        ytox_map[tile] = static_cast<std::int8_t>(mx);
-        ytob_map[tile] = static_cast<std::int8_t>(mb);
-    }
 }
 
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::int8_t* ytox_map,
