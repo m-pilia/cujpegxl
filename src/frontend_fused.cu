@@ -3,6 +3,7 @@
 
 #include "frontend_fused.h"
 
+#include <algorithm>
 #include <mutex>
 
 #include <cuda_fp16.h>
@@ -30,8 +31,21 @@ constexpr int CELLS = 2 * TB;
 constexpr int TILE_SAMPLES = TILE_PX * TILE_PX;
 constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
+constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = 3 * PAD_SAMPLES + CELLS * CELLS + 8;
+constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
+constexpr std::size_t SELECT_YSTORE_HALFS = 16 * 8 * 8 + 4 * 16 * 16 + 32 * 32;
+constexpr std::size_t SELECT_YSTORE_FLOATS =
+    (SELECT_YSTORE_HALFS * sizeof(__half) + sizeof(float) - 1) / sizeof(float);
+constexpr std::size_t SELECT_WORKSPACE_PEAK =
+    TILE_SAMPLES + 2 * 32 * 32 + 2 * FRONTEND_THREADS + SELECT_COST_FLOATS + SELECT_YSTORE_FLOATS;
+constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = 2 * PAD_SAMPLES + TILE_SAMPLES + 2 * 32 * 32;
 constexpr std::size_t WORKSPACE_FLOATS = 2 * PAD_SAMPLES + 3 * TILE_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
+static_assert(LOAD_AQ_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
+static_assert(SELECT_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
+static_assert(X_B_DCT_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
+static_assert(WORKSPACE_FLOATS ==
+              std::max({LOAD_AQ_WORKSPACE_PEAK, SELECT_WORKSPACE_PEAK, X_B_DCT_WORKSPACE_PEAK}));
 
 __device__ float g_basis8[8 * 8];
 __device__ float g_basis16[16 * 16];
@@ -544,7 +558,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     float* pd{rows + 32 * 32};
     float* pr{pd + FRONTEND_THREADS};
     float* costs{pr + FRONTEND_THREADS};
-    __half* ystore{reinterpret_cast<__half*>(costs + 21)};
+    __half* ystore{reinterpret_cast<__half*>(costs + SELECT_COST_FLOATS)};
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
     select_and_store_y(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows, pd,
                        pr, costs, ystore, coeffs + cplane, acs, tid);
