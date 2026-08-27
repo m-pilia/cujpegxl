@@ -15,7 +15,6 @@
 #include "entropy.h"
 #include "frontend_fused.h"
 #include "frontend_quantize.h"
-#include "frontend_transform.h"
 #include "quant_calibration.h"
 #include "src/bitstream/container.h"
 #include "vardct_layout.h"
@@ -326,9 +325,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
 
     const Clock::time_point frontend_start{Clock::now()};
     if (!encode_frontend(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
-                         d_qf) ||
-        !frontend_transform(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
-                            d_coeffs, d_acs) ||
+                         d_coeffs, d_acs, d_qf) ||
         !estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb) ||
         !quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, distance, d_ac16,
                            d_dc32)) {

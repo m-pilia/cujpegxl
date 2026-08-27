@@ -3,23 +3,67 @@
 
 #include "frontend_fused.h"
 
+#include <mutex>
+
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include "adaptive_quant_impl.cuh"
+#include "gaborish.h"
 #include "quant_calibration.h"
+#include "transform_select_impl.cuh"
+#include "vardct_layout.h"
 #include "xyb_impl.cuh"
 
 namespace cujpegxl {
 namespace {
 
 // Tile geometry: one CUDA block processes TB x TB image blocks. The shared XYB
-// region carries a one-pixel halo (PAD) feeding the adaptive-quant Laplacian.
-// The pre-erosion map is at 4x-subsampled resolution (CELLS x CELLS cells).
-constexpr int HALO = 1;
+// region carries the two-pixel halo required by gaborish. The pre-erosion map is
+// at 4x-subsampled resolution (CELLS x CELLS cells).
+constexpr int HALO = 2;
 constexpr int TB = 4;
 constexpr int TILE_PX = TB * 8;
 constexpr int PAD = TILE_PX + 2 * HALO;
 constexpr int CELLS = 2 * TB;
+constexpr int TILE_SAMPLES = TILE_PX * TILE_PX;
+constexpr int PAD_SAMPLES = PAD * PAD;
+constexpr int FRONTEND_THREADS = 256;
+constexpr std::size_t WORKSPACE_FLOATS = 2 * PAD_SAMPLES + 3 * TILE_SAMPLES;
+constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
+
+__device__ float g_basis8[8 * 8];
+__device__ float g_basis16[16 * 16];
+__device__ float g_basis32[32 * 32];
+
+__device__ void fill_basis(float* basis, int n, int i) {
+    if (i >= n * n) {
+        return;
+    }
+    const int k{i / n};
+    const int t{i % n};
+    const double g{k == 0 ? 1.0 / n : 1.4142135623730950488 / n};
+    basis[i] = static_cast<float>(g * cos(3.14159265358979323846 * (t + 0.5) * k / n));
+}
+
+__global__ void init_frontend_basis_kernel() {
+    const int i{static_cast<int>(threadIdx.x)};
+    fill_basis(g_basis8, 8, i);
+    fill_basis(g_basis16, 16, i);
+    fill_basis(g_basis32, 32, i);
+}
+
+void ensure_frontend_basis() {
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        init_frontend_basis_kernel<<<1, 32 * 32>>>();
+        cudaDeviceSynchronize();
+    });
+}
+
+__device__ const float* basis_for(int n) {
+    return n == 32 ? g_basis32 : (n == 16 ? g_basis16 : g_basis8);
+}
 
 // Full-mask warp sum reduction. Both warps of the 64-thread block are fully
 // populated here, so every lane participates.
@@ -51,26 +95,311 @@ __device__ float erosion_cell(const float* __restrict__ pre, int cx, int cy, flo
     return km0 * m0 + km1 * m1 + km2 * m2 + km3 * m3;
 }
 
+__device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ out, int tid) {
+    for (int i{tid}; i < TILE_SAMPLES; i += FRONTEND_THREADS) {
+        const int x{i % TILE_PX + HALO};
+        const int y{i / TILE_PX + HALO};
+        const float e{in[y * PAD + x - 1] + in[y * PAD + x + 1] + in[(y - 1) * PAD + x] +
+                      in[(y + 1) * PAD + x]};
+        const float r2{in[y * PAD + x - 2] + in[y * PAD + x + 2] + in[(y - 2) * PAD + x] +
+                       in[(y + 2) * PAD + x]};
+        const float dg{in[(y - 1) * PAD + x - 1] + in[(y - 1) * PAD + x + 1] +
+                       in[(y + 1) * PAD + x - 1] + in[(y + 1) * PAD + x + 1]};
+        const float l8{in[(y - 1) * PAD + x - 2] + in[(y - 1) * PAD + x + 2] +
+                       in[(y + 1) * PAD + x - 2] + in[(y + 1) * PAD + x + 2] +
+                       in[(y - 2) * PAD + x - 1] + in[(y - 2) * PAD + x + 1] +
+                       in[(y + 2) * PAD + x - 1] + in[(y + 2) * PAD + x + 1]};
+        const float d4{in[(y - 2) * PAD + x - 2] + in[(y - 2) * PAD + x + 2] +
+                       in[(y + 2) * PAD + x - 2] + in[(y + 2) * PAD + x + 2]};
+        out[i] = GAB_WC * in[y * PAD + x] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg +
+                 GAB_WL * l8 + GAB_WD2 * d4;
+    }
+}
+
+__device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py0, int n,
+                                    float qgsf, float lambda, float* basis, float* rows, float* pd,
+                                    float* pr, __half* ystore, int tid) {
+    __syncthreads();
+    const float* src_basis{basis_for(n)};
+    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+        basis[e] = src_basis[e];
+    }
+    __syncthreads();
+
+    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+        const int fx{e / n};
+        const int r{e % n};
+        float s{0.0f};
+        const float* prow{y + (py0 + r) * TILE_PX + px0};
+        for (int c{0}; c < n; ++c) {
+            s += basis[fx * n + c] * prow[c];
+        }
+        rows[e] = s;
+    }
+    __syncthreads();
+
+    const int m{n / 8};
+    float dist{0.0f};
+    float rate{0.0f};
+    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+        const int fx{e / n};
+        const int fy{e % n};
+        float coeff{0.0f};
+        for (int r{0}; r < n; ++r) {
+            coeff += basis[fy * n + r] * rows[fx * n + r];
+        }
+        ystore[e] = __float2half(coeff);
+        if (fx < m && fy < m) {
+            continue;
+        }
+        int sx{static_cast<int>(lround(fx * 8.0 / n))};
+        int sy{static_cast<int>(lround(fy * 8.0 / n))};
+        sx = sx > 7 ? 7 : sx;
+        sy = sy > 7 ? 7 : sy;
+        const float w{static_cast<float>(DCT8_DEQUANT_WEIGHTS[1][sx * 8 + sy])};
+        const float q{rintf(coeff * qgsf / w)};
+        const float err{q * w / qgsf - coeff};
+        dist += err * err;
+        if (q != 0.0f) {
+            rate += 1.0f + log2f(1.0f + fabsf(q));
+        }
+    }
+    pd[tid] = dist;
+    pr[tid] = rate;
+    __syncthreads();
+    for (int s{FRONTEND_THREADS / 2}; s > 0; s >>= 1) {
+        if (tid < s) {
+            pd[tid] += pd[tid + s];
+            pr[tid] += pr[tid + s];
+        }
+        __syncthreads();
+    }
+    return static_cast<float>(n * n) * pd[0] + lambda * pr[0];
+}
+
+__device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
+                                   std::size_t bw, std::size_t bh, float qgsf, float lambda,
+                                   float* basis, float* rows, float* pd, float* pr, float* costs,
+                                   __half* ystore, __half* ycoeffs,
+                                   std::int8_t* __restrict__ acs, int tid) {
+    float* cost8{costs};
+    float* cost16{cost8 + 16};
+    float* cost32{cost16 + 4};
+    __half* ystore8{ystore};
+    __half* ystore16{ystore8 + 16 * 64};
+    __half* ystore32{ystore16 + 4 * 256};
+    constexpr float INF{1.0e30f};
+
+    for (int idx{0}; idx < 16; ++idx) {
+        const int qy{idx / 8};
+        const int qx{(idx / 4) % 2};
+        const int dy{(idx / 2) % 2};
+        const int dx{idx % 2};
+        const std::size_t bbx{rbx + 2 * static_cast<std::size_t>(qx) + dx};
+        const std::size_t bby{rby + 2 * static_cast<std::size_t>(qy) + dy};
+        const bool exist{bbx < bw && bby < bh};
+        const float c{exist ? coop_block_ac_cost(y, 16 * qx + 8 * dx, 16 * qy + 8 * dy, 8,
+                                                 qgsf, lambda, basis, rows, pd, pr,
+                                                 ystore8 + idx * 64, tid)
+                            : INF};
+        if (tid == 0) {
+            cost8[idx] = c;
+        }
+        __syncthreads();
+    }
+
+    for (int q{0}; q < 4; ++q) {
+        const int qy{q / 2};
+        const int qx{q % 2};
+        const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
+        const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
+        const bool fit16{bx + 2 <= bw && by + 2 <= bh};
+        const float c{fit16 ? coop_block_ac_cost(y, qx * 16, qy * 16, 16, qgsf, lambda, basis,
+                                                 rows, pd, pr, ystore16 + q * 256, tid)
+                            : INF};
+        if (tid == 0) {
+            cost16[q] = c;
+        }
+        __syncthreads();
+    }
+
+    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
+    const float c32{fit32 ? coop_block_ac_cost(y, 0, 0, 32, qgsf, lambda, basis, rows, pd, pr,
+                                               ystore32, tid)
+                          : INF};
+    if (tid == 0) {
+        *cost32 = c32;
+
+        float split_cost{0.0f};
+        int quad_choice[2][2];
+        for (int qy{0}; qy < 2; ++qy) {
+            for (int qx{0}; qx < 2; ++qx) {
+                const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
+                const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
+                float sum8{0.0f};
+                bool any8{false};
+                for (int dy{0}; dy < 2; ++dy) {
+                    for (int dx{0}; dx < 2; ++dx) {
+                        const std::size_t bbx{bx + dx};
+                        const std::size_t bby{by + dy};
+                        if (bbx < bw && bby < bh) {
+                            sum8 += cost8[qy * 8 + qx * 4 + dy * 2 + dx];
+                            any8 = true;
+                        }
+                    }
+                }
+                if (!any8) {
+                    quad_choice[qy][qx] = -1;
+                    continue;
+                }
+                const bool fit16{bx + 2 <= bw && by + 2 <= bh};
+                const float c16{cost16[qy * 2 + qx]};
+                if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
+                    quad_choice[qy][qx] = 16;
+                    split_cost += c16;
+                } else {
+                    quad_choice[qy][qx] = 8;
+                    split_cost += sum8;
+                }
+            }
+        }
+
+        if (fit32 && *cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS) {
+            write_first_block(acs, bw, rbx, rby, 32);
+        } else {
+            for (int qy{0}; qy < 2; ++qy) {
+                for (int qx{0}; qx < 2; ++qx) {
+                    const int choice{quad_choice[qy][qx]};
+                    if (choice < 0) {
+                        continue;
+                    }
+                    const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
+                    const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
+                    if (choice == 16) {
+                        write_first_block(acs, bw, bx, by, 16);
+                        continue;
+                    }
+                    for (int dy{0}; dy < 2; ++dy) {
+                        for (int dx{0}; dx < 2; ++dx) {
+                            const std::size_t bbx{bx + dx};
+                            const std::size_t bby{by + dy};
+                            if (bbx < bw && bby < bh) {
+                                acs[bby * bw + bbx] = 8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    __syncthreads();
+
+    for (int p{0}; p < 16; ++p) {
+        const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
+        const std::size_t by{rby + static_cast<std::size_t>(p / 4)};
+        if (bx >= bw || by >= bh) {
+            continue;
+        }
+        const int n{acs[by * bw + bx]};
+        if (n == ACS_COVERED) {
+            continue;
+        }
+
+        const std::size_t lx{bx - rbx};
+        const std::size_t ly{by - rby};
+        const __half* src{nullptr};
+        if (n == 32) {
+            src = ystore32;
+        } else if (n == 16) {
+            const std::size_t q{(ly / 2) * 2 + lx / 2};
+            src = ystore16 + q * 256;
+        } else {
+            const std::size_t idx{((ly / 2) * 2 + lx / 2) * 4 + (ly % 2) * 2 + lx % 2};
+            src = ystore8 + idx * 64;
+        }
+        for (int raw{tid}; raw < n * n; raw += FRONTEND_THREADS) {
+            ycoeffs[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))] = src[raw];
+        }
+    }
+    __syncthreads();
+}
+
+__device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, std::size_t rby,
+                                std::size_t bw, std::size_t bh,
+                                const std::int8_t* __restrict__ acs, float* basis, float* rows,
+                                __half* dst, int tid) {
+    int cur_basis_n{0};
+    for (int p{0}; p < 16; ++p) {
+        const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
+        const std::size_t by{rby + static_cast<std::size_t>(p / 4)};
+        if (bx >= bw || by >= bh) {
+            continue;
+        }
+        const int n{acs[by * bw + bx]};
+        if (n == ACS_COVERED) {
+            continue;
+        }
+
+        __syncthreads();
+        if (n != cur_basis_n) {
+            const float* src_basis{basis_for(n)};
+            for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+                basis[e] = src_basis[e];
+            }
+            cur_basis_n = n;
+            __syncthreads();
+        }
+
+        const int px0{static_cast<int>(bx - rbx) * 8};
+        const int py0{static_cast<int>(by - rby) * 8};
+        for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+            const int fx{e / n};
+            const int r{e % n};
+            float s{0.0f};
+            const float* prow{src + (py0 + r) * TILE_PX + px0};
+            for (int col{0}; col < n; ++col) {
+                s += basis[fx * n + col] * prow[col];
+            }
+            rows[e] = s;
+        }
+        __syncthreads();
+        for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
+            const int fx{e / n};
+            const int fy{e % n};
+            float coeff{0.0f};
+            for (int r{0}; r < n; ++r) {
+                coeff += basis[fy * n + r] * rows[fx * n + r];
+            }
+            dst[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(e))] =
+                __float2half(coeff);
+        }
+        __syncthreads();
+    }
+}
+
 __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
                                       cudaTextureObject_t chroma_tex, std::size_t width,
                                       std::size_t height, std::size_t bw, std::size_t bh, float km0,
                                       float km1, float km2, float km3, float mul_pb, float add_pb,
-                                      float inv_global_scale,
+                                      float inv_global_scale, float qgsf,
+                                      __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
                                       std::int32_t* __restrict__ quant_field) {
-    __shared__ float sh_y[PAD * PAD];
-    __shared__ float sh_x[PAD * PAD];
-    __shared__ float sh_b[PAD * PAD];
-    __shared__ float sh_pre[CELLS * CELLS];
-    __shared__ float sh_red[2][4];
+    extern __shared__ __align__(16) unsigned char workspace_bytes[];
+    float* workspace{reinterpret_cast<float*>(workspace_bytes)};
+    float* sh_y{workspace};
+    float* sh_x{sh_y + PAD_SAMPLES};
+    float* sh_b{sh_x + PAD_SAMPLES};
+    float* sh_pre{sh_b + PAD_SAMPLES};
+    float* sh_red{sh_pre + CELLS * CELLS};
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
     const std::size_t tby0{static_cast<std::size_t>(blockIdx.y) * TB};
     const std::size_t px0{tbx0 * 8};
     const std::size_t py0{tby0 * 8};
-    const int tid{static_cast<int>(threadIdx.y) * 8 + static_cast<int>(threadIdx.x)};
+    const int tid{static_cast<int>(threadIdx.x)};
 
     // Load the padded tile and compute XYB into shared memory.
-    for (int i{tid}; i < PAD * PAD; i += 64) {
+    for (int i{tid}; i < PAD_SAMPLES; i += FRONTEND_THREADS) {
         const int lx{i % PAD};
         const int ly{i / PAD};
         long gx{static_cast<long>(px0) + lx - HALO};
@@ -90,7 +419,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     __syncthreads();
 
     // Pre-erosion cells: 0.25 * sum of the 4x4 pixel diffs (Laplacian of Y).
-    for (int ci{tid}; ci < CELLS * CELLS; ci += 64) {
+    for (int ci{tid}; ci < CELLS * CELLS; ci += FRONTEND_THREADS) {
         const int ccx{ci % CELLS};
         const int ccy{ci / CELLS};
         float sum{0.0f};
@@ -111,9 +440,6 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     }
     __syncthreads();
 
-    const int fx{static_cast<int>(threadIdx.x)};
-    const int fy{static_cast<int>(threadIdx.y)};
-
     for (int lb{0}; lb < TB * TB; ++lb) {
         const int lbx{lb % TB};
         const int lby{lb / TB};
@@ -130,7 +456,9 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         // reduced sums and broadcasts the quant integer via shared memory. Every
         // modulation term is an additive reduction over the block's 64 pixels,
         // so the per-pixel partials can be summed in parallel.
-        {
+        if (tid < 64) {
+            const int fx{tid % 8};
+            const int fy{tid / 8};
             const int idx{(y0 + fy) * PAD + x0 + fx};
             const float yv{sh_y[idx]};
             const float xv{sh_x[idx]};
@@ -167,18 +495,18 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             const float er_red{warp_reduce_sum(er_part)};
             if ((tid & 31) == 0) {
                 const int w{tid >> 5};
-                sh_red[w][0] = hf_red;
-                sh_red[w][1] = gamma_red;
-                sh_red[w][2] = blue_red;
-                sh_red[w][3] = er_red;
+                sh_red[w * 4] = hf_red;
+                sh_red[w * 4 + 1] = gamma_red;
+                sh_red[w * 4 + 2] = blue_red;
+                sh_red[w * 4 + 3] = er_red;
             }
         }
         __syncthreads();
         if (tid == 0) {
-            const float hf_sum{sh_red[0][0] + sh_red[1][0]};
-            const float gamma_overall{(sh_red[0][1] + sh_red[1][1]) * (0.5f / 64.0f)};
-            float blue_sum{sh_red[0][2] + sh_red[1][2]};
-            const float aq{sh_red[0][3] + sh_red[1][3]};
+            const float hf_sum{sh_red[0] + sh_red[4]};
+            const float gamma_overall{(sh_red[1] + sh_red[5]) * (0.5f / 64.0f)};
+            float blue_sum{sh_red[2] + sh_red[6]};
+            const float aq{sh_red[3] + sh_red[7]};
 
             constexpr float kLimit{0.027121074570634722f};
             if (blue_sum >= 32.0f * kLimit) {
@@ -201,18 +529,69 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
         }
         __syncthreads();
     }
+
+    float* sharp_y{sh_x};
+    gaborish_tile(sh_y, sharp_y, tid);
+    __syncthreads();
+    for (int i{tid}; i < TILE_SAMPLES; i += FRONTEND_THREADS) {
+        workspace[i] = sharp_y[i];
+    }
+    __syncthreads();
+
+    sharp_y = workspace;
+    float* basis{sharp_y + TILE_SAMPLES};
+    float* rows{basis + 32 * 32};
+    float* pd{rows + 32 * 32};
+    float* pr{pd + FRONTEND_THREADS};
+    float* costs{pr + FRONTEND_THREADS};
+    __half* ystore{reinterpret_cast<__half*>(costs + 21)};
+    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
+    select_and_store_y(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows, pd,
+                       pr, costs, ystore, coeffs + cplane, acs, tid);
+
+    float* raw_x{workspace};
+    float* raw_b{raw_x + PAD_SAMPLES};
+    for (int i{tid}; i < PAD_SAMPLES; i += FRONTEND_THREADS) {
+        const int lx{i % PAD};
+        const int ly{i / PAD};
+        long gx{static_cast<long>(px0) + lx - HALO};
+        long gy{static_cast<long>(py0) + ly - HALO};
+        gx = gx < 0 ? 0 : (gx >= static_cast<long>(width) ? static_cast<long>(width) - 1 : gx);
+        gy = gy < 0 ? 0 : (gy >= static_cast<long>(height) ? static_cast<long>(height) - 1 : gy);
+        const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
+        const float2 c{tex2D<float2>(chroma_tex, (gx + 0.5f) * 0.5f, (gy + 0.5f) * 0.5f)};
+        float xo{};
+        float yo{};
+        float bo{};
+        nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
+        raw_x[i] = xo;
+        raw_b[i] = bo;
+    }
+    __syncthreads();
+
+    float* sharp{raw_b + PAD_SAMPLES};
+    basis = sharp + TILE_SAMPLES;
+    rows = basis + 32 * 32;
+    gaborish_tile(raw_x, sharp, tid);
+    __syncthreads();
+    forward_channel(sharp, tbx0, tby0, bw, bh, acs, basis, rows, coeffs, tid);
+    gaborish_tile(raw_b, sharp, tid);
+    __syncthreads();
+    forward_channel(sharp, tbx0, tby0, bw, bh, acs, basis, rows, coeffs + 2 * cplane, tid);
 }
 
 }  // namespace
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                      std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                     float distance, std::int32_t* quant_field) {
+                     float distance, __half* coeffs, std::int8_t* acs,
+                     std::int32_t* quant_field) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
 
     const QuantCalibration cal{calibrate_quant(distance)};
     const float scale{K_AC_QUANT / distance};
+    const float qgsf{static_cast<float>(cal.raw_quant_field) * cal.global_scale_float};
 
     // PerBlockModulations exponent -> multiplicative field mapping.
     const float base_level{0.48f * scale};
@@ -258,12 +637,13 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
         return false;
     }
 
-    const dim3 block{8, 8};
+    ensure_frontend_basis();
+    const dim3 block{FRONTEND_THREADS};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
-    frontend_fused_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, bw, bh, km0,
-                                           km1, km2, km3, mul_pb, add_pb, cal.inv_global_scale,
-                                           quant_field);
+    frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES>>>(
+        luma, luma_pitch, chroma_tex, width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
+        cal.inv_global_scale, qgsf, coeffs, acs, quant_field);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};

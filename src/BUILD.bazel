@@ -80,16 +80,24 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "transform_select_impl",
+    hdrs = ["transform_select_impl.cuh"],
+    deps = [
+        ":quant_consts",
+        ":vardct_layout",
+    ],
+)
+
 cuda_library(
     name = "transform_select",
+    testonly = True,
     srcs = ["transform_select.cu"],
-    hdrs = [
-        "transform_select.h",
-        "transform_select_impl.cuh",
-    ],
+    hdrs = ["transform_select.h"],
     copts = RUNTIME_COPTS,
     deps = [
         ":quant_consts",
+        ":transform_select_impl",
         ":vardct_layout",
     ],
 )
@@ -107,6 +115,7 @@ cc_test(
 
 cuda_library(
     name = "frontend_transform",
+    testonly = True,
     srcs = ["frontend_transform.cu"],
     hdrs = [
         "frontend_transform.h",
@@ -295,11 +304,13 @@ cuda_library(
     hdrs = [
         "adaptive_quant_impl.cuh",
         "frontend_fused.h",
+        "gaborish.h",
     ],
     copts = RUNTIME_COPTS,
     deps = [
-        ":entropy",
         ":quant_consts",
+        ":transform_select_impl",
+        ":vardct_layout",
         ":xyb_impl",
     ],
 )
@@ -373,7 +384,6 @@ cuda_library(
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",
-        ":frontend_transform",
         ":quant_consts",
         ":vardct_layout",
         "//src/bitstream",

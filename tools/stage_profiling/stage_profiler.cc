@@ -42,11 +42,8 @@
 #include "src/entropy.h"
 #include "src/frontend_fused.h"
 #include "src/frontend_quantize.h"
-#include "src/frontend_transform.h"
 #include "src/quant_calibration.h"
-#include "src/transform_select.h"
 #include "src/vardct_layout.h"
-#include "src/xyb.h"
 
 namespace {
 
@@ -161,9 +158,7 @@ int main(int argc, char** argv) {
     std::uint8_t* d_luma{device_alloc<std::uint8_t>(ysize)};
     std::uint8_t* d_chroma{device_alloc<std::uint8_t>(ysize / 2)};
     __half* d_coeffs{device_alloc<__half>(3 * blocks * COEFFS_PER_BLOCK)};
-    float* d_xyb{device_alloc<float>(3 * width * height)};
     std::int8_t* d_acs{device_alloc<std::int8_t>(blocks)};
-    std::int8_t* d_acs_split{device_alloc<std::int8_t>(blocks)};
     std::int8_t* d_mx{device_alloc<std::int8_t>(cmw * cmh)};
     std::int8_t* d_mb{device_alloc<std::int8_t>(cmw * cmh)};
     std::int32_t* d_qf{device_alloc<std::int32_t>(blocks)};
@@ -176,13 +171,9 @@ int main(int argc, char** argv) {
     const QuantCalibration cal{calibrate_quant(args.distance)};
     const bitstream::QuantParams qp{cal.global_scale, cal.quant_dc};
 
-    Stage s_fe{"encode_frontend (AQ)"};
-    Stage s_ft{"frontend_transform"};
+    Stage s_fe{"frontend_fused"};
     Stage s_cfl{"estimate_cfl_covered"};
     Stage s_qz{"quantize_residual"};
-    Stage s_xyb{"  split: nv12_to_xyb"};
-    Stage s_sel{"  split: select_transforms"};
-    Stage s_dct{"  split: variable_forward_dct"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
@@ -203,11 +194,8 @@ int main(int argc, char** argv) {
 
         // Front-end sub-stages, in encode_nv12 order.
         timed(s_fe, record, [&] {
-            encode_frontend(d_luma, width, d_chroma, width, width, height, args.distance, d_qf);
-        });
-        timed(s_ft, record, [&] {
-            frontend_transform(d_luma, width, d_chroma, width, width, height, args.distance,
-                               d_coeffs, d_acs);
+            encode_frontend(d_luma, width, d_chroma, width, width, height, args.distance, d_coeffs,
+                            d_acs, d_qf);
         });
         timed(s_cfl, record,
               [&] { estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb); });
@@ -215,17 +203,6 @@ int main(int argc, char** argv) {
             quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, args.distance,
                               d_ac16, d_dc32);
         });
-
-        // frontend_transform internal split (diagnostic; gaborish is not a public
-        // entry point, so it is not timed separately and falls into the gap
-        // between frontend_transform and the three lines below).
-        timed(s_xyb, record,
-              [&] { nv12_to_xyb(d_luma, width, d_chroma, width, width, height, d_xyb); });
-        timed(s_sel, record,
-              [&] { select_transforms(d_xyb + width * height, width, height, args.distance,
-                                      d_coeffs, d_acs_split); });
-        timed(s_dct, record,
-              [&] { variable_forward_dct(d_xyb, width, height, d_acs_split, d_coeffs); });
 
         // Entropy histograms.
         timed(s_ach, record, [&] { ac_build_histogram(d_ac16, d_acs, width, height, d_ac_hist); });
@@ -358,20 +335,15 @@ int main(int argc, char** argv) {
         }
     }
 
-    const Stage* stages[]{&s_fe,  &s_ft,  &s_cfl, &s_qz, &s_xyb, &s_sel,
-                          &s_dct, &s_ach, &s_dch, &s_amh, &s_d2h, &s_host,
-                          &s_up,  &s_ace, &s_dce, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,   &s_ach, &s_dch, &s_amh, &s_d2h,
+                          &s_host, &s_up,  &s_ace, &s_dce, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {
         const double mean{stage->us / args.iterations};
         std::printf("  %-30s %9.1f\n", stage->name, mean);
-        // The split lines re-run work already inside frontend_transform; exclude
-        // them from the pipeline sum.
-        if (stage->name[0] != ' ') {
-            sum += mean;
-        }
+        sum += mean;
     }
-    std::printf("  %-30s %9.1f\n", "[sum, excl. split]", sum);
+    std::printf("  %-30s %9.1f\n", "[sum]", sum);
     return 0;
 }

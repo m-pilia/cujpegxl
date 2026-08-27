@@ -15,11 +15,8 @@ cc_binary(
         "//src:entropy",
         "//src:frontend_fused",
         "//src:frontend_quantize",
-        "//src:frontend_transform",
         "//src:quant_consts",
-        "//src:transform_select",
         "//src:vardct_layout",
-        "//src:xyb",
         "//src/bitstream:frame_assembly",
     ],
 )
