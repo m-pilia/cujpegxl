@@ -59,7 +59,6 @@ py_test(
     tags = ["gpu"],
     deps = [
         ":pycujpegxl",
-        "//tools/budget:budget_model_lib",
         "//tools/determinism:determinism_runner_lib",
         requirement("numpy"),
     ],

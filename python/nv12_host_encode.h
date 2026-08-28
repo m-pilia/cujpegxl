@@ -18,7 +18,7 @@ namespace cujpegxl::pybind_support {
 // Uploads a host NV12 image (`luma` is width*height bytes, `chroma` is the
 // interleaved plane of width*(height/2) bytes) to `device_ordinal` and runs the
 // full encode pipeline, returning the `.jxl` file bytes in `out`. When `stats`
-// is non-null it receives the per-stage budget-model timings.
+// is non-null it receives the per-stage timings.
 bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std::uint32_t width,
                       std::uint32_t height, float distance, std::int32_t device_ordinal,
                       std::vector<std::uint8_t>& out, std::vector<StageTiming>* stats);

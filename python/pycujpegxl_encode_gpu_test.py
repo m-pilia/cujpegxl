@@ -3,14 +3,12 @@
 
 # Requires a physical CUDA device; tagged "gpu"/"manual" and excluded from the
 # CPU-only CI. Exercises the Python encode wrapper (host NumPy NV12 upload), the
-# determinism runner wired around the encoder, and the budget-model stage-record
-# emission.
+# determinism runner wired around the encoder, and the per-stage timing stats.
 
 import unittest
 
 import numpy as np
 
-import budget_model as bm
 import determinism_runner as dr
 import pycujpegxl
 
@@ -47,17 +45,13 @@ class PyCujpegxlEncodeTest(unittest.TestCase):
         result = dr.compare(a, b)
         self.assertTrue(result.identical, msg=f"first diff at {result.first_diff_offset}")
 
-    def test_stage_records_feed_budget_model(self):
+    def test_encode_with_stats_returns_stage_timings(self):
         _, stages = pycujpegxl.encode_with_stats(self.nv12, WIDTH, HEIGHT)
         self.assertEqual([s["name"] for s in stages], ["frontend", "entropy", "assembly"])
         for stage in stages:
             self.assertGreaterEqual(stage["bytes_moved"], 0)
             self.assertGreaterEqual(stage["gpu_us"], 0.0)
             self.assertGreaterEqual(stage["cpu_us"], 0.0)
-
-        records = [bm.StageRecord.from_dict(s) for s in stages]
-        report = bm.evaluate(records, fps=15.0, projection=bm.ProjectionFactors(1.0, 1.0, 1.0))
-        self.assertEqual(len(report.constraints), 4)
 
 
 if __name__ == "__main__":

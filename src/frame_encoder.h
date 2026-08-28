@@ -12,8 +12,7 @@
 
 namespace cujpegxl {
 
-// Per-stage instrumentation record consumed by the budget model
-// (tools/budget/budget_model.py). `gpu_us`/`cpu_us` are measured wall time of
+// Per-stage instrumentation record. `gpu_us`/`cpu_us` are measured wall time of
 // the device and host portions of a stage; because the device sub-calls are
 // synchronous, blocking wall time attributes cleanly to each. `bytes_moved` is
 // the analytic DRAM traffic of the stage.
@@ -45,7 +44,7 @@ struct StageTiming {
 // a single bulk D2H. Returns false on a CUDA error, if a coded section exceeds
 // its worst-case buffer, or if the frame has a single AC group.
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
-// timings for the budget model; passing null (the default) emits no records.
+// timings; passing null (the default) emits no records.
 bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
                   const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
                   std::size_t width, std::size_t height, const bitstream::QuantParams& qp,
@@ -69,7 +68,7 @@ bitstream::QuantParams quant_params_for_distance(float distance);
 // and height must be multiples of 8 and span more than one AC group. Returns
 // false on a CUDA error or an unsupported single-AC-group frame.
 // When `stats` is non-null it receives the "frontend", "entropy" and "assembly"
-// stage timings for the budget model.
+// stage timings.
 bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                  std::size_t chroma_pitch, std::size_t width, std::size_t height,
                  std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
