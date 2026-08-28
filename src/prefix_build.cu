@@ -139,7 +139,7 @@ bool build_ac_global_device(const std::uint32_t* d_ac_hist, std::size_t num_ac_g
                                                   d_cluster_nbits);
     ac_serialize_kernel<<<1, 128>>>(d_ac_hist, num_ac_groups, d_ctxmap_blob, ctxmap_nbits,
                                     d_cluster_blob, d_cluster_nbits, d_section, d_section_len);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    const bool ok{cudaGetLastError() == cudaSuccess};
     cudaFreeAsync(d_cluster_blob, 0);
     cudaFreeAsync(d_cluster_nbits, 0);
     return ok;
@@ -165,7 +165,7 @@ bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
         bw, bh, xdg, num_groups, d_dc_hist, d_am_hist, d_fbc, d_dc_depth, d_dc_bits, d_am_depth,
         d_am_bits, d_blob_pre, d_blob_pre_off, d_blob_pre_bits, d_blob_mid, d_blob_mid_off,
         d_blob_mid_bits);
-    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace cujpegxl

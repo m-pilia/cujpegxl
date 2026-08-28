@@ -4,9 +4,10 @@
 // Sub-stage timing harness. The production encode path emits only three lumped
 // StageTiming records (frontend / entropy / assembly), which is too coarse to
 // attribute a per-workstream runtime change. This harness calls the *public*
-// sub-stage functions directly and wall-clock times each one; every sub-call
-// ends in cudaDeviceSynchronize, so blocking wall time is that sub-stage's GPU
-// time. It deliberately mirrors the encode_nv12 + encode_frame orchestration so
+// sub-stage functions directly and wall-clock times each one; the production
+// functions are sync-free, so `timed` issues its own cudaDeviceSynchronize after
+// each sub-call, making the blocking wall time that sub-stage's GPU time. It
+// deliberately mirrors the encode_nv12 + encode_frame orchestration so
 // the internal sub-stages of encode_frame can be timed without instrumenting
 // production files.
 //
@@ -62,6 +63,7 @@ template <typename Fn>
 void timed(Stage& stage, bool record, Fn&& fn) {
     const Clock::time_point start{Clock::now()};
     fn();
+    cudaDeviceSynchronize();
     if (record) {
         stage.us += us_since(start);
     }

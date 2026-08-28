@@ -211,9 +211,7 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
     const unsigned int blocks{static_cast<unsigned int>(cmw * cmh)};
     estimate_cfl_covered_kernel<<<blocks, threads>>>(coeffs, acs, bw, bh, cmw, cmh, ytox_map,
                                                      ytob_map);
-    const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{cudaDeviceSynchronize()};
-    return launch == cudaSuccess && sync == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::int8_t* ytox_map,
@@ -230,9 +228,7 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::
     const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
     quantize_residual_kernel<<<blocks, threads>>>(coeffs, acs, ytox_map, ytob_map, quant_field, bw,
                                                   bh, cmw, gsf, dc_scale, ac, dc);
-    const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{cudaDeviceSynchronize()};
-    return launch == cudaSuccess && sync == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace cujpegxl

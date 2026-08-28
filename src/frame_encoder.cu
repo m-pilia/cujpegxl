@@ -230,17 +230,22 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     }
     std::size_t at{0};
     const bool gathered{
-        cudaMemcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice) ==
-            cudaSuccess &&
+        cudaMemcpyAsync(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice,
+                        0) == cudaSuccess &&
         (at += dc_global.size(),
-         cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice) == cudaSuccess) &&
+         cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, 0) ==
+             cudaSuccess) &&
         (at += dc_total,
-         cudaMemcpy(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice) ==
+         cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice, 0) ==
              cudaSuccess) &&
         (at += ac_global_size,
-         cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice) == cudaSuccess)};
+         cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, 0) ==
+             cudaSuccess)};
     if (!gathered) {
         return false;
+    }
+    if (stats != nullptr) {
+        cudaDeviceSynchronize();
     }
     assembly.gpu_us += us_since(assembly_gather_start);
 
@@ -296,8 +301,8 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
         const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
         std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
-        if (!aligned || cudaMemcpy2D(aligned, aligned_pitch, chroma, chroma_pitch, width,
-                                     height / 2, cudaMemcpyDeviceToDevice) != cudaSuccess) {
+        if (!aligned || cudaMemcpy2DAsync(aligned, aligned_pitch, chroma, chroma_pitch, width,
+                                          height / 2, cudaMemcpyDeviceToDevice, 0) != cudaSuccess) {
             return false;
         }
         chroma_src = aligned;
@@ -313,6 +318,11 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         return false;
     }
     if (stats != nullptr) {
+        // The frontend now runs sync-free past the fused kernel (cfl/quantize only
+        // enqueue), so bracket the stage with an instrumentation-only sync to keep
+        // the per-stage wall-clock attribution valid. Production (stats == nullptr)
+        // stays fully pipelined.
+        cudaDeviceSynchronize();
         stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
     }
     return encode_frame(d_ac16, d_dc32, d_acs, d_mx, d_mb, width, height, qp, d_qf, out_file,

@@ -1006,16 +1006,16 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, std::siz
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (cudaMemset(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t)) != cudaSuccess) {
+    if (cudaMemsetAsync(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t), 0) != cudaSuccess) {
         return false;
     }
     std::int32_t* nz_grid{nullptr};
     std::int32_t* nz_exact{nullptr};
-    if (cudaMalloc(&nz_grid, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
+    if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
         return false;
     }
-    if (cudaMalloc(&nz_exact, 3 * nblocks * sizeof(std::int32_t)) != cudaSuccess) {
-        cudaFree(nz_grid);
+    if (cudaMallocAsync(&nz_exact, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
+        cudaFreeAsync(nz_grid, 0);
         return false;
     }
     const unsigned int gthreads{256};
@@ -1025,9 +1025,9 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, std::siz
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     histogram_kernel<<<blocks, threads>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, histogram);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
-    cudaFree(nz_grid);
-    cudaFree(nz_exact);
+    const bool ok{cudaGetLastError() == cudaSuccess};
+    cudaFreeAsync(nz_grid, 0);
+    cudaFreeAsync(nz_exact, 0);
     return ok;
 }
 
@@ -1073,7 +1073,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     group_size_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg,
                                                  num_groups, depth, context_map, group_sizes,
                                                  run_offsets);
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+    if (cudaGetLastError() != cudaSuccess) {
         free_run();
         return false;
     }
@@ -1088,7 +1088,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     }
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
                                   static_cast<int>(num_groups));
-    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    const cudaError_t scan_status{cudaGetLastError()};
     cudaFreeAsync(d_temp, 0);
     if (scan_status != cudaSuccess) {
         free_run();
@@ -1111,7 +1111,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     }
 
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
+    if (cudaMemsetAsync(out, 0, zero_bytes, 0) != cudaSuccess) {
         free_run();
         return false;
     }
@@ -1119,7 +1119,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     group_emit_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg,
                                                  num_groups, depth, bits, context_map, run_offsets,
                                                  out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    const bool ok{cudaGetLastError() == cudaSuccess};
     free_run();
     return ok;
 }
@@ -1148,7 +1148,7 @@ bool dc_first_block_counts(const std::int8_t* acs, std::size_t width, std::size_
     const std::size_t num_groups{dc_num_groups(width, height)};
     dc_first_block_count_kernel<<<static_cast<unsigned int>(num_groups), FIRST_BLOCK_THREADS>>>(
         acs, bw, bh, xdg, num_groups, counts);
-    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
@@ -1159,7 +1159,7 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
     const std::size_t nblocks{bw * bh};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t), 0) !=
         cudaSuccess) {
         return false;
     }
@@ -1167,7 +1167,7 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     dc_histogram_kernel<<<blocks, threads>>>(dc, bw, bh, nblocks, xdg, histograms);
-    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
@@ -1180,7 +1180,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t cmh{(bh + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemset(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t)) !=
+    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t), 0) !=
         cudaSuccess) {
         return false;
     }
@@ -1192,7 +1192,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
                                                          histograms);
     const unsigned int zero_blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
     acmeta_epf_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
-    return cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
@@ -1244,7 +1244,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
         blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
     dc_group_scan_kernel<<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
         num_groups, chunk_bits, chunk_base, group_sizes);
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+    if (cudaGetLastError() != cudaSuccess) {
         free_chunks();
         return false;
     }
@@ -1259,7 +1259,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     }
     cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
                                   static_cast<int>(num_groups));
-    const cudaError_t scan_status{cudaDeviceSynchronize()};
+    const cudaError_t scan_status{cudaGetLastError()};
     cudaFreeAsync(d_temp, 0);
     if (scan_status != cudaSuccess) {
         free_chunks();
@@ -1285,7 +1285,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     // section region must start zeroed. Round up to the 32-bit word the last bits
     // land in; the wrapper's capacity has slack for the padding.
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemset(out, 0, zero_bytes) != cudaSuccess) {
+    if (cudaMemsetAsync(out, 0, zero_bytes, 0) != cudaSuccess) {
         free_chunks();
         return false;
     }
@@ -1294,7 +1294,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
         fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
         blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess};
+    const bool ok{cudaGetLastError() == cudaSuccess};
     free_chunks();
     return ok;
 }
