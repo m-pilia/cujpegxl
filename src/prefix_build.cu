@@ -5,10 +5,10 @@
 
 #include <cuda_runtime.h>
 
+#include "ac_context.h"
 #include "src/bitstream/bit_sink.h"
 #include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/serialize_impl.h"
-#include "ac_context.h"
 
 namespace cujpegxl {
 namespace {
@@ -41,10 +41,11 @@ constexpr std::size_t CLUSTER_BLOB_STRIDE = 512;
 // dominant per-cluster serialization is done in parallel here rather than serially
 // in the serialize kernel.
 __global__ void ac_build_codes_kernel(const std::uint32_t* ac_hist, std::uint8_t* depth,
-                                       std::uint16_t* bits, std::uint8_t* cluster_blob,
-                                       std::uint32_t* cluster_nbits) {
+                                      std::uint16_t* bits, std::uint8_t* cluster_blob,
+                                      std::uint32_t* cluster_nbits) {
     bitstream::detail::build_cluster_code_and_blob(ac_hist, HISTOGRAM_STRIDE, blockIdx.x, depth,
-                                                   bits, cluster_blob + blockIdx.x * CLUSTER_BLOB_STRIDE,
+                                                   bits,
+                                                   cluster_blob + blockIdx.x * CLUSTER_BLOB_STRIDE,
                                                    CLUSTER_BLOB_STRIDE, &cluster_nbits[blockIdx.x]);
 }
 
@@ -52,10 +53,10 @@ __global__ void ac_build_codes_kernel(const std::uint32_t* ac_hist, std::uint8_t
 // precomputed context-map and per-cluster code blobs (no per-cluster Huffman work
 // here), then copies it to global in parallel.
 __global__ void ac_serialize_kernel(const std::uint32_t* ac_hist, std::size_t num_ac_groups,
-                                     const std::uint8_t* ctxmap_blob, std::size_t ctxmap_nbits,
-                                     const std::uint8_t* cluster_blob,
-                                     const std::uint32_t* cluster_nbits, std::uint8_t* section,
-                                     std::uint32_t* section_len) {
+                                    const std::uint8_t* ctxmap_blob, std::size_t ctxmap_nbits,
+                                    const std::uint8_t* cluster_blob,
+                                    const std::uint32_t* cluster_nbits, std::uint8_t* section,
+                                    std::uint32_t* section_len) {
     __shared__ std::uint8_t s_section[AC_SECTION_SHMEM];
     __shared__ unsigned s_len;
     if (threadIdx.x == 0) {
@@ -89,10 +90,10 @@ __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_
     }
     const std::size_t gx{g % xdg};
     const std::size_t gy{g / xdg};
-    const std::size_t dgw{
-        DC_GROUP_BLOCKS < bw - gx * DC_GROUP_BLOCKS ? DC_GROUP_BLOCKS : bw - gx * DC_GROUP_BLOCKS};
-    const std::size_t dgh{
-        DC_GROUP_BLOCKS < bh - gy * DC_GROUP_BLOCKS ? DC_GROUP_BLOCKS : bh - gy * DC_GROUP_BLOCKS};
+    const std::size_t dgw{DC_GROUP_BLOCKS < bw - gx * DC_GROUP_BLOCKS ? DC_GROUP_BLOCKS
+                                                                      : bw - gx * DC_GROUP_BLOCKS};
+    const std::size_t dgh{DC_GROUP_BLOCKS < bh - gy * DC_GROUP_BLOCKS ? DC_GROUP_BLOCKS
+                                                                      : bh - gy * DC_GROUP_BLOCKS};
     const std::size_t total_blocks{dgw * dgh};
     const std::size_t count{fbc[g]};
 
@@ -161,10 +162,10 @@ bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
 
     constexpr unsigned threads{64};
     const unsigned blocks{static_cast<unsigned>((num_groups + threads - 1) / threads)};
-    dc_group_blobs_kernel<<<blocks, threads>>>(
-        bw, bh, xdg, num_groups, d_dc_hist, d_am_hist, d_fbc, d_dc_depth, d_dc_bits, d_am_depth,
-        d_am_bits, d_blob_pre, d_blob_pre_off, d_blob_pre_bits, d_blob_mid, d_blob_mid_off,
-        d_blob_mid_bits);
+    dc_group_blobs_kernel<<<blocks, threads>>>(bw, bh, xdg, num_groups, d_dc_hist, d_am_hist, d_fbc,
+                                               d_dc_depth, d_dc_bits, d_am_depth, d_am_bits,
+                                               d_blob_pre, d_blob_pre_off, d_blob_pre_bits,
+                                               d_blob_mid, d_blob_mid_off, d_blob_mid_bits);
     return cudaGetLastError() == cudaSuccess;
 }
 

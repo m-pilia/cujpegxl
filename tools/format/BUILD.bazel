@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
-load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun", "format_test")
 
 format_multirun(
     name = "format",
@@ -9,4 +9,15 @@ format_multirun(
     cc = "@llvm_toolchain//:clang-format",
     cuda = "@llvm_toolchain//:clang-format",
     visibility = ["//visibility:public"],
+)
+
+format_test(
+    name = "format_check",
+    c = "@llvm_toolchain//:clang-format",
+    cc = "@llvm_toolchain//:clang-format",
+    cuda = "@llvm_toolchain//:clang-format",
+    fix_target = ":format",
+    no_sandbox = True,
+    visibility = ["//visibility:public"],
+    workspace = "//:MODULE.bazel",
 )

@@ -56,7 +56,8 @@ CUJPEGXL_BS_HD inline std::size_t ceil_log2_nonzero(std::size_t x) {
 
 // Index of the last non-zero symbol plus one, or 1 if empty; the trailing-trimmed
 // alphabet size the host EntropyEncoder emits.
-CUJPEGXL_BS_HD inline std::size_t alphabet_size(const std::uint32_t* histogram, std::size_t stride) {
+CUJPEGXL_BS_HD inline std::size_t alphabet_size(const std::uint32_t* histogram,
+                                                std::size_t stride) {
     std::size_t last{0};
     for (std::size_t s{0}; s < stride; ++s) {
         if (histogram[s]) {
@@ -258,7 +259,7 @@ CUJPEGXL_BS_HD inline void write_repetitions(std::uint8_t previous_value, std::u
 }
 
 CUJPEGXL_BS_HD inline void write_repetitions_zeros(std::size_t repetitions, std::size_t& tree_size,
-                                                  std::uint8_t* tree, std::uint8_t* extra_bits) {
+                                                   std::uint8_t* tree, std::uint8_t* extra_bits) {
     if (repetitions == 11) {
         tree[tree_size] = 0;
         extra_bits[tree_size] = 0;
@@ -349,12 +350,10 @@ CUJPEGXL_BS_HD void store_huffman_tree_of_huffman_tree(int num_codes,
 }
 
 template <typename W>
-CUJPEGXL_BS_HD void store_huffman_tree_to_bit_mask(std::size_t huffman_tree_size,
-                                                   const std::uint8_t* huffman_tree,
-                                                   const std::uint8_t* huffman_tree_extra_bits,
-                                                   const std::uint8_t* code_length_bitdepth,
-                                                   const std::uint16_t* code_length_bitdepth_symbols,
-                                                   W& w) {
+CUJPEGXL_BS_HD void store_huffman_tree_to_bit_mask(
+    std::size_t huffman_tree_size, const std::uint8_t* huffman_tree,
+    const std::uint8_t* huffman_tree_extra_bits, const std::uint8_t* code_length_bitdepth,
+    const std::uint16_t* code_length_bitdepth_symbols, W& w) {
     for (std::size_t i{0}; i < huffman_tree_size; ++i) {
         const std::size_t ix{huffman_tree[i]};
         w.write(code_length_bitdepth[ix], code_length_bitdepth_symbols[ix]);
@@ -519,7 +518,8 @@ CUJPEGXL_BS_HD void encode_uint_config(W& w, const HybridUintConfig& config,
         return;
     }
     w.write(ceil_log2_nonzero(config.split_exponent + 1), config.msb_in_token);
-    w.write(ceil_log2_nonzero(config.split_exponent - config.msb_in_token + 1), config.lsb_in_token);
+    w.write(ceil_log2_nonzero(config.split_exponent - config.msb_in_token + 1),
+            config.lsb_in_token);
 }
 
 template <typename W>
@@ -543,9 +543,10 @@ CUJPEGXL_BS_HD void store_var_len_uint16(W& w, std::size_t n) {
 constexpr std::size_t PREFIX_MAX_BITS = 15;
 
 template <typename W>
-CUJPEGXL_BS_HD void write_prefix_histograms(W& w, const std::uint32_t* histogram, std::size_t length,
-                                            std::size_t num_contexts, const HybridUintConfig& config,
-                                            std::uint8_t* depth, std::uint16_t* bits) {
+CUJPEGXL_BS_HD void write_prefix_histograms(W& w, const std::uint32_t* histogram,
+                                            std::size_t length, std::size_t num_contexts,
+                                            const HybridUintConfig& config, std::uint8_t* depth,
+                                            std::uint16_t* bits) {
     w.write(1, 0);  // lz77.enabled = false
 
     if (num_contexts > 1) {
@@ -748,13 +749,10 @@ CUJPEGXL_BS_HD inline void build_cluster_code_and_blob(const std::uint32_t* clus
 // per-cluster prefix-code descriptions from precomputed per-cluster blobs
 // (`cluster_blob` / `cluster_nbits`, one `blob_stride`-byte slot per cluster).
 template <typename W>
-CUJPEGXL_BS_HD void write_cluster_codes_tail_prebuilt(W& w, std::size_t num_clusters,
-                                                      const std::uint32_t* cluster_histograms,
-                                                      std::size_t stride,
-                                                      const HybridUintConfig& config,
-                                                      const std::uint8_t* cluster_blob,
-                                                      std::size_t blob_stride,
-                                                      const std::uint32_t* cluster_nbits) {
+CUJPEGXL_BS_HD void write_cluster_codes_tail_prebuilt(
+    W& w, std::size_t num_clusters, const std::uint32_t* cluster_histograms, std::size_t stride,
+    const HybridUintConfig& config, const std::uint8_t* cluster_blob, std::size_t blob_stride,
+    const std::uint32_t* cluster_nbits) {
     w.write(1, 1);  // use_prefix_code
     for (std::size_t c{0}; c < num_clusters; ++c) {
         encode_uint_config(w, config, PREFIX_MAX_BITS);
@@ -819,13 +817,10 @@ CUJPEGXL_BS_HD void write_clustered_prefix_histograms_serialize(
 }
 
 template <typename W>
-CUJPEGXL_BS_HD void write_clustered_prefix_histograms(W& w, const std::uint8_t* context_map,
-                                                      std::size_t num_contexts,
-                                                      std::size_t num_clusters,
-                                                      const std::uint32_t* cluster_histograms,
-                                                      std::size_t stride,
-                                                      const HybridUintConfig& config,
-                                                      std::uint8_t* depth, std::uint16_t* bits) {
+CUJPEGXL_BS_HD void write_clustered_prefix_histograms(
+    W& w, const std::uint8_t* context_map, std::size_t num_contexts, std::size_t num_clusters,
+    const std::uint32_t* cluster_histograms, std::size_t stride, const HybridUintConfig& config,
+    std::uint8_t* depth, std::uint16_t* bits) {
     for (std::size_t c{0}; c < num_clusters; ++c) {
         build_cluster_code(cluster_histograms, stride, c, depth, bits);
     }
@@ -916,20 +911,20 @@ template <typename W>
 CUJPEGXL_BS_HD void serialize_dc_pre(W& w, const std::uint32_t* dc_hist, std::uint8_t* dc_depth,
                                      std::uint16_t* dc_bits) {
     write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-    write_modular_header(w, dc_hist, alphabet_size(dc_hist, HISTOGRAM_STRIDE), DC_PREDICTOR_GRADIENT,
-                         dc_depth, dc_bits);
+    write_modular_header(w, dc_hist, alphabet_size(dc_hist, HISTOGRAM_STRIDE),
+                         DC_PREDICTOR_GRADIENT, dc_depth, dc_bits);
 }
 
 // DcGroup mid-blob: AcMetadata `count` field + the AcMetadata modular header
 // (Zero predictor). `total_blocks` sizes the count field, `count` is the group's
 // first-block count.
 template <typename W>
-CUJPEGXL_BS_HD void serialize_dc_mid(W& w, const std::uint32_t* meta_hist,
-                                     std::size_t total_blocks, std::size_t count,
-                                     std::uint8_t* meta_depth, std::uint16_t* meta_bits) {
+CUJPEGXL_BS_HD void serialize_dc_mid(W& w, const std::uint32_t* meta_hist, std::size_t total_blocks,
+                                     std::size_t count, std::uint8_t* meta_depth,
+                                     std::uint16_t* meta_bits) {
     write_bits(w, ceil_log2_nonzero(total_blocks), static_cast<std::uint32_t>(count - 1));
-    write_modular_header(w, meta_hist, alphabet_size(meta_hist, HISTOGRAM_STRIDE), DC_PREDICTOR_ZERO,
-                         meta_depth, meta_bits);
+    write_modular_header(w, meta_hist, alphabet_size(meta_hist, HISTOGRAM_STRIDE),
+                         DC_PREDICTOR_ZERO, meta_depth, meta_bits);
 }
 
 }  // namespace cujpegxl::bitstream::detail

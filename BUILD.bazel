@@ -5,7 +5,10 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_shared_library")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files([".clang-tidy"])
+exports_files([
+    ".clang-tidy",
+    "MODULE.bazel",
+])
 
 cc_library(
     name = "cujpegxl_headers",

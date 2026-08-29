@@ -134,8 +134,10 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     // encode kernels. DcGlobal depends only on the quantizer, so it stays on host.
     constexpr std::size_t AC_SECTION_CAP{1u << 16};
     const DeviceCtxMapBlob& ctxmap{ac_ctxmap_blob_device()};
-    std::uint8_t* d_ac_depth{scope.alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
-    std::uint16_t* d_ac_bits{scope.alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
+    std::uint8_t* d_ac_depth{
+        scope.alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
+    std::uint16_t* d_ac_bits{
+        scope.alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_ac_section{scope.alloc<std::uint8_t>(AC_SECTION_CAP)};
     std::uint32_t* d_ac_section_len{scope.alloc<std::uint32_t>(1)};
     std::uint8_t* d_dc_depth{scope.alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
@@ -232,15 +234,12 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     const bool gathered{
         cudaMemcpyAsync(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice,
                         0) == cudaSuccess &&
-        (at += dc_global.size(),
-         cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, 0) ==
-             cudaSuccess) &&
-        (at += dc_total,
-         cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice, 0) ==
-             cudaSuccess) &&
-        (at += ac_global_size,
-         cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, 0) ==
-             cudaSuccess)};
+        (at += dc_global.size(), cudaMemcpyAsync(d_body + at, d_dc_body, dc_total,
+                                                 cudaMemcpyDeviceToDevice, 0) == cudaSuccess) &&
+        (at += dc_total, cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size,
+                                         cudaMemcpyDeviceToDevice, 0) == cudaSuccess) &&
+        (at += ac_global_size, cudaMemcpyAsync(d_body + at, d_ac_body, ac_total,
+                                               cudaMemcpyDeviceToDevice, 0) == cudaSuccess)};
     if (!gathered) {
         return false;
     }

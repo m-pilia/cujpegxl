@@ -159,8 +159,8 @@ void check_dc_group_blobs(std::size_t width, std::size_t height, Lcg& rng) {
         fbc[g] = 1 + (rng.next() % total);
     }
 
-    const DcGroupBlobs host{bitstream::build_dc_group_blobs(width, height, dc_hist.data(),
-                                                            am_hist.data(), fbc.data())};
+    const DcGroupBlobs host{
+        bitstream::build_dc_group_blobs(width, height, dc_hist.data(), am_hist.data(), fbc.data())};
 
     std::uint32_t* d_dc_hist{device_upload(dc_hist)};
     std::uint32_t* d_am_hist{device_upload(am_hist)};
