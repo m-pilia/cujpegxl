@@ -11,10 +11,10 @@
 // the internal sub-stages of encode_frame can be timed without instrumenting
 // production files.
 //
-// Numbers are for *relative* attribution: scratch is re-allocated each iteration
-// (no stream-ordered mempool), so absolute per-resolution sums run a little above
-// the mempool pipeline totals reported by //tools/benchmark:benchmark --profile,
-// which remains the canonical top-line metric.
+// Numbers are for *relative* attribution: scratch is allocated once up front and
+// every sub-stage is followed by a device sync, so the sum differs from the
+// pipelined totals reported by //tools/benchmark:benchmark --profile, which
+// remains the canonical top-line metric.
 //
 // Usage:
 //   bazelisk run //tools/stage_profiling:stage_profiler -- \
@@ -39,10 +39,12 @@
 #include <cuda_runtime.h>
 
 #include "src/ac_context.h"
+#include "src/bitstream/container.h"
 #include "src/bitstream/frame_assembly.h"
 #include "src/entropy.h"
 #include "src/frontend_fused.h"
 #include "src/frontend_quantize.h"
+#include "src/prefix_build.h"
 #include "src/quant_calibration.h"
 #include "src/vardct_layout.h"
 
@@ -174,20 +176,53 @@ int main(int argc, char** argv) {
     const QuantCalibration cal{calibrate_quant(args.distance)};
     const bitstream::QuantParams qp{cal.global_scale, cal.quant_dc};
 
+    std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
+
+    constexpr std::size_t AC_SECTION_CAP{1u << 16};
+    const bitstream::AcContextMapBlob ctxmap{bitstream::build_ac_context_map_blob()};
+    std::uint8_t* d_ctxmap{upload(ctxmap.bytes)};
+    std::uint8_t* d_ac_depth{
+        device_alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
+    std::uint16_t* d_ac_bits{
+        device_alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
+    std::uint8_t* d_ac_section{device_alloc<std::uint8_t>(AC_SECTION_CAP)};
+    std::uint32_t* d_ac_section_len{device_alloc<std::uint32_t>(1)};
+    std::uint8_t* d_dc_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
+    std::uint16_t* d_dc_bits{device_alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
+    std::uint8_t* d_am_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
+    std::uint16_t* d_am_bits{device_alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
+    std::uint8_t* d_pre{device_alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
+    std::uint32_t* d_pre_off{device_alloc<std::uint32_t>(num_dc)};
+    std::uint32_t* d_pre_bits{device_alloc<std::uint32_t>(num_dc)};
+    std::uint8_t* d_mid{device_alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
+    std::uint32_t* d_mid_off{device_alloc<std::uint32_t>(num_dc)};
+    std::uint32_t* d_mid_bits{device_alloc<std::uint32_t>(num_dc)};
+
+    const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
+    const std::size_t dc_capacity{48 * bw * bh + 2 * num_dc * DC_BLOB_STRIDE + num_dc * 64 + 4096};
+    std::uint8_t* d_ac_body{device_alloc<std::uint8_t>(ac_capacity)};
+    std::uint8_t* d_dc_body{device_alloc<std::uint8_t>(dc_capacity)};
+    std::uint32_t* d_ac_sizes{device_alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_ac_offsets{device_alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_dc_sizes{device_alloc<std::uint32_t>(num_dc)};
+    std::uint32_t* d_dc_offsets{device_alloc<std::uint32_t>(num_dc)};
+    std::uint8_t* d_body{
+        device_alloc<std::uint8_t>(ac_capacity + dc_capacity + AC_SECTION_CAP + 4096)};
+
     Stage s_fe{"frontend_fused"};
     Stage s_cfl{"estimate_cfl_covered"};
     Stage s_qz{"quantize_residual"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
-    Stage s_d2h{"histogram D2H + acs D2H"};
-    Stage s_host{"host prefix build (CPU)"};
-    Stage s_up{"upload depth/bits"};
+    Stage s_fbc{"dc_first_block_counts"};
+    Stage s_acg{"build_ac_global_device"};
+    Stage s_dcb{"build_dc_group_blobs_device"};
+    Stage s_dcg{"build_dc_global (CPU)"};
     Stage s_ace{"ac_encode_groups"};
     Stage s_dce{"dc_encode_groups"};
-    Stage s_asm{"assembly gather + D2H"};
-
-    const std::size_t xdg{(bw + 255) / 256};
+    Stage s_sz{"section sizes D2H"};
+    Stage s_asm{"assembly head + gather + D2H"};
 
     for (int it{0}; it < args.warmup + args.iterations; ++it) {
         const bool record{it >= args.warmup};
@@ -208,86 +243,23 @@ int main(int argc, char** argv) {
                               d_ac16, d_dc32);
         });
 
-        // Entropy histograms.
+        // Entropy sub-stages, in encode_frame order.
         timed(s_ach, record, [&] { ac_build_histogram(d_ac16, d_acs, width, height, d_ac_hist); });
         timed(s_dch, record, [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist); });
         timed(s_amh, record,
               [&] { acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist); });
-
-        std::vector<std::uint32_t> ac_hist(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE);
-        std::vector<std::uint32_t> dc_hist(num_dc * AC_HISTOGRAM_SIZE);
-        std::vector<std::uint32_t> am_hist(num_dc * AC_HISTOGRAM_SIZE);
-        std::vector<std::int8_t> acs_host(blocks, 8);
-        timed(s_d2h, record, [&] {
-            cudaMemcpy(ac_hist.data(), d_ac_hist, ac_hist.size() * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(dc_hist.data(), d_dc_hist, dc_hist.size() * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(am_hist.data(), d_am_hist, am_hist.size() * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(acs_host.data(), d_acs, blocks, cudaMemcpyDeviceToHost);
+        timed(s_fbc, record, [&] { dc_first_block_counts(d_acs, width, height, d_fbc); });
+        timed(s_acg, record, [&] {
+            build_ac_global_device(d_ac_hist, num_ac, d_ctxmap, ctxmap.nbits, d_ac_depth, d_ac_bits,
+                                   d_ac_section, AC_SECTION_CAP, d_ac_section_len);
         });
-
-        std::vector<std::size_t> fbc(num_dc, 0);
-        bitstream::AcGlobalResult global{};
+        timed(s_dcb, record, [&] {
+            build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
+                                        d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+                                        d_pre_bits, d_mid, d_mid_off, d_mid_bits);
+        });
         std::vector<std::uint8_t> dc_global;
-        bitstream::DcGroupBlobs blobs{};
-        timed(s_host, record, [&] {
-            for (std::size_t g{0}; g < num_dc; ++g) {
-                const std::size_t bx0{(g % xdg) * 256};
-                const std::size_t by0{(g / xdg) * 256};
-                const std::size_t dgw{std::min<std::size_t>(256, bw - bx0)};
-                const std::size_t dgh{std::min<std::size_t>(256, bh - by0)};
-                for (std::size_t by{by0}; by < by0 + dgh; ++by) {
-                    for (std::size_t bx{bx0}; bx < bx0 + dgw; ++bx) {
-                        if (acs_host[by * bw + bx] != ACS_COVERED) {
-                            ++fbc[g];
-                        }
-                    }
-                }
-            }
-            global = bitstream::build_ac_global(ac_hist.data(), num_ac);
-            dc_global = bitstream::build_dc_global(qp);
-            blobs = bitstream::build_dc_group_blobs(width, height, dc_hist.data(), am_hist.data(),
-                                                    fbc.data());
-        });
-
-        std::uint8_t* d_ac_depth{nullptr};
-        std::uint16_t* d_ac_bits{nullptr};
-        std::uint8_t* d_dc_depth{nullptr};
-        std::uint16_t* d_dc_bits{nullptr};
-        std::uint8_t* d_am_depth{nullptr};
-        std::uint16_t* d_am_bits{nullptr};
-        std::uint8_t* d_pre{nullptr};
-        std::uint32_t* d_pre_off{nullptr};
-        std::uint32_t* d_pre_bits{nullptr};
-        std::uint8_t* d_mid{nullptr};
-        std::uint32_t* d_mid_off{nullptr};
-        std::uint32_t* d_mid_bits{nullptr};
-        timed(s_up, record, [&] {
-            d_ac_depth = upload(global.depth);
-            d_ac_bits = upload(global.bits);
-            d_dc_depth = upload(blobs.dc_depth);
-            d_dc_bits = upload(blobs.dc_bits);
-            d_am_depth = upload(blobs.acmeta_depth);
-            d_am_bits = upload(blobs.acmeta_bits);
-            d_pre = upload(blobs.blob_pre);
-            d_pre_off = upload(blobs.blob_pre_off);
-            d_pre_bits = upload(blobs.blob_pre_bits);
-            d_mid = upload(blobs.blob_mid);
-            d_mid_off = upload(blobs.blob_mid_off);
-            d_mid_bits = upload(blobs.blob_mid_bits);
-        });
-
-        const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
-        const std::size_t dc_capacity{48 * bw * bh + blobs.blob_pre.size() + blobs.blob_mid.size() +
-                                      num_dc * 64 + 4096};
-        std::uint8_t* d_ac_body{device_alloc<std::uint8_t>(ac_capacity)};
-        std::uint8_t* d_dc_body{device_alloc<std::uint8_t>(dc_capacity)};
-        std::uint32_t* d_ac_sizes{device_alloc<std::uint32_t>(num_ac)};
-        std::uint32_t* d_ac_offsets{device_alloc<std::uint32_t>(num_ac)};
-        std::uint32_t* d_dc_sizes{device_alloc<std::uint32_t>(num_dc)};
-        std::uint32_t* d_dc_offsets{device_alloc<std::uint32_t>(num_dc)};
+        timed(s_dcg, record, [&] { dc_global = bitstream::build_dc_global(qp); });
 
         std::size_t ac_total{0};
         std::size_t dc_total{0};
@@ -302,44 +274,48 @@ int main(int argc, char** argv) {
                              &dc_total);
         });
 
-        const std::size_t body_size{dc_global.size() + dc_total + global.section.size() + ac_total};
-        std::uint8_t* d_body{device_alloc<std::uint8_t>(body_size)};
         std::vector<std::uint32_t> ac_sizes(num_ac);
         std::vector<std::uint32_t> dc_sizes(num_dc);
-        std::vector<std::uint8_t> out_body(body_size);
-        timed(s_asm, record, [&] {
+        std::uint32_t ac_global_size{0};
+        timed(s_sz, record, [&] {
             cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
                        cudaMemcpyDeviceToHost);
             cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
                        cudaMemcpyDeviceToHost);
-            std::size_t at{0};
-            cudaMemcpy(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice);
-            at += dc_global.size();
-            cudaMemcpy(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice);
-            at += dc_total;
-            cudaMemcpy(d_body + at, global.section.data(), global.section.size(),
-                       cudaMemcpyHostToDevice);
-            at += global.section.size();
-            cudaMemcpy(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice);
-            cudaMemcpy(out_body.data(), d_body, body_size, cudaMemcpyDeviceToHost);
+            cudaMemcpy(&ac_global_size, d_ac_section_len, sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost);
         });
 
-        for (void* p : {static_cast<void*>(d_ac_body), static_cast<void*>(d_dc_body),
-                        static_cast<void*>(d_ac_sizes), static_cast<void*>(d_ac_offsets),
-                        static_cast<void*>(d_dc_sizes), static_cast<void*>(d_dc_offsets),
-                        static_cast<void*>(d_body), static_cast<void*>(d_ac_depth),
-                        static_cast<void*>(d_ac_bits), static_cast<void*>(d_dc_depth),
-                        static_cast<void*>(d_dc_bits), static_cast<void*>(d_am_depth),
-                        static_cast<void*>(d_am_bits), static_cast<void*>(d_pre),
-                        static_cast<void*>(d_pre_off), static_cast<void*>(d_pre_bits),
-                        static_cast<void*>(d_mid), static_cast<void*>(d_mid_off),
-                        static_cast<void*>(d_mid_bits)}) {
-            cudaFree(p);
-        }
+        timed(s_asm, record, [&] {
+            std::vector<std::uint32_t> section_sizes{static_cast<std::uint32_t>(dc_global.size())};
+            section_sizes.insert(section_sizes.end(), dc_sizes.begin(), dc_sizes.end());
+            section_sizes.push_back(ac_global_size);
+            section_sizes.insert(section_sizes.end(), ac_sizes.begin(), ac_sizes.end());
+            const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
+                static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                section_sizes)};
+            const std::size_t body_size{dc_global.size() + dc_total + ac_global_size + ac_total};
+            std::size_t at{0};
+            cudaMemcpyAsync(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice,
+                            0);
+            at += dc_global.size();
+            cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, 0);
+            at += dc_total;
+            cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice, 0);
+            at += ac_global_size;
+            cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, 0);
+            const std::size_t codestream_size{head.size() + body_size};
+            std::vector<std::uint8_t> file{bitstream::container_framing(codestream_size)};
+            const std::size_t framing{file.size()};
+            file.resize(framing + codestream_size);
+            std::copy(head.begin(), head.end(), file.begin() + framing);
+            cudaMemcpy(file.data() + framing + head.size(), d_body, body_size,
+                       cudaMemcpyDeviceToHost);
+        });
     }
 
-    const Stage* stages[]{&s_fe,  &s_cfl,  &s_qz, &s_ach, &s_dch, &s_amh,
-                          &s_d2h, &s_host, &s_up, &s_ace, &s_dce, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc,
+                          &s_acg, &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {
