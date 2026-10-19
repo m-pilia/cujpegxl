@@ -5,14 +5,10 @@
 // intermediates the GPU encoder is diffed against. Testonly; never part of the
 // shipped runtime.
 //
-// Subcommands read and write planar float32 buffers (3 planes, row-major, no
-// padding), so a NumPy caller can round-trip them with numpy.tofile/fromfile.
-//
-//   xyb <width> <height> <in_srgb_f32> <out_xyb_f32>
-//       Input:  sRGB-encoded R,G,B in [0,1]. Output: libjxl opsin XYB.
-//
-// SDR intensity target is fixed at 255 nits, matching libjxl's default for
-// 8-bit sRGB content.
+// Subcommands (see the usage text in main) read and write raw planar float32
+// buffers (row-major, no padding), so a NumPy caller can round-trip them with
+// numpy.tofile/fromfile. The SDR intensity target is fixed at 255 nits,
+// libjxl's default for 8-bit sRGB content.
 
 #include <cstddef>
 #include <cstdio>
@@ -32,6 +28,7 @@
 #include "lib/jxl/enc_xyb.h"
 #include "lib/jxl/image.h"
 #include "lib/jxl/quant_weights.h"
+#include "src/dump_io.h"
 
 namespace {
 
@@ -46,32 +43,18 @@ void oracle_free(void*, void* address) {
 
 bool read_planar(const char* path, std::size_t plane_count, std::size_t width, std::size_t height,
                  std::vector<float>* out) {
-    const std::size_t count{plane_count * width * height};
-    out->resize(count);
-    std::FILE* file{std::fopen(path, "rb")};
-    if (file == nullptr) {
-        std::fprintf(stderr, "oracle: cannot open %s for reading\n", path);
-        return false;
-    }
-    const std::size_t got{std::fread(out->data(), sizeof(float), count, file)};
-    std::fclose(file);
-    if (got != count) {
-        std::fprintf(stderr, "oracle: %s has %zu floats, expected %zu\n", path, got, count);
+    if (!cujpegxl::read_raw(path, plane_count * width * height, out)) {
+        std::fprintf(stderr, "oracle: cannot read %zu floats from %s\n",
+                     plane_count * width * height, path);
         return false;
     }
     return true;
 }
 
-bool write_planar(const char* path, const std::vector<float>& data) {
-    std::FILE* file{std::fopen(path, "wb")};
-    if (file == nullptr) {
-        std::fprintf(stderr, "oracle: cannot open %s for writing\n", path);
-        return false;
-    }
-    const std::size_t put{std::fwrite(data.data(), sizeof(float), data.size(), file)};
-    std::fclose(file);
-    if (put != data.size()) {
-        std::fprintf(stderr, "oracle: short write to %s\n", path);
+template <typename T>
+bool write_planar(const char* path, const std::vector<T>& data) {
+    if (!cujpegxl::write_raw(path, data.data(), data.size())) {
+        std::fprintf(stderr, "oracle: cannot write %s\n", path);
         return false;
     }
     return true;
@@ -205,15 +188,7 @@ int run_coefforder(std::size_t block_dim, const char* out_path) {
     std::vector<jxl::coeff_order_t> order(block_dim * block_dim);
     acs.ComputeNaturalCoeffOrder(order.data());
 
-    std::FILE* file{std::fopen(out_path, "wb")};
-    if (file == nullptr) {
-        std::fprintf(stderr, "oracle: cannot open %s for writing\n", out_path);
-        return 1;
-    }
-    const std::size_t put{
-        std::fwrite(order.data(), sizeof(jxl::coeff_order_t), order.size(), file)};
-    std::fclose(file);
-    return put == order.size() ? 0 : 1;
+    return write_planar(out_path, order) ? 0 : 1;
 }
 
 // Writes libjxl's default dequant matrix for the square DCTNxN strategy
@@ -272,14 +247,6 @@ int main(int argc, char** argv) {
         }
         return run_xyb(parse_dim(argv[2]), parse_dim(argv[3]), argv[4], argv[5]);
     }
-    if (argc >= 2 && std::strcmp(argv[1], "dct") == 0) {
-        if (argc != 6) {
-            std::fprintf(stderr, "usage: %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n",
-                         argv[0]);
-            return 2;
-        }
-        return run_dct(8, parse_dim(argv[2]), parse_dim(argv[3]), argv[4], argv[5]);
-    }
     if (argc >= 2 && std::strcmp(argv[1], "dctn") == 0) {
         if (argc != 7) {
             std::fprintf(stderr,
@@ -309,21 +276,17 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "cfl") == 0) {
         return run_cfl(argv[2]);
     }
-    if (argc == 3 && std::strcmp(argv[1], "quantmatrix") == 0) {
-        return run_quantmatrix(8, argv[2]);
-    }
     if (argc == 4 && std::strcmp(argv[1], "quantmatrix") == 0) {
         return run_quantmatrix(parse_dim(argv[2]), argv[3]);
     }
 
     std::fprintf(stderr,
                  "usage: %s xyb <width> <height> <in_srgb_f32> <out_xyb_f32>\n"
-                 "       %s dct <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
                  "       %s dctn <block_dim> <width> <height> <in_xyb_f32> <out_coeff_f32>\n"
                  "       %s dcfromllf <block_dim> <in_coeff_f32> <out_dc_f32>\n"
                  "       %s coefforder <block_dim> <out_order_u32>\n"
                  "       %s cfl <out_ratios_f32>\n"
-                 "       %s quantmatrix [block_dim] <out_weights_f32>\n",
-                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
+                 "       %s quantmatrix <block_dim> <out_weights_f32>\n",
+                 argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]);
     return 2;
 }

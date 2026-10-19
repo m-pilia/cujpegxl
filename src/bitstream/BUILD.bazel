@@ -60,6 +60,20 @@ cc_library(
         ":bitstream",
         "//src:ac_context",
         "//src:dc_predict",
+        "//src:vardct_layout",
+    ],
+)
+
+cc_library(
+    name = "prefix_build_reference",
+    testonly = True,
+    srcs = ["prefix_build_reference.cc"],
+    hdrs = ["prefix_build_reference.h"],
+    deps = [
+        ":bitstream",
+        ":frame_assembly",
+        "//src:ac_context",
+        "//src:vardct_layout",
     ],
 )
 
@@ -68,6 +82,7 @@ cc_test(
     srcs = ["frame_assembly_test.cc"],
     deps = [
         ":frame_assembly",
+        ":prefix_build_reference",
         "//tools/bitstream:vardct_frame",
         "@googletest//:gtest_main",
     ],

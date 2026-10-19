@@ -1,8 +1,7 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Testonly harness: writes natural_coeff_order(block_dim) as raw uint32 so a
-// Python test can diff it against the libjxl coefforder oracle. Not shipped.
+// Writes natural_coeff_order(block_dim) as raw uint32.
 
 #include <cstdint>
 #include <cstdio>
@@ -11,25 +10,22 @@
 #include <vector>
 
 #include "coeff_order.h"
+#include "dump_io.h"
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::fprintf(stderr, "usage: %s <block_dim> <out_order_u32>\n", argv[0]);
+    if (argc != 4 || std::strcmp(argv[1], "coefforder") != 0) {
+        std::fprintf(stderr, "usage: %s coefforder <block_dim> <out_order_u32>\n", argv[0]);
         return 2;
     }
-    const std::size_t block_dim{std::strtoull(argv[1], nullptr, 10)};
+    const std::size_t block_dim{std::strtoull(argv[2], nullptr, 10)};
     if (block_dim != 8 && block_dim != 16 && block_dim != 32) {
         std::fprintf(stderr, "coeff_order_dump: block dim must be 8, 16, or 32\n");
         return 2;
     }
-
     const std::vector<std::uint32_t> order{cujpegxl::natural_coeff_order(block_dim)};
-    std::FILE* out{std::fopen(argv[2], "wb")};
-    if (out == nullptr) {
-        std::fprintf(stderr, "coeff_order_dump: cannot open %s for writing\n", argv[2]);
+    if (!cujpegxl::write_raw(argv[3], order.data(), order.size())) {
+        std::fprintf(stderr, "coeff_order_dump: cannot write %s\n", argv[3]);
         return 1;
     }
-    const std::size_t put{std::fwrite(order.data(), sizeof(std::uint32_t), order.size(), out)};
-    std::fclose(out);
-    return put == order.size() ? 0 : 1;
+    return 0;
 }

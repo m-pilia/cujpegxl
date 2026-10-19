@@ -1,12 +1,7 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Encode one raw NV12 frame to a .jxl file via the production device path.
-//
-// The golden-hash gate's emit primitive: it drives cujpegxl::encode_nv12 over a
-// single device-resident NV12 image and writes the resulting bitstream to disk
-// so the driver can hash it. Timing, warmup and multi-image handling live in
-// //tools/benchmark:encode_bench; this tool only emits bytes.
+// Encodes one raw NV12 frame to a .jxl file via cujpegxl::encode_nv12.
 //
 //   encode_to_file --dims=WxH --distance=F [--device=N] --output=OUT in.nv12
 

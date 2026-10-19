@@ -2,18 +2,28 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 load("@cujpegxl_pip//:requirements.bzl", "requirement")
-load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "nvjpeg_encoder",
+    srcs = ["nvjpeg_encoder.cc"],
+    hdrs = ["nvjpeg_encoder.h"],
+    deps = [
+        "@cuda//:cuda_runtime_static",
+        "@cuda//:nvjpeg",
+    ],
+)
 
 cc_binary(
     name = "encode_bench",
     srcs = ["encode_bench.cc"],
     tags = ["gpu"],
     deps = [
+        ":nvjpeg_encoder",
         "//src:frame_encoder",
-        "@cuda//:nvjpeg",
         "@cuda//:nvtx3",
     ],
 )

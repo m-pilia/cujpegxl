@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Testonly harness: runs the NV12->XYB kernel on a raw NV12 file and writes the
-// resulting planar float32 XYB, so a Python test can diff it against the libjxl
-// oracle. Not part of the shipped runtime.
+// Runs the NV12->XYB kernel on a raw NV12 file and writes the planar float32
+// XYB.
 
 #include <cstdio>
 #include <cstdlib>
@@ -12,25 +11,8 @@
 
 #include <cuda_runtime.h>
 
+#include "dump_io.h"
 #include "xyb.h"
-
-namespace {
-
-bool read_file(const char* path, std::vector<std::uint8_t>* out) {
-    std::FILE* file{std::fopen(path, "rb")};
-    if (file == nullptr) {
-        return false;
-    }
-    std::fseek(file, 0, SEEK_END);
-    const long size{std::ftell(file)};
-    std::fseek(file, 0, SEEK_SET);
-    out->resize(static_cast<std::size_t>(size));
-    const std::size_t got{std::fread(out->data(), 1, out->size(), file)};
-    std::fclose(file);
-    return got == out->size();
-}
-
-}  // namespace
 
 int run_nv12_to_xyb_dump(int argc, char** argv) {
     if (argc != 6 || std::strcmp(argv[1], "dump") != 0) {
@@ -43,7 +25,7 @@ int run_nv12_to_xyb_dump(int argc, char** argv) {
     const std::size_t chroma_size{width * (height / 2)};
 
     std::vector<std::uint8_t> nv12{};
-    if (!read_file(argv[4], &nv12) || nv12.size() != luma_size + chroma_size) {
+    if (!cujpegxl::read_raw(argv[4], luma_size + chroma_size, &nv12)) {
         std::fprintf(stderr, "dump: %s is not a %zux%zu NV12 buffer\n", argv[4], width, height);
         return 1;
     }
@@ -71,12 +53,9 @@ int run_nv12_to_xyb_dump(int argc, char** argv) {
     cudaFree(d_chroma);
     cudaFree(d_xyb);
 
-    std::FILE* out{std::fopen(argv[5], "wb")};
-    if (out == nullptr) {
-        std::fprintf(stderr, "dump: cannot open %s for writing\n", argv[5]);
+    if (!cujpegxl::write_raw(argv[5], xyb.data(), xyb.size())) {
+        std::fprintf(stderr, "dump: cannot write %s\n", argv[5]);
         return 1;
     }
-    const std::size_t put{std::fwrite(xyb.data(), sizeof(float), xyb.size(), out)};
-    std::fclose(out);
-    return put == xyb.size() ? 0 : 1;
+    return 0;
 }

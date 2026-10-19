@@ -47,8 +47,8 @@ pybind_extension(
     tags = ["gpu"],
     visibility = ["//visibility:public"],
     deps = [
+        "//tools/benchmark:nvjpeg_encoder",
         "@cuda//:cuda_runtime_static",
-        "@cuda//:nvjpeg",
     ],
 )
 

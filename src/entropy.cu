@@ -18,9 +18,6 @@
 namespace cujpegxl {
 namespace {
 
-constexpr std::size_t AC_GROUP_BLOCKS = 32;
-constexpr std::size_t DC_GROUP_BLOCKS = 256;
-
 // libjxl default HybridUintConfig (4, 2, 0), matching the host bitstream writer.
 constexpr std::uint32_t SPLIT_EXPONENT = 4;
 constexpr std::uint32_t MSB_IN_TOKEN = 2;
@@ -718,8 +715,7 @@ __global__ void dc_chunk_emit_kernel(
 // The coefficient buffer is the covered-block layout (COEFFS_PER_BLOCK slots
 // per 8x8 position, per channel plane nblocks*COEFFS_PER_BLOCK); a first-block of
 // side N tokenizes order[covered..size) of its channel plane, gathered via
-// covered_plane_slot; covered blocks emit nothing. Mirrors the host tokenizer
-// (tools/bitstream tokenize_ac_group) so the device stays byte-exact.
+// covered_plane_slot; covered blocks emit nothing.
 
 // Context-aware mixed-block tokenizer: invokes emit(symbol, nbits, bits, cluster)
 // in decoder order, matching the host clustered reference. `nzeros` is the exact

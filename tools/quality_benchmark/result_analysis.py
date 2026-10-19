@@ -23,9 +23,10 @@ from pathlib import Path
 from statistics import fmean, median, stdev
 
 import matplotlib
-import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
 
 METRICS = ("psnr", "butteraugli", "ssimulacra2")
 METRIC_LABELS = {

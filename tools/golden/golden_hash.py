@@ -131,13 +131,6 @@ def make_encoder(binary: pathlib.Path, device: int) -> EncodeFn:
     return encode
 
 
-def data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
-    frames = sorted(data_dir.glob("*.png"))
-    if not frames:
-        raise FileNotFoundError(f"no *.png frames found under {data_dir}")
-    return frames
-
-
 def build_jobs(frames: list[pathlib.Path], rungs: list[cp.Rung], distances: list[float],
                nv12_dir: pathlib.Path) -> list[Job]:
     jobs: list[Job] = []
@@ -145,9 +138,7 @@ def build_jobs(frames: list[pathlib.Path], rungs: list[cp.Rung], distances: list
         rung_dir = nv12_dir / rung.name
         rung_dir.mkdir(parents=True, exist_ok=True)
         for source in frames:
-            scaled = cp.box_downscale(cp.load_rgb(source), rung.factor)
-            nv12_path = rung_dir / f"{source.stem}_{rung.name}.nv12"
-            nv12_path.write_bytes(cp.rgb_to_nv12(scaled))
+            nv12_path, _ = cp.write_rung_nv12(source, cp.load_rgb(source), rung, rung_dir)
             for distance in distances:
                 jobs.append(Job(
                     frame=source.stem,
@@ -158,16 +149,6 @@ def build_jobs(frames: list[pathlib.Path], rungs: list[cp.Rung], distances: list
                     nv12=nv12_path,
                 ))
     return jobs
-
-
-def _resolve_rungs(names: list[str]) -> list[cp.Rung]:
-    by_name = {r.name: r for r in cp.LADDER}
-    rungs: list[cp.Rung] = []
-    for name in names:
-        if name not in by_name:
-            raise ValueError(f"unknown rung {name!r}; known: {sorted(by_name)}")
-        rungs.append(by_name[name])
-    return rungs
 
 
 def run(mode: str, jobs: list[Job], encode: EncodeFn, manifest_path: pathlib.Path) -> int:
@@ -209,8 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Path to the encode_to_file binary (auto-detected if omitted).")
     args = parser.parse_args(argv)
 
-    frames = data_frames(args.data_dir)
-    rungs = _resolve_rungs(args.rungs)
+    frames = cp.data_frames(args.data_dir)
+    rungs = [cp.rung_by_name(name) for name in args.rungs]
     binary = args.encoder if args.encoder is not None else resolve_encoder()
     if not binary.exists():
         parser.error(f"encode_to_file binary not found at {binary}")

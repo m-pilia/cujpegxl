@@ -169,13 +169,6 @@ def build_master(source_path: pathlib.Path, dest_path: pathlib.Path) -> None:
         tmp.replace(dest_path)
 
 
-def _rung_for(resolution: str) -> cp.Rung:
-    for rung in cp.LADDER:
-        if rung.name == resolution:
-            return rung
-    raise ValueError(f"unsupported resolution: {resolution}")
-
-
 def _reusable_asset(
     manifest_entries: Iterable[dict], source_name: str, rung: cp.Rung, out_dir: pathlib.Path
 ) -> cp.Asset | None:
@@ -223,7 +216,7 @@ def prepare(
     fetch: Fetch = _http_get,
     pause: float = DOWNLOAD_PAUSE_S,
 ) -> dict:
-    rung = _rung_for(resolution)
+    rung = cp.rung_by_name(resolution)
     for directory in (cache_dir, masters_dir, out_dir):
         directory.mkdir(parents=True, exist_ok=True)
 

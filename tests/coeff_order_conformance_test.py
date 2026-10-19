@@ -23,10 +23,10 @@ _ORDER_BIN = pathlib.Path(sys.argv.pop(1)).resolve()
 _ORACLE_BIN = pathlib.Path(sys.argv.pop(1)).resolve()
 
 
-def _order(binary: pathlib.Path, args: list[str]) -> np.ndarray:
+def _order(binary: pathlib.Path, block_dim: int) -> np.ndarray:
     with tempfile.TemporaryDirectory() as scratch:
         out_path = pathlib.Path(scratch) / "order.u32"
-        subprocess.run([str(binary), *args, str(out_path)], check=True)
+        subprocess.run([str(binary), "coefforder", str(block_dim), str(out_path)], check=True)
         return np.fromfile(out_path, dtype="<u4")
 
 
@@ -34,15 +34,15 @@ class CoeffOrderConformanceTest(unittest.TestCase):
     def test_matches_libjxl(self):
         for block_dim in (8, 16, 32):
             with self.subTest(block_dim=block_dim):
-                mine = _order(_ORDER_BIN, [str(block_dim)])
-                want = _order(_ORACLE_BIN, ["coefforder", str(block_dim)])
+                mine = _order(_ORDER_BIN, block_dim)
+                want = _order(_ORACLE_BIN, block_dim)
                 self.assertEqual(mine.shape, (block_dim * block_dim,))
                 np.testing.assert_array_equal(mine, want)
 
     def test_is_permutation(self):
         for block_dim in (8, 16, 32):
             with self.subTest(block_dim=block_dim):
-                mine = _order(_ORDER_BIN, [str(block_dim)])
+                mine = _order(_ORDER_BIN, block_dim)
                 np.testing.assert_array_equal(
                     np.sort(mine), np.arange(block_dim * block_dim, dtype="<u4")
                 )

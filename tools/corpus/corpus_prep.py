@@ -52,10 +52,24 @@ LADDER: tuple[Rung, ...] = (
     Rung("720p", 3),
 )
 
+def rung_by_name(name: str) -> Rung:
+    for rung in LADDER:
+        if rung.name == name:
+            return rung
+    raise ValueError(f"unknown rung {name!r}; known: {[r.name for r in LADDER]}")
+
+
 # BT.709 full-range RGB -> Y'CbCr.
-_RGB_TO_Y = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
-_RGB_TO_CB = np.array([-0.114572, -0.385428, 0.5], dtype=np.float64)
-_RGB_TO_CR = np.array([0.5, -0.454153, -0.045847], dtype=np.float64)
+RGB_TO_Y = np.array([0.2126, 0.7152, 0.0722], dtype=np.float64)
+RGB_TO_CB = np.array([-0.114572, -0.385428, 0.5], dtype=np.float64)
+RGB_TO_CR = np.array([0.5, -0.454153, -0.045847], dtype=np.float64)
+
+
+def data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
+    frames = sorted(data_dir.glob("*.png"))
+    if not frames:
+        raise FileNotFoundError(f"no *.png frames found under {data_dir}")
+    return frames
 
 
 def load_rgb(path: pathlib.Path) -> np.ndarray:
@@ -84,9 +98,9 @@ def rgb_to_nv12(rgb: np.ndarray) -> bytes:
     assert height % 2 == 0 and width % 2 == 0
     pixels = rgb.astype(np.float64)
 
-    luma = _round_u8(pixels @ _RGB_TO_Y)
-    cb_full = pixels @ _RGB_TO_CB + 128.0
-    cr_full = pixels @ _RGB_TO_CR + 128.0
+    luma = _round_u8(pixels @ RGB_TO_Y)
+    cb_full = pixels @ RGB_TO_CB + 128.0
+    cr_full = pixels @ RGB_TO_CR + 128.0
 
     cb = _round_u8(cb_full.reshape(height // 2, 2, width // 2, 2).mean(axis=(1, 3)))
     cr = _round_u8(cr_full.reshape(height // 2, 2, width // 2, 2).mean(axis=(1, 3)))
@@ -109,15 +123,20 @@ class Asset:
     sha256: str
 
 
+def write_rung_nv12(source: pathlib.Path, rgb_4k: np.ndarray, rung: Rung,
+                    out_dir: pathlib.Path) -> tuple[pathlib.Path, bytes]:
+    nv12 = rgb_to_nv12(box_downscale(rgb_4k, rung.factor))
+    path = out_dir / f"{source.stem}_{rung.name}.nv12"
+    path.write_bytes(nv12)
+    return path, nv12
+
+
 def build_asset(source: pathlib.Path, rgb_4k: np.ndarray, rung: Rung,
                 out_dir: pathlib.Path) -> Asset:
-    scaled = box_downscale(rgb_4k, rung.factor)
-    nv12 = rgb_to_nv12(scaled)
-    name = f"{source.stem}_{rung.name}.nv12"
-    (out_dir / name).write_bytes(nv12)
+    path, nv12 = write_rung_nv12(source, rgb_4k, rung, out_dir)
     return Asset(
         source=source.name,
-        name=name,
+        name=path.name,
         rung=rung.name,
         width=rung.width,
         height=rung.height,
@@ -128,9 +147,8 @@ def build_asset(source: pathlib.Path, rgb_4k: np.ndarray, rung: Rung,
 
 def build_corpus(data_dir: pathlib.Path, out_dir: pathlib.Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    sources = sorted(data_dir.glob("*.png"))
     assets: list[Asset] = []
-    for source in sources:
+    for source in data_frames(data_dir):
         rgb_4k = load_rgb(source)
         assert rgb_4k.shape[:2] == (FULL_4K_HEIGHT, FULL_4K_WIDTH), (
             f"{source.name}: expected 3840x2160, got "

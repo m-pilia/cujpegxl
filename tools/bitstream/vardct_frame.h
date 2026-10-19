@@ -51,18 +51,17 @@ struct FrameCoefficients {
 };
 
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
-// freshly allocated byte buffer. The output is decodable by libjxl/djxl. With
-// `clustered_ac`, the AC coefficients are coded with libjxl's real per-token
-// contexts split across AC_NUM_CLUSTERS histograms instead of one shared histogram.
-std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc,
-                                                  bool clustered_ac = false);
+// freshly allocated byte buffer. The output is decodable by libjxl/djxl. The AC
+// coefficients are coded with libjxl's real per-token contexts split across
+// AC_NUM_CLUSTERS histograms.
+std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
 
 // The host reference for the device AC entropy encoder, using the real per-token
 // contexts clustered into AC_NUM_CLUSTERS histograms. `histogram` and
 // `depth`/`bits` are laid out per cluster (cluster * 256 + symbol); each AC
 // group's byte-aligned token stream (one AcGroup TOC section per group, raster
 // order) codes each token with its cluster's prefix code. This is exactly what
-// write_vardct_codestream(fc, /*clustered_ac=*/true) emits for the AC groups; the
+// write_vardct_codestream(fc) emits for the AC groups; the
 // device port must reproduce `histogram` and `group_streams` byte-for-byte.
 struct AcReference {
     std::vector<std::uint32_t> histogram{};
@@ -71,9 +70,6 @@ struct AcReference {
     std::vector<std::vector<std::uint8_t>> group_streams{};
 };
 AcReference reference_ac_encode(const FrameCoefficients& fc);
-AcReference reference_ac_encode(const FrameCoefficients& fc,
-                                const std::vector<std::uint8_t>& context_map,
-                                std::size_t num_clusters);
 
 // The natural (scan) coefficient order for an 8x8 DCT block: order[k] is the
 // libjxl-raster index of the k-th coefficient in scan order (order[0] == 0, the

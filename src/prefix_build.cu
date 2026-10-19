@@ -9,14 +9,13 @@
 #include "src/bitstream/bit_sink.h"
 #include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/serialize_impl.h"
+#include "vardct_layout.h"
 
 namespace cujpegxl {
 namespace {
 
 using bitstream::HISTOGRAM_STRIDE;
 using bitstream::SpanBitWriter;
-
-constexpr std::size_t DC_GROUP_BLOCKS = 256;
 
 std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
@@ -74,8 +73,7 @@ __global__ void ac_serialize_kernel(const std::uint32_t* ac_hist, std::size_t nu
 }
 
 // One thread per Dc group: zero the group's prefix-code rows, then serialize the
-// pre/mid header blobs into their fixed strides. Byte-identical to
-// build_dc_group_blobs.
+// pre/mid header blobs into their fixed strides.
 __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
                                       std::size_t num_groups, const std::uint32_t* dc_hist,
                                       const std::uint32_t* am_hist, const std::size_t* fbc,

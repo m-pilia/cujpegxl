@@ -865,11 +865,8 @@ CUJPEGXL_BS_HD void write_modular_header(W& w, const std::uint32_t* data_hist, s
     write_prefix_histograms(w, data_hist, data_len, 1, HybridUintConfig{}, depth, bits);
 }
 
-// AcGlobal section body (histogram-dependent part): DequantMatrices all_default,
-// num_histograms, used_orders, then the clustered AC prefix histograms. Fills
-// `depth`/`bits` (num_clusters * HISTOGRAM_STRIDE) and pads to a byte on exit.
-// Leading AcGlobal fields shared by the build-and-serialize (host) and the
-// serialize-only (device Phase 2) forms.
+// Leading AcGlobal fields: DequantMatrices all_default, num_histograms,
+// used_orders.
 template <typename W>
 CUJPEGXL_BS_HD void serialize_ac_global_head(W& w, std::size_t num_ac_groups) {
     constexpr U32Enc order_enc{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
@@ -878,21 +875,11 @@ CUJPEGXL_BS_HD void serialize_ac_global_head(W& w, std::size_t num_ac_groups) {
     write_u32(w, order_enc, 0);                          // used_orders = 0 (natural)
 }
 
-template <typename W>
-CUJPEGXL_BS_HD void serialize_ac_global(W& w, const std::uint32_t* ac_histograms,
-                                        const std::uint8_t* context_map, std::size_t num_clusters,
-                                        std::size_t num_ac_groups, std::uint8_t* depth,
-                                        std::uint16_t* bits) {
-    serialize_ac_global_head(w, num_ac_groups);
-    write_clustered_prefix_histograms(w, context_map, AC_NUM_CONTEXTS, num_clusters, ac_histograms,
-                                      HISTOGRAM_STRIDE, HybridUintConfig{}, depth, bits);
-    w.zero_pad_to_byte();
-}
-
 // Serialize-only AcGlobal from precomputed context-map and per-cluster code blobs
 // (the per-cluster code descriptions built in parallel by build_cluster_code_and_blob).
 // The serialize pass therefore only concatenates blobs, with no per-cluster
-// Huffman work. Byte-identical to serialize_ac_global.
+// Huffman work. Byte-identical to serializing the clustered histograms from
+// scratch with write_clustered_prefix_histograms.
 template <typename W>
 CUJPEGXL_BS_HD void serialize_ac_global_prebuilt_blobs(
     W& w, const std::uint32_t* ac_histograms, const std::uint8_t* ctxmap_blob,

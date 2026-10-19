@@ -19,6 +19,7 @@
 #include "prefix_build.h"
 #include "src/ac_context.h"
 #include "src/bitstream/frame_assembly.h"
+#include "src/bitstream/prefix_build_reference.h"
 #include "src/entropy.h"
 
 namespace cujpegxl {

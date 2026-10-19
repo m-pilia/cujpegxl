@@ -40,13 +40,13 @@ import pynvjpeg
 
 RESOLUTIONS = ("1080p", "2160p")
 
-# BT.709 full-range Y'CbCr->RGB, the exact inverse of corpus_prep._RGB_TO_*.
+# BT.709 full-range Y'CbCr->RGB, the exact inverse of corpus_prep.RGB_TO_*.
 _RGB_FROM_YCBCR = np.linalg.inv(
     np.array(
         [
-            cp._RGB_TO_Y,
-            cp._RGB_TO_CB,
-            cp._RGB_TO_CR,
+            cp.RGB_TO_Y,
+            cp.RGB_TO_CB,
+            cp.RGB_TO_CR,
         ],
         dtype=np.float64,
     )
@@ -152,7 +152,7 @@ def _score(reference: np.ndarray, distorted: np.ndarray) -> dict:
     }
 
 
-def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
+def decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     """Decode nvJPEG output to RGB on the pipeline's BT.709 full-range convention.
 
     nvJPEG emits a bare JFIF stream, so libjpeg's default RGB decode applies the
@@ -175,19 +175,12 @@ def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     return _ycbcr_to_rgb(ycbcr)
 
 
-def _ensure_shape(rgb: np.ndarray, width: int, height: int, name: str) -> None:
+def ensure_shape(rgb: np.ndarray, width: int, height: int, name: str) -> None:
     if rgb.shape[1] != width or rgb.shape[0] != height:
         raise ValueError(
             f"{name}: expected {width}x{height}, got "
             f"{rgb.shape[1]}x{rgb.shape[0]}"
         )
-
-
-def _rung_for(resolution: str) -> cp.Rung:
-    for rung in cp.LADDER:
-        if rung.name == resolution:
-            return rung
-    raise ValueError(f"unsupported resolution: {resolution}")
 
 
 def bench_image(
@@ -198,7 +191,7 @@ def bench_image(
 ) -> list[Row]:
     name = source.name
     rgb = cp.load_rgb(source)
-    _ensure_shape(rgb, cp.FULL_4K_WIDTH, cp.FULL_4K_HEIGHT, name)
+    ensure_shape(rgb, cp.FULL_4K_WIDTH, cp.FULL_4K_HEIGHT, name)
     width = rung.width
     height = rung.height
     nv12 = cp.rgb_to_nv12(cp.box_downscale(rgb, rung.factor))
@@ -222,7 +215,7 @@ def bench_image(
 
         for quality in cfg.qualities:
             jpg = pynvjpeg.encode(nv12_arr, width, height, quality, cfg.device)
-            decoded = _decode_jpeg(jpg)
+            decoded = decode_jpeg(jpg)
             rows.append(_row(name, rung.name, "nvjpeg", f"q={quality}", len(jpg),
                              width, height, reference, decoded))
     else:
@@ -247,7 +240,7 @@ def _row(image: str, resolution: str, codec: str, param: str, coded_bytes: int,
     )
 
 
-def _load_cached_rows(
+def load_cached_rows(
     path: pathlib.Path, frames: list[pathlib.Path], cfg: BenchConfig, resolution: str
 ) -> dict[tuple[str, str, str, str], Row]:
     cache: dict[tuple[str, str, str, str], Row] = {}
@@ -292,13 +285,6 @@ def _format_table(rows: list[Row]) -> str:
             f"{r.butteraugli:>7.3f} {r.ssimulacra2:>7.2f}"
         )
     return "\n".join(lines)
-
-
-def _data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
-    frames = sorted(data_dir.glob("*.png"))
-    if not frames:
-        raise FileNotFoundError(f"no *.png frames found under {data_dir}")
-    return frames
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -351,10 +337,10 @@ def main(argv: list[str] | None = None) -> int:
         qualities=tuple(args.qualities),
         device=args.device,
     )
-    rung = _rung_for(args.resolution)
-    frames = _data_frames(args.data_dir)
+    rung = cp.rung_by_name(args.resolution)
+    frames = cp.data_frames(args.data_dir)
     cached = (
-        _load_cached_rows(args.cached_input, frames, cfg, rung.name)
+        load_cached_rows(args.cached_input, frames, cfg, rung.name)
         if args.cached_input is not None
         else None
     )

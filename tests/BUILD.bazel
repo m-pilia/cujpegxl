@@ -105,29 +105,6 @@ py_test(
 )
 
 py_test(
-    name = "quant_selfconsistency_test",
-    srcs = ["quant_selfconsistency_test.py"],
-    args = [
-        "$(rootpath //src:quant_dump)",
-        "$(rootpath //tools/oracle:libjxl_oracle)",
-    ],
-    data = [
-        "//src:quant_dump",
-        "//tools/oracle:libjxl_oracle",
-    ],
-    tags = ["gpu"],
-    deps = [requirement("numpy")],
-)
-
-py_library(
-    name = "conformance_util",
-    testonly = True,
-    srcs = ["conformance_util.py"],
-    imports = ["."],
-    deps = [requirement("numpy")],
-)
-
-py_test(
     name = "ladder_conformance_test",
     srcs = ["ladder_conformance_test.py"],
     args = ["/usr/bin/djxl"],
@@ -135,7 +112,7 @@ py_test(
     imports = ["../python"],
     tags = ["gpu"],
     deps = [
-        ":conformance_util",
+        ":reference",
         "//python:pycujpegxl",
         "//tools/corpus:corpus_prep_lib",
         requirement("numpy"),

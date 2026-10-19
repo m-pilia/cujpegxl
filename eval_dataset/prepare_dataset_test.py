@@ -265,7 +265,7 @@ class ReusableAssetTest(unittest.TestCase):
             payload = b"\x01\x02\x03"
             frame.write_bytes(payload)
             entry = self._manifest_entry(sha256=hashlib.sha256(payload).hexdigest())
-            asset = pd._reusable_asset([entry], "img.png", pd._rung_for("1080p"), out_dir)
+            asset = pd._reusable_asset([entry], "img.png", cp.rung_by_name("1080p"), out_dir)
             self.assertEqual(asset, cp.Asset(**entry))
 
     def test_rejects_stale_or_foreign_entries(self):
@@ -275,16 +275,16 @@ class ReusableAssetTest(unittest.TestCase):
             frame.write_bytes(b"stale")
             self.assertIsNone(
                 pd._reusable_asset(
-                    [self._manifest_entry()], "img.png", pd._rung_for("1080p"), out_dir
+                    [self._manifest_entry()], "img.png", cp.rung_by_name("1080p"), out_dir
                 )
             )
             self.assertIsNone(
                 pd._reusable_asset(
-                    [self._manifest_entry()], "other.png", pd._rung_for("1080p"), out_dir
+                    [self._manifest_entry()], "other.png", cp.rung_by_name("1080p"), out_dir
                 )
             )
             self.assertIsNone(
-                pd._reusable_asset([], "img.png", pd._rung_for("1080p"), out_dir)
+                pd._reusable_asset([], "img.png", cp.rung_by_name("1080p"), out_dir)
             )
 
 

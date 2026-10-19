@@ -30,20 +30,6 @@ def _gradient(width: int, height: int) -> np.ndarray:
     return np.stack([r, g, b], axis=-1).astype(np.uint8)
 
 
-class BitsPerPixelTest(unittest.TestCase):
-    def test_bpp_and_ratio_are_consistent(self) -> None:
-        width, height = 3840, 2160
-        coded = 1_000_000
-        self.assertEqual(
-            qb.bits_per_pixel(coded, width, height), 8.0 * coded / (width * height)
-        )
-        self.assertEqual(
-            qb.compression_ratio(coded, width, height), (width * height * 3) / coded
-        )
-        bpp = qb.bits_per_pixel(coded, width, height)
-        self.assertLess(abs(bpp - 24.0 / qb.compression_ratio(coded, width, height)), 1e-9)
-
-
 class Nv12ToRgbTest(unittest.TestCase):
     def test_round_trips_luma_and_stays_bounded(self) -> None:
         rgb = _gradient(64, 64)
@@ -51,8 +37,8 @@ class Nv12ToRgbTest(unittest.TestCase):
         recon = qb.nv12_to_rgb(nv12, 64, 64)
         self.assertEqual(recon.shape, (64, 64, 3))
         self.assertEqual(recon.dtype, np.uint8)
-        luma = (rgb.astype(np.float64) @ cp._RGB_TO_Y).astype(np.uint8)
-        recon_luma = (recon.astype(np.float64) @ cp._RGB_TO_Y).astype(np.uint8)
+        luma = (rgb.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
+        recon_luma = (recon.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
         self.assertLess(np.mean(np.abs(luma.astype(int) - recon_luma.astype(int))), 1.0)
         self.assertLess(recon.mean(), 256)
         self.assertGreaterEqual(recon.min(), 0)
@@ -62,8 +48,8 @@ class Nv12ToRgbTest(unittest.TestCase):
         nv12 = cp.rgb_to_nv12(rgb)
         recon = qb.nv12_to_rgb(nv12, 96, 48)
         self.assertEqual(recon.shape, (48, 96, 3))
-        luma = (rgb.astype(np.float64) @ cp._RGB_TO_Y).astype(np.uint8)
-        recon_luma = (recon.astype(np.float64) @ cp._RGB_TO_Y).astype(np.uint8)
+        luma = (rgb.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
+        recon_luma = (recon.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
         self.assertLess(np.mean(np.abs(luma.astype(int) - recon_luma.astype(int))), 1.0)
 
 
@@ -74,9 +60,9 @@ def _jpeg_from_bt709_ycbcr(rgb: np.ndarray) -> bytes:
     from PIL import Image
 
     pixels = rgb.astype(np.float64)
-    y = np.rint(pixels @ cp._RGB_TO_Y)
-    cb = np.rint(pixels @ cp._RGB_TO_CB + 128.0)
-    cr = np.rint(pixels @ cp._RGB_TO_CR + 128.0)
+    y = np.rint(pixels @ cp.RGB_TO_Y)
+    cb = np.rint(pixels @ cp.RGB_TO_CB + 128.0)
+    cr = np.rint(pixels @ cp.RGB_TO_CR + 128.0)
     ycbcr = np.clip(np.stack([y, cb, cr], axis=-1), 0, 255).astype(np.uint8)
     buf = BytesIO()
     Image.fromarray(ycbcr, mode="YCbCr").save(buf, "JPEG", quality=100, subsampling=0)
@@ -92,7 +78,7 @@ class DecodeJpegTest(unittest.TestCase):
         rgb = _gradient(64, 64)
         jpeg = _jpeg_from_bt709_ycbcr(rgb)
 
-        recovered = qb._decode_jpeg(jpeg)
+        recovered = qb.decode_jpeg(jpeg)
         self.assertEqual(recovered.shape, rgb.shape)
         self.assertEqual(recovered.dtype, np.uint8)
 
@@ -139,26 +125,14 @@ class MetricContractTest(unittest.TestCase):
         self.assertGreater(pylibjxl.psnr(img, decoded), 30.0)
 
 
-class RungForTest(unittest.TestCase):
-    def test_maps_ladder_names(self) -> None:
-        rung = qb._rung_for("1080p")
-        self.assertEqual((rung.width, rung.height), (1920, 1080))
-        self.assertEqual(rung.factor, 2)
-        self.assertEqual(qb._rung_for("2160p").factor, 1)
-
-    def test_rejects_unknown_resolution(self) -> None:
-        with self.assertRaises(ValueError):
-            qb._rung_for("540p")
-
-
 class EnsureShapeTest(unittest.TestCase):
     def test_rejects_wrong_geometry(self) -> None:
         rgb = np.zeros((54, 96, 3), dtype=np.uint8)
         with self.assertRaises(ValueError) as ctx:
-            qb._ensure_shape(rgb, cp.FULL_4K_WIDTH, cp.FULL_4K_HEIGHT, "img.png")
+            qb.ensure_shape(rgb, cp.FULL_4K_WIDTH, cp.FULL_4K_HEIGHT, "img.png")
         self.assertIn("expected 3840x2160", str(ctx.exception))
         self.assertIn("96x54", str(ctx.exception))
-        qb._ensure_shape(rgb, 96, 54, "img.png")
+        qb.ensure_shape(rgb, 96, 54, "img.png")
 
 
 def _row_dict(
@@ -199,7 +173,7 @@ class LoadCachedRowsTest(unittest.TestCase):
             _row_dict("a.png", "libjxl", "d=0.5"),
             _row_dict("a.png", "nvjpeg", "q=70"),
         ])
-        cache = qb._load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
+        cache = qb.load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
         self.assertEqual(
             set(cache),
             {("2160p", "a.png", "libjxl", "d=0.5"), ("2160p", "a.png", "nvjpeg", "q=70")},
@@ -226,7 +200,7 @@ class LoadCachedRowsTest(unittest.TestCase):
             _row_dict("a.png", "libjxl", "d=0.5", resolution="1080p"),
             _row_dict("a.png", "nvjpeg", "q=70", resolution="1080p"),
         ])
-        cache = qb._load_cached_rows(cache_path, self.frames, self.cfg, "1080p")
+        cache = qb.load_cached_rows(cache_path, self.frames, self.cfg, "1080p")
         self.assertEqual(
             set(cache),
             {
@@ -242,7 +216,7 @@ class LoadCachedRowsTest(unittest.TestCase):
             _row_dict("a.png", "nvjpeg", "q=70"),
         ])
         with self.assertRaises(ValueError) as ctx:
-            qb._load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
+            qb.load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
         self.assertIn("no resolution field", str(ctx.exception))
         self.assertIn("a.png libjxl d=0.5", str(ctx.exception))
 
@@ -253,10 +227,10 @@ class LoadCachedRowsTest(unittest.TestCase):
         ])
         cfg = qb.BenchConfig(distances=(0.5, 1.0), qualities=(70,))
         with self.assertRaises(ValueError) as ctx:
-            qb._load_cached_rows(cache_path, self.frames, cfg, "2160p")
+            qb.load_cached_rows(cache_path, self.frames, cfg, "2160p")
         self.assertIn("d=1.0", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx:
-            qb._load_cached_rows(
+            qb.load_cached_rows(
                 cache_path, [self.tmp / "b.png"], cfg, "2160p"
             )
         self.assertIn("b.png", str(ctx.exception))
@@ -267,25 +241,8 @@ class LoadCachedRowsTest(unittest.TestCase):
             _row_dict("a.png", "nvjpeg", "q=70", resolution="1080p"),
         ])
         with self.assertRaises(ValueError) as ctx:
-            qb._load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
+            qb.load_cached_rows(cache_path, self.frames, self.cfg, "2160p")
         self.assertIn("2160p a.png nvjpeg q=70", str(ctx.exception))
-
-
-class RowDictTest(unittest.TestCase):
-    def test_as_dict_includes_resolution(self):
-        row = qb.Row(
-            image="a.png",
-            resolution="1080p",
-            codec="cujpegxl",
-            param="d=1.0",
-            coded_bytes=10,
-            bpp=1.0,
-            ratio=8.0,
-            psnr=40.0,
-            butteraugli=1.0,
-            ssimulacra2=90.0,
-        )
-        self.assertEqual(row.as_dict()["resolution"], "1080p")
 
 
 if __name__ == "__main__":

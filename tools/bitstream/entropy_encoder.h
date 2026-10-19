@@ -33,28 +33,17 @@ public:
     // aligned on exit (the container has no trailing padding for prefix codes).
     void write(BitWriter& w) const;
 
-    // The two halves of write(), split so the histograms and the token stream
-    // can be emitted at different points of a section (the AC coefficient
-    // container writes its histograms in AcGlobal and its tokens in AcGroup).
-    // write_tokens() must follow write_histograms() with no intervening bits.
+    // The two halves of write(), so the histograms and the token stream can be
+    // emitted at different points of a section. write_tokens() requires a prior
+    // write_histograms(), which builds the prefix code.
     void write_histograms(BitWriter& w) const;
     void write_tokens(BitWriter& w) const;
 
-    // Writes only tokens[begin, end). Used by the multi-group AC container,
-    // where the histograms are pooled over all groups (one shared prefix code
-    // in AcGlobal) but each group's tokens are emitted in its own AcGroup
-    // section. Requires a prior write_histograms() to have built the code.
-    void write_tokens_range(BitWriter& w, std::size_t begin, std::size_t end) const;
-
-    std::size_t num_tokens() const { return tokens_.size(); }
-
-    // The pooled symbol histogram (index = symbol). Available after tokens are
-    // added; the device histogram kernel must reproduce it exactly.
+    // The pooled symbol histogram (index = symbol).
     const std::vector<std::uint32_t>& histogram() const { return histogram_; }
 
     // The shared prefix code, valid after write_histograms(): depth[s] is the
-    // code length of symbol s and bits[s] its LSB-first code word. The device
-    // token emitter consumes these to stay byte-identical.
+    // code length of symbol s and bits[s] its LSB-first code word.
     const std::vector<std::uint8_t>& code_depth() const { return depth_; }
     const std::vector<std::uint16_t>& code_bits() const { return bits_; }
 

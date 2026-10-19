@@ -35,11 +35,11 @@
 #include <vector>
 
 #include <cuda_runtime.h>
-#include <nvjpeg.h>
 #include <nvtx3/nvToolsExt.h>
 
 #include "src/bitstream/frame_assembly.h"
 #include "src/frame_encoder.h"
+#include "tools/benchmark/nvjpeg_encoder.h"
 
 namespace {
 
@@ -89,13 +89,6 @@ struct Args {
 void check_cuda(cudaError_t err, const char* what) {
     if (err != cudaSuccess) {
         die(std::string("cuda ") + what + " failed: " + cudaGetErrorString(err));
-    }
-}
-
-void check_nvjpeg(nvjpegStatus_t s, const char* what) {
-    if (s != NVJPEG_STATUS_SUCCESS) {
-        die(std::string("nvjpeg ") + what + " failed (status " +
-            std::to_string(static_cast<int>(s)) + ")");
     }
 }
 
@@ -207,8 +200,7 @@ struct BenchImage {
     std::vector<std::uint8_t> host;
     std::uint8_t* d_luma{nullptr};
     std::uint8_t* d_chroma{nullptr};
-    std::uint8_t* d_cb{nullptr};
-    std::uint8_t* d_cr{nullptr};
+    std::unique_ptr<cujpegxl::tools::DevicePlanarYuv> planar{};
 };
 
 BenchImage load_nv12(const std::string& path, std::uint32_t width, std::uint32_t height) {
@@ -226,21 +218,6 @@ BenchImage load_nv12(const std::string& path, std::uint32_t width, std::uint32_t
     return img;
 }
 
-// Deinterleaves the NV12 chroma plane (Cb0 Cr0 Cb1 Cr1 ...) into separate
-// planar Cb and Cr buffers matching nvjpegEncodeYUV's expected image layout.
-void deinterleave_nv12_chroma(const BenchImage& img, std::uint32_t width, std::uint32_t height,
-                              std::vector<std::uint8_t>& cb, std::vector<std::uint8_t>& cr) {
-    const std::size_t chroma_w{width / 2};
-    const std::size_t chroma_h{height / 2};
-    cb.resize(chroma_w * chroma_h);
-    cr.resize(chroma_w * chroma_h);
-    const std::uint8_t* uv{img.host.data() + static_cast<std::size_t>(width) * height};
-    for (std::size_t i{0}; i < chroma_w * chroma_h; ++i) {
-        cb[i] = uv[2 * i];
-        cr[i] = uv[2 * i + 1];
-    }
-}
-
 void upload_nv12(BenchImage& img, std::uint32_t width, std::uint32_t height) {
     const std::size_t luma_bytes{static_cast<std::size_t>(width) * height};
     const std::size_t chroma_bytes{static_cast<std::size_t>(width) * (height / 2)};
@@ -253,23 +230,6 @@ void upload_nv12(BenchImage& img, std::uint32_t width, std::uint32_t height) {
                "cudaMemcpy chroma");
 }
 
-void upload_planar_yuv(BenchImage& img, std::uint32_t width, std::uint32_t height) {
-    const std::size_t luma_bytes{static_cast<std::size_t>(width) * height};
-    const std::size_t chroma_bytes{(static_cast<std::size_t>(width) / 2) * (height / 2)};
-    std::vector<std::uint8_t> cb{};
-    std::vector<std::uint8_t> cr{};
-    deinterleave_nv12_chroma(img, width, height, cb, cr);
-    check_cuda(cudaMalloc(&img.d_luma, luma_bytes), "cudaMalloc luma");
-    check_cuda(cudaMalloc(&img.d_cb, chroma_bytes), "cudaMalloc cb");
-    check_cuda(cudaMalloc(&img.d_cr, chroma_bytes), "cudaMalloc cr");
-    check_cuda(cudaMemcpy(img.d_luma, img.host.data(), luma_bytes, cudaMemcpyHostToDevice),
-               "cudaMemcpy luma");
-    check_cuda(cudaMemcpy(img.d_cb, cb.data(), chroma_bytes, cudaMemcpyHostToDevice),
-               "cudaMemcpy cb");
-    check_cuda(cudaMemcpy(img.d_cr, cr.data(), chroma_bytes, cudaMemcpyHostToDevice),
-               "cudaMemcpy cr");
-}
-
 void free_image(BenchImage& img) {
     if (img.d_luma != nullptr) {
         cudaFree(img.d_luma);
@@ -279,14 +239,7 @@ void free_image(BenchImage& img) {
         cudaFree(img.d_chroma);
         img.d_chroma = nullptr;
     }
-    if (img.d_cb != nullptr) {
-        cudaFree(img.d_cb);
-        img.d_cb = nullptr;
-    }
-    if (img.d_cr != nullptr) {
-        cudaFree(img.d_cr);
-        img.d_cr = nullptr;
-    }
+    img.planar.reset();
 }
 
 double mean_of(const std::vector<double>& xs) {
@@ -314,49 +267,6 @@ double percentile_of(std::vector<double> xs, double p) {
     const auto idx{static_cast<std::size_t>(std::llround(p * (xs.size() - 1)))};
     return xs[idx];
 }
-
-// RAII handle bundle for nvJPEG. The encoder state and params are reused across
-// iterations, matching the steady-state usage pattern for nvJPEG benchmarks.
-struct NvjpegSession {
-    nvjpegHandle_t handle{nullptr};
-    nvjpegEncoderState_t state{nullptr};
-    nvjpegEncoderParams_t params{nullptr};
-    nvjpegImage_t image{};
-    std::vector<std::uint8_t> output;
-
-    explicit NvjpegSession(int quality, std::uint32_t width, std::uint32_t height) {
-        check_nvjpeg(nvjpegCreateSimple(&handle), "CreateSimple");
-        check_nvjpeg(nvjpegEncoderStateCreate(handle, &state, nullptr), "EncoderStateCreate");
-        check_nvjpeg(nvjpegEncoderParamsCreate(handle, &params, nullptr), "EncoderParamsCreate");
-        check_nvjpeg(nvjpegEncoderParamsSetQuality(params, quality, nullptr), "SetQuality");
-        check_nvjpeg(nvjpegEncoderParamsSetSamplingFactors(params, NVJPEG_CSS_420, nullptr),
-                     "SetSamplingFactors");
-        std::size_t max_size{0};
-        check_nvjpeg(nvjpegEncodeGetBufferSize(handle, params, static_cast<int>(width),
-                                               static_cast<int>(height), &max_size),
-                     "EncodeGetBufferSize");
-        output.resize(max_size);
-        for (std::size_t i{0}; i < NVJPEG_MAX_COMPONENT; ++i) {
-            image.channel[i] = nullptr;
-            image.pitch[i] = 0;
-        }
-    }
-
-    ~NvjpegSession() {
-        if (params != nullptr) {
-            nvjpegEncoderParamsDestroy(params);
-        }
-        if (state != nullptr) {
-            nvjpegEncoderStateDestroy(state);
-        }
-        if (handle != nullptr) {
-            nvjpegDestroy(handle);
-        }
-    }
-
-    NvjpegSession(const NvjpegSession&) = delete;
-    NvjpegSession& operator=(const NvjpegSession&) = delete;
-};
 
 void print_header(const Args& a, std::size_t image_count) {
     std::printf("encode_bench\n");
@@ -389,9 +299,7 @@ void print_stats(const std::vector<double>& times_us, std::string_view codec) {
     std::printf("  max:        %.0f\n", *std::max_element(times_us.begin(), times_us.end()));
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
     Args args{parse_args(argc, argv)};
 
     if (args.codec.empty()) {
@@ -441,7 +349,8 @@ int main(int argc, char** argv) {
         if (args.codec == "cujpegxl") {
             upload_nv12(img, args.width, args.height);
         } else {
-            upload_planar_yuv(img, args.width, args.height);
+            img.planar = std::make_unique<cujpegxl::tools::DevicePlanarYuv>(
+                img.host.data(), args.width, args.height);
         }
         images.push_back(std::move(img));
     }
@@ -454,12 +363,14 @@ int main(int argc, char** argv) {
     std::vector<std::uint8_t> cujpegxl_out{};
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
 
-    std::unique_ptr<NvjpegSession> nvjpeg{};
+    std::unique_ptr<cujpegxl::tools::NvjpegEncoder> nvjpeg{};
     if (args.codec == "nvjpeg") {
-        nvjpeg.reset(new NvjpegSession(args.quality, args.width, args.height));
+        nvjpeg =
+            std::make_unique<cujpegxl::tools::NvjpegEncoder>(args.quality, args.width, args.height);
     }
 
     auto encode_cujpegxl = [&](const BenchImage& img) -> double {
+        cujpegxl_stages.clear();
         const auto t0{std::chrono::steady_clock::now()};
         const bool ok{cujpegxl::encode_nv12(
             img.d_luma, args.width, img.d_chroma, args.width, args.width, args.height, args.device,
@@ -472,23 +383,8 @@ int main(int argc, char** argv) {
     };
 
     auto encode_nvjpeg = [&](const BenchImage& img) -> double {
-        const std::uint32_t chroma_w{args.width / 2};
-        nvjpeg->image.channel[0] = img.d_luma;
-        nvjpeg->image.pitch[0] = args.width;
-        nvjpeg->image.channel[1] = img.d_cb;
-        nvjpeg->image.pitch[1] = chroma_w;
-        nvjpeg->image.channel[2] = img.d_cr;
-        nvjpeg->image.pitch[2] = chroma_w;
         const auto t0{std::chrono::steady_clock::now()};
-        check_nvjpeg(nvjpegEncodeYUV(nvjpeg->handle, nvjpeg->state, nvjpeg->params, &nvjpeg->image,
-                                     NVJPEG_CSS_420, static_cast<int>(args.width),
-                                     static_cast<int>(args.height), nullptr),
-                     "EncodeYUV");
-        std::size_t length{nvjpeg->output.size()};
-        check_nvjpeg(nvjpegEncodeRetrieveBitstream(nvjpeg->handle, nvjpeg->state,
-                                                   nvjpeg->output.data(), &length, nullptr),
-                     "RetrieveBitstream");
-        check_cuda(cudaStreamSynchronize(nullptr), "stream sync");
+        nvjpeg->encode(*img.planar);
         const auto t1{std::chrono::steady_clock::now()};
         return std::chrono::duration<double, std::micro>(t1 - t0).count();
     };
@@ -527,13 +423,8 @@ int main(int argc, char** argv) {
     print_stats(times_us, args.codec);
 
     if (args.profile && args.codec == "cujpegxl" && !cujpegxl_stages.empty()) {
-        const std::size_t stages_per_call{3};
-        const std::size_t offset{cujpegxl_stages.size() >= stages_per_call
-                                     ? cujpegxl_stages.size() - stages_per_call
-                                     : 0};
         std::printf("\ncujpegxl per-stage timings (last iteration):\n");
-        for (std::size_t i{offset}; i < cujpegxl_stages.size(); ++i) {
-            const cujpegxl::StageTiming& s{cujpegxl_stages[i]};
+        for (const cujpegxl::StageTiming& s : cujpegxl_stages) {
             std::printf("  %-10s gpu=%9.0f us  cpu=%7.0f us  bytes=%zu\n", s.name, s.gpu_us,
                         s.cpu_us, s.bytes_moved);
         }
@@ -552,4 +443,14 @@ int main(int argc, char** argv) {
         free_image(img);
     }
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        die(e.what());
+    }
 }

@@ -21,11 +21,10 @@ _WEIGHTS_BIN = pathlib.Path(sys.argv.pop(1)).resolve()
 _ORACLE_BIN = pathlib.Path(sys.argv.pop(1)).resolve()
 
 
-def _weights(binary: pathlib.Path, block_dim: int, oracle: bool) -> np.ndarray:
+def _weights(binary: pathlib.Path, block_dim: int) -> np.ndarray:
     with tempfile.TemporaryDirectory() as scratch:
         out_path = pathlib.Path(scratch) / "w.f32"
-        prefix = ["quantmatrix"] if oracle else []
-        subprocess.run([str(binary), *prefix, str(block_dim), str(out_path)], check=True)
+        subprocess.run([str(binary), "quantmatrix", str(block_dim), str(out_path)], check=True)
         return np.fromfile(out_path, dtype="<f4")
 
 
@@ -33,8 +32,8 @@ class QuantWeightsConformanceTest(unittest.TestCase):
     def test_matches_libjxl(self):
         for block_dim in (8, 16, 32):
             with self.subTest(block_dim=block_dim):
-                mine = _weights(_WEIGHTS_BIN, block_dim, oracle=False)
-                want = _weights(_ORACLE_BIN, block_dim, oracle=True)
+                mine = _weights(_WEIGHTS_BIN, block_dim)
+                want = _weights(_ORACLE_BIN, block_dim)
                 self.assertEqual(mine.shape, (3 * block_dim * block_dim,))
                 np.testing.assert_array_equal(mine, want)
 

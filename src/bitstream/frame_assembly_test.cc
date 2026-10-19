@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "frame_assembly.h"
+#include "prefix_build_reference.h"
 #include "tools/bitstream/vardct_frame.h"
 
 namespace cujpegxl::bitstream {
@@ -115,7 +116,7 @@ TEST(FrameAssembly, AcPrefixCodeMatchesOracle) {
 // Reassembles a codestream from frame_assembly's globals and head plus the
 // oracle's group bodies, and checks it equals the oracle's full codestream.
 void check_reassembly(const FrameCoefficients& fc) {
-    const std::vector<std::uint8_t> expected{write_vardct_codestream(fc, /*clustered_ac=*/true)};
+    const std::vector<std::uint8_t> expected{write_vardct_codestream(fc)};
 
     const DcReference dc{reference_dc_encode(fc)};
     const AcReference ac{reference_ac_encode(fc)};

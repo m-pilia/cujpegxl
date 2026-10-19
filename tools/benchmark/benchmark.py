@@ -120,25 +120,11 @@ def resolve_encode_bench() -> pathlib.Path:
     )
 
 
-def data_frames(data_dir: pathlib.Path) -> list[pathlib.Path]:
-    frames = sorted(data_dir.glob("*.png"))
-    if not frames:
-        raise FileNotFoundError(f"no *.png frames found under {data_dir}")
-    return frames
-
-
 def generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
                     out_dir: pathlib.Path) -> list[pathlib.Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    nv12_files: list[pathlib.Path] = []
-    for source in frames:
-        rgb_4k = cp.load_rgb(source)
-        scaled = cp.box_downscale(rgb_4k, rung.factor)
-        nv12 = cp.rgb_to_nv12(scaled)
-        path = out_dir / f"{source.stem}_{rung.name}.nv12"
-        path.write_bytes(nv12)
-        nv12_files.append(path)
-    return nv12_files
+    return [cp.write_rung_nv12(source, cp.load_rgb(source), rung, out_dir)[0]
+            for source in frames]
 
 
 def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
@@ -208,8 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         "--nv12-dir",
         type=pathlib.Path,
         default=None,
-        help="Reuse a pre-generated NV12 corpus from this directory instead of "
-        "regenerating into a temp dir.",
+        help="Persist the generated NV12 corpus here instead of a temp dir.",
     )
     parser.add_argument(
         "--encode-bench",
@@ -222,12 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile and args.codec != "cujpegxl":
         parser.error("--profile is only supported with --codec=cujpegxl")
 
-    rung = next(r for r in cp.LADDER if r.name == args.rung)
+    rung = cp.rung_by_name(args.rung)
     bench = args.encode_bench if args.encode_bench is not None else resolve_encode_bench()
     if not bench.exists():
         parser.error(f"encode_bench binary not found at {bench}")
 
-    frames = data_frames(args.data_dir)
+    frames = cp.data_frames(args.data_dir)
 
     if args.nv12_dir is not None:
         nv12_files = generate_corpus(frames, rung, args.nv12_dir)

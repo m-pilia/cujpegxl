@@ -60,8 +60,8 @@ def compare(a: RunArtifact, b: RunArtifact) -> Comparison:
     )
 
 
-def _run_once(command: list[str], output_file: str | None) -> RunArtifact:
-    if output_file is None:
+def _run_once(command: list[str], use_output_file: bool) -> RunArtifact:
+    if not use_output_file:
         completed = subprocess.run(command, capture_output=True, check=True)
         return RunArtifact(data=completed.stdout)
 
@@ -72,10 +72,10 @@ def _run_once(command: list[str], output_file: str | None) -> RunArtifact:
         return RunArtifact(data=target.read_bytes())
 
 
-def run_twice(command: list[str], output_file: str | None) -> Comparison:
+def run_twice(command: list[str], use_output_file: bool) -> Comparison:
     return compare(
-        _run_once(command, output_file),
-        _run_once(command, output_file),
+        _run_once(command, use_output_file),
+        _run_once(command, use_output_file),
     )
 
 
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("no command provided after options")
 
-    result = run_twice(command, output_file="output" if args.output_file else None)
+    result = run_twice(command, use_output_file=args.output_file)
     print(format_report(result))
     return 0 if result.identical else 1
 

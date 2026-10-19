@@ -42,6 +42,11 @@ class CorpusPrepTest(unittest.TestCase):
         self.assertEqual([r.width for r in cp.LADDER], [3840, 1920, 1280])
         self.assertEqual([r.height for r in cp.LADDER], [2160, 1080, 720])
 
+    def test_rung_by_name(self):
+        self.assertEqual(cp.rung_by_name("1080p").factor, 2)
+        with self.assertRaises(ValueError):
+            cp.rung_by_name("540p")
+
     def test_ladder_dims_are_block_aligned(self):
         for rung in cp.LADDER:
             self.assertEqual(rung.width % 8, 0)

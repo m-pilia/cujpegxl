@@ -28,9 +28,7 @@ def run_comparison(pairs: tuple[tuple[int, float], ...], *, data_dir: pathlib.Pa
                    iterations: int, warmup: int, device: int) -> list[tuple[bm.BenchStats,
                                                                             bm.BenchStats]]:
     bench = bm.resolve_encode_bench()
-    if not bench.exists():
-        raise FileNotFoundError(f"encode_bench binary not found at {bench}")
-    frames = bm.data_frames(data_dir)
+    frames = cp.data_frames(data_dir)
 
     results: list[tuple[bm.BenchStats, bm.BenchStats]] = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -95,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    rung = next(r for r in cp.LADDER if r.name == args.rung)
+    rung = cp.rung_by_name(args.rung)
     results = run_comparison(DEFAULT_PAIRS, data_dir=args.data_dir, rung=rung,
                              iterations=args.iterations, warmup=args.warmup, device=args.device)
 

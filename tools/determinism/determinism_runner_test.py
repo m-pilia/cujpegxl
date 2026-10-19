@@ -9,13 +9,14 @@ import determinism_runner as dr
 
 class DeterminismRunnerTest(unittest.TestCase):
     def test_deterministic_stdout_matches(self):
-        result = dr.run_twice([sys.executable, "-c", "print('fixed')"], None)
+        result = dr.run_twice([sys.executable, "-c", "print('fixed')"], use_output_file=False)
         self.assertTrue(result.identical)
         self.assertIsNone(result.first_diff_offset)
 
     def test_nondeterministic_stdout_detected(self):
         result = dr.run_twice(
-            [sys.executable, "-c", "import random; print(random.random())"], None
+            [sys.executable, "-c", "import random; print(random.random())"],
+            use_output_file=False,
         )
         self.assertFalse(result.identical)
         self.assertIsNotNone(result.first_diff_offset)
@@ -23,7 +24,7 @@ class DeterminismRunnerTest(unittest.TestCase):
     def test_output_file_mode_matches(self):
         result = dr.run_twice(
             [sys.executable, "-c", "open('{output}', 'w').write('payload')"],
-            "output",
+            use_output_file=True,
         )
         self.assertTrue(result.identical)
 

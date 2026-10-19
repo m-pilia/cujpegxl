@@ -1,31 +1,16 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Testonly harness: runs dc_from_llf on one block's coefficients and writes the
-// resulting DC values, so a Python test can diff them against the libjxl
-// DCFromLowestFrequencies oracle. Not shipped.
+// Runs dc_from_llf on one block's coefficients and writes the resulting DC
+// values as float32.
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
+#include "dump_io.h"
 #include "vardct_layout.h"
-
-namespace {
-
-bool read_floats(const char* path, std::size_t count, std::vector<float>* out) {
-    out->resize(count);
-    std::FILE* file{std::fopen(path, "rb")};
-    if (file == nullptr) {
-        return false;
-    }
-    const std::size_t got{std::fread(out->data(), sizeof(float), count, file)};
-    std::fclose(file);
-    return got == count;
-}
-
-}  // namespace
 
 int main(int argc, char** argv) {
     if (argc != 5 || std::strcmp(argv[1], "dcfromllf") != 0) {
@@ -40,7 +25,7 @@ int main(int argc, char** argv) {
     }
 
     std::vector<float> coeffs{};
-    if (!read_floats(argv[3], block_dim * block_dim, &coeffs)) {
+    if (!cujpegxl::read_raw(argv[3], block_dim * block_dim, &coeffs)) {
         std::fprintf(stderr, "vardct_layout_dump: %s is not %zu floats\n", argv[3],
                      block_dim * block_dim);
         return 1;
@@ -50,12 +35,9 @@ int main(int argc, char** argv) {
     std::vector<float> dc(side * side);
     cujpegxl::dc_from_llf(block_dim, coeffs.data(), dc.data());
 
-    std::FILE* out{std::fopen(argv[4], "wb")};
-    if (out == nullptr) {
-        std::fprintf(stderr, "vardct_layout_dump: cannot open %s for writing\n", argv[4]);
+    if (!cujpegxl::write_raw(argv[4], dc.data(), dc.size())) {
+        std::fprintf(stderr, "vardct_layout_dump: cannot write %s\n", argv[4]);
         return 1;
     }
-    const std::size_t put{std::fwrite(dc.data(), sizeof(float), dc.size(), out)};
-    std::fclose(out);
-    return put == dc.size() ? 0 : 1;
+    return 0;
 }

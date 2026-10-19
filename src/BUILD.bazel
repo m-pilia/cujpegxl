@@ -65,11 +65,20 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
+cc_library(
+    name = "dump_io",
+    testonly = True,
+    hdrs = ["dump_io.h"],
+)
+
 cc_binary(
     name = "vardct_layout_dump",
     testonly = True,
     srcs = ["vardct_layout_dump.cc"],
-    deps = [":vardct_layout"],
+    deps = [
+        ":dump_io",
+        ":vardct_layout",
+    ],
 )
 
 cc_test(
@@ -118,7 +127,10 @@ cc_binary(
     name = "cfl_dump",
     testonly = True,
     srcs = ["cfl_dump.cc"],
-    deps = [":cfl"],
+    deps = [
+        ":cfl",
+        ":dump_io",
+    ],
 )
 
 cuda_library(
@@ -150,14 +162,20 @@ cc_binary(
     name = "coeff_order_dump",
     testonly = True,
     srcs = ["coeff_order_dump.cc"],
-    deps = [":coeff_order"],
+    deps = [
+        ":coeff_order",
+        ":dump_io",
+    ],
 )
 
 cuda_library(
     name = "nv12_to_xyb_dump_lib",
     testonly = True,
     srcs = ["nv12_to_xyb_dump.cu"],
-    deps = [":xyb"],
+    deps = [
+        ":dump_io",
+        ":xyb",
+    ],
 )
 
 cc_binary(
@@ -172,7 +190,10 @@ cuda_library(
     name = "dct_dump_lib",
     testonly = True,
     srcs = ["dct_dump.cu"],
-    deps = [":dct"],
+    deps = [
+        ":dct",
+        ":dump_io",
+    ],
 )
 
 cc_binary(
@@ -197,18 +218,10 @@ cc_binary(
     name = "quant_weights_dump",
     testonly = True,
     srcs = ["quant_weights_dump.cc"],
-    deps = [":quant_consts"],
-)
-
-# Standalone quantizer kernel retained as the self-consistency-test harness over
-# the calibration constants; the production path is the fused front-end.
-cuda_library(
-    name = "quant",
-    testonly = True,
-    srcs = ["quant.cu"],
-    hdrs = ["quant.h"],
-    copts = RUNTIME_COPTS,
-    deps = [":quant_consts"],
+    deps = [
+        ":dump_io",
+        ":quant_consts",
+    ],
 )
 
 cuda_library(
@@ -226,25 +239,6 @@ cuda_library(
         ":vardct_layout",
         ":xyb_impl",
     ],
-)
-
-cuda_library(
-    name = "quant_dump_lib",
-    testonly = True,
-    srcs = ["quant_dump.cu"],
-    deps = [
-        ":dct",
-        ":quant",
-        ":quant_consts",
-    ],
-)
-
-cc_binary(
-    name = "quant_dump",
-    testonly = True,
-    srcs = ["quant_dump_main.cc"],
-    tags = ["gpu"],
-    deps = [":quant_dump_lib"],
 )
 
 cuda_library(
@@ -290,6 +284,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_context",
+        ":vardct_layout",
         "//src/bitstream",
     ],
 )
@@ -303,6 +298,7 @@ cc_test(
         ":entropy",
         ":prefix_build",
         "//src/bitstream:frame_assembly",
+        "//src/bitstream:prefix_build_reference",
         "@googletest//:gtest_main",
     ],
 )

@@ -12,6 +12,7 @@ cc_binary(
     testonly = True,
     srcs = ["libjxl_oracle.cc"],
     deps = [
+        "//src:dump_io",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
     ],

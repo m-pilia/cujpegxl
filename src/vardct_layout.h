@@ -44,6 +44,11 @@ inline bool acs_is_first_block(std::int8_t signal) {
 // N packs its N*N coefficients across the slots of its covered blocks.
 constexpr std::size_t COEFFS_PER_BLOCK = 64;
 
+// Side lengths, in 8x8 blocks, of the square AC groups (256px) and DC groups
+// (2048px) tiling a frame; edge groups are partial.
+constexpr std::size_t AC_GROUP_BLOCKS = 32;
+constexpr std::size_t DC_GROUP_BLOCKS = 256;
+
 // Maps a first-block's raw coefficient index (forward_dctN transposed-raster
 // layout: raw = fx*block_dim + fy, in [0, block_dim*block_dim)) to the flat slot
 // index within one channel plane of the covered-block coefficient buffer. The

@@ -72,15 +72,11 @@ void write_modular_header(BitWriter& w, const std::vector<ModularChannel>& chann
     data.write_histograms(w);
 }
 
-void write_modular_tokens(BitWriter& w, const EntropyEncoder& data) {
-    data.write_tokens(w);
-}
-
 void write_modular_image(BitWriter& w, const std::vector<ModularChannel>& channels, int predictor) {
     // (tree.size() + 1) / 2 == 1 histogram context for the channel samples.
     EntropyEncoder data{1};
     write_modular_header(w, channels, data, predictor);
-    write_modular_tokens(w, data);
+    data.write_tokens(w);
 }
 
 }  // namespace cujpegxl::bitstream
