@@ -220,13 +220,16 @@ __device__ void candidate_rows(const float* __restrict__ y, const float* basis, 
 }
 
 template <int N>
-__device__ void candidate_coeff(const float* basis, const float* rows, int idx, int e, float qgsf,
-                                float& dist, float& rate) {
+__device__ float candidate_coeff(const float* basis, const float* rows, int idx, int e, float qgsf,
+                                 float& dist, float& rate) {
     const int fx{e / N};
     const int fy{e % N};
     const float coeff{dct_coeff_entry(basis, N, fy, rows + idx * N * N + fx * N)};
     accumulate_coeff_cost(coeff, fx, fy, N, qgsf, dist, rate);
+    return coeff;
 }
+
+constexpr std::uint32_t WHOLE32_LAYOUT{0x20202020u};
 
 // A candidate's distortion and rate are sums over 256 slots in the pairing of
 // the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
@@ -235,11 +238,13 @@ __device__ void candidate_coeff(const float* basis, const float* rows, int idx, 
 //
 // Returns the region layout: byte q holds the side (8, 16 or 32) of the
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
+// A region that fits a DCT32 gets its DCT32 Y coefficients written to y_plane
+// speculatively; if it splits, the Y pass overwrites the same slots.
 __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::size_t rbx,
                                            std::size_t rby, std::size_t bw, std::size_t bh,
                                            float qgsf, float lambda, const float* bases,
                                            float* rows, float* costs, std::int8_t* __restrict__ acs,
-                                           int tid) {
+                                           __half* __restrict__ y_plane, int tid) {
     const float* basis8{region_basis(bases, 8)};
     const float* basis16{region_basis(bases, 16)};
     const float* basis32{region_basis(bases, 32)};
@@ -309,16 +314,20 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     // barrier keeps the 16x16 reduction's reads of pd/pr ahead of the rows.
     __syncthreads();
     candidate_rows<32>(y, basis32, rows, tid);
+    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
     float dist32{0.0f};
     float rate32{0.0f};
     for (int e{tid}; e < 32 * 32; e += FRONTEND_THREADS) {
-        candidate_coeff<32>(basis32, rows, 0, e, qgsf, dist32, rate32);
+        const float coeff{candidate_coeff<32>(basis32, rows, 0, e, qgsf, dist32, rate32)};
+        if (fit32) {
+            y_plane[covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(e))] =
+                __float2half_rn(coeff);
+        }
     }
     __syncthreads();
     pd[tid] = dist32;
     pr[tid] = rate32;
     __syncthreads();
-    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
     if (warp == 0) {
         const float dist{warp_tree_sum_256(pd, lane)};
         const float rate{warp_tree_sum_256(pr, lane)};
@@ -393,7 +402,7 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
                 }
             }
         }
-        *layout_word = whole32 ? 0x20202020u : split_layout;
+        *layout_word = whole32 ? WHOLE32_LAYOUT : split_layout;
     }
     __syncthreads();
     return *layout_word;
@@ -642,11 +651,14 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     float* bases{workspace + BASES_OFFSET};
     load_bases(bases, tid);
     __syncthreads();
-    const std::uint32_t layout{select_transforms(
-        sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, bases, rows, costs, acs, tid)};
-
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    forward_region<1>({sharp_y}, bases, {rows}, layout, tbx0, tby0, bw, bh, {coeffs + cplane}, tid);
+    const std::uint32_t layout{select_transforms(sharp_y, tbx0, tby0, bw, bh, qgsf,
+                                                 TRANSFORM_SELECT_LAMBDA, bases, rows, costs, acs,
+                                                 coeffs + cplane, tid)};
+    if (layout != WHOLE32_LAYOUT) {
+        forward_region<1>({sharp_y}, bases, {rows}, layout, tbx0, tby0, bw, bh, {coeffs + cplane},
+                          tid);
+    }
     __syncthreads();
 
     float* sharp_x{workspace};
