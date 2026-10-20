@@ -47,7 +47,8 @@ constexpr std::size_t SELECT_WORKSPACE_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 
                                               SELECT_YSTORE_FLOATS;
 constexpr std::size_t RESIDENT_X_B_OFFSET = SELECT_WORKSPACE_PEAK;
 constexpr std::size_t RESIDENT_X_B_PEAK = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
-constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8;
+constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8 * TB * TB;
+static_assert(LOAD_AQ_LOCAL_PEAK <= RESIDENT_X_B_OFFSET);
 constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = std::max(LOAD_AQ_LOCAL_PEAK, RESIDENT_X_B_PEAK);
 constexpr std::size_t SELECT_X_B_WORKSPACE_PEAK = RESIDENT_X_B_PEAK;
 // The X/B DCT keeps the 8-, 16- and 32-point bases resident at these offsets.
@@ -552,73 +553,72 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     }
     __syncthreads();
 
-    for (int lb{0}; lb < TB * TB; ++lb) {
+    // Adaptive quant integer. Every modulation term is an additive reduction
+    // over the block's 64 pixels, reduced as two half-blocks of four pixel rows
+    // with one warp each; the eight warps take the 32 half-blocks of the tile in
+    // turn. Thread lb then combines block lb's half-block sums.
+    const int lane{tid % 32};
+    for (int hb{tid / 32}; hb < 2 * TB * TB; hb += FRONTEND_THREADS / 32) {
+        const int lb{hb / 2};
+        const int half{hb % 2};
         const int lbx{lb % TB};
         const int lby{lb / TB};
-        const std::size_t gbx{tbx0 + lbx};
-        const std::size_t gby{tby0 + lby};
-        if (gbx >= bw || gby >= bh) {
+        if (tbx0 + lbx >= bw || tby0 + lby >= bh) {
             continue;
         }
-        const int x0{lbx * 8 + HALO};  // shared interior origin (+halo)
-        const int y0{lby * 8 + HALO};
+        const int fx{lane % 8};
+        const int fy{4 * half + lane / 8};
+        const int idx{(lby * 8 + fy + HALO) * PAD + lbx * 8 + fx + HALO};
+        const float yv{sh_y[idx]};
+        const float xv{raw_x[idx]};
+        const float bv{raw_b[idx]};
 
-        // Adaptive quant integer: each thread reduces its own pixel's modulation
-        // contributions across the 64-thread block; thread 0 combines the
-        // reduced sums and broadcasts the quant integer via shared memory. Every
-        // modulation term is an additive reduction over the block's 64 pixels,
-        // so the per-pixel partials can be summed in parallel.
-        if (tid < 64) {
-            const int fx{tid % 8};
-            const int fy{tid / 8};
-            const int idx{(y0 + fy) * PAD + x0 + fx};
-            const float yv{sh_y[idx]};
-            const float xv{raw_x[idx]};
-            const float bv{raw_b[idx]};
-
-            constexpr float valmin{0.0206f};
-            float hf_part{0.0f};
-            if (fx < 7) {
-                hf_part += fminf(valmin, fabsf(yv - sh_y[idx + 1]));
-            }
-            if (fy < 7) {
-                hf_part += fminf(valmin, fabsf(yv - sh_y[idx + PAD]));
-            }
-
-            constexpr float kBias{0.16f};
-            const float iny{yv + kBias};
-            const float gamma_part{ratio_cbrt_gamma<true>(iny - xv) +
-                                   ratio_cbrt_gamma<true>(iny + xv)};
-
-            constexpr float kLimit{0.027121074570634722f};
-            constexpr float kOffset{0.084381641171960495f};
-            const float pye{yv + kOffset + fabsf(xv)};
-            const float blue_part{bv > pye ? fminf(bv - pye, kLimit) : 0.0f};
-
-            float er_part{0.0f};
-            if (tid < 4) {
-                er_part = erosion_cell(sh_pre, 2 * lbx + (tid & 1), 2 * lby + (tid >> 1), km0, km1,
-                                       km2, km3);
-            }
-
-            const float hf_red{warp_reduce_sum(hf_part)};
-            const float gamma_red{warp_reduce_sum(gamma_part)};
-            const float blue_red{warp_reduce_sum(blue_part)};
-            const float er_red{warp_reduce_sum(er_part)};
-            if ((tid & 31) == 0) {
-                const int w{tid >> 5};
-                sh_red[w * 4] = hf_red;
-                sh_red[w * 4 + 1] = gamma_red;
-                sh_red[w * 4 + 2] = blue_red;
-                sh_red[w * 4 + 3] = er_red;
-            }
+        constexpr float valmin{0.0206f};
+        float hf_part{0.0f};
+        if (fx < 7) {
+            hf_part += fminf(valmin, fabsf(yv - sh_y[idx + 1]));
         }
-        __syncthreads();
-        if (tid == 0) {
-            const float hf_sum{sh_red[0] + sh_red[4]};
-            const float gamma_overall{(sh_red[1] + sh_red[5]) * (0.5f / 64.0f)};
-            float blue_sum{sh_red[2] + sh_red[6]};
-            const float aq{sh_red[3] + sh_red[7]};
+        if (fy < 7) {
+            hf_part += fminf(valmin, fabsf(yv - sh_y[idx + PAD]));
+        }
+
+        constexpr float kBias{0.16f};
+        const float iny{yv + kBias};
+        const float gamma_part{ratio_cbrt_gamma<true>(iny - xv) + ratio_cbrt_gamma<true>(iny + xv)};
+
+        constexpr float kLimit{0.027121074570634722f};
+        constexpr float kOffset{0.084381641171960495f};
+        const float pye{yv + kOffset + fabsf(xv)};
+        const float blue_part{bv > pye ? fminf(bv - pye, kLimit) : 0.0f};
+
+        float er_part{0.0f};
+        if (half == 0 && lane < 4) {
+            er_part = erosion_cell(sh_pre, 2 * lbx + (lane & 1), 2 * lby + (lane >> 1), km0, km1,
+                                   km2, km3);
+        }
+
+        const float hf_red{warp_reduce_sum(hf_part)};
+        const float gamma_red{warp_reduce_sum(gamma_part)};
+        const float blue_red{warp_reduce_sum(blue_part)};
+        const float er_red{warp_reduce_sum(er_part)};
+        if (lane == 0) {
+            float* red{sh_red + hb * 4};
+            red[0] = hf_red;
+            red[1] = gamma_red;
+            red[2] = blue_red;
+            red[3] = er_red;
+        }
+    }
+    __syncthreads();
+    if (tid < TB * TB) {
+        const std::size_t gbx{tbx0 + static_cast<std::size_t>(tid % TB)};
+        const std::size_t gby{tby0 + static_cast<std::size_t>(tid / TB)};
+        if (gbx < bw && gby < bh) {
+            const float* red{sh_red + tid * 8};
+            const float hf_sum{red[0] + red[4]};
+            const float gamma_overall{(red[1] + red[5]) * (0.5f / 64.0f)};
+            float blue_sum{red[2] + red[6]};
+            const float aq{red[3] + red[7]};
 
             constexpr float kLimit{0.027121074570634722f};
             if (blue_sum >= 32.0f * kLimit) {
@@ -639,7 +639,6 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
             qi = qi < 1 ? 1 : (qi > K_QUANT_MAX ? K_QUANT_MAX : qi);
             quant_field[gby * bw + gbx] = qi;
         }
-        __syncthreads();
     }
 
     gaborish_tile(sh_y, sharp_y, tid);
