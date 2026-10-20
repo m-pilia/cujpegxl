@@ -29,20 +29,28 @@ constexpr int TILE_PX = TB * 8;
 constexpr int PAD = TILE_PX + 2 * HALO;
 constexpr int CELLS = 2 * TB;
 constexpr int TILE_SAMPLES = TILE_PX * TILE_PX;
+// The DCT row pass has each warp lane read a different tile row at the same
+// column, and the column pass a different basis row at the same column. Odd
+// row strides (TILE_PX + 1 for the tile, n + 1 for an n-point basis) map those
+// lanes to distinct shared-memory banks.
+constexpr int TILE_STRIDE = TILE_PX + 1;
+constexpr int TILE_FLOATS = TILE_PX * TILE_STRIDE;
+constexpr int BASIS_FLOATS = 32 * (32 + 1);
 constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
 constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
 constexpr std::size_t SELECT_YSTORE_HALFS = 16 * 8 * 8 + 4 * 16 * 16 + 32 * 32;
 constexpr std::size_t SELECT_YSTORE_FLOATS =
     (SELECT_YSTORE_HALFS * sizeof(__half) + sizeof(float) - 1) / sizeof(float);
-constexpr std::size_t SELECT_WORKSPACE_PEAK =
-    TILE_SAMPLES + 2 * 32 * 32 + 2 * FRONTEND_THREADS + SELECT_COST_FLOATS + SELECT_YSTORE_FLOATS;
+constexpr std::size_t SELECT_WORKSPACE_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 32 +
+                                              2 * FRONTEND_THREADS + SELECT_COST_FLOATS +
+                                              SELECT_YSTORE_FLOATS;
 constexpr std::size_t RESIDENT_X_B_OFFSET = SELECT_WORKSPACE_PEAK;
 constexpr std::size_t RESIDENT_X_B_PEAK = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
-constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_SAMPLES + PAD_SAMPLES + CELLS * CELLS + 8;
+constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8;
 constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = std::max(LOAD_AQ_LOCAL_PEAK, RESIDENT_X_B_PEAK);
 constexpr std::size_t SELECT_X_B_WORKSPACE_PEAK = RESIDENT_X_B_PEAK;
-constexpr std::size_t X_B_DCT_LOCAL_PEAK = 3 * TILE_SAMPLES;
+constexpr std::size_t X_B_DCT_LOCAL_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 32;
 constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = std::max(X_B_DCT_LOCAL_PEAK, RESIDENT_X_B_PEAK);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_PEAK;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
@@ -131,8 +139,9 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
                        in[(y + 2) * PAD + x - 1] + in[(y + 2) * PAD + x + 1]};
         const float d4{in[(y - 2) * PAD + x - 2] + in[(y - 2) * PAD + x + 2] +
                        in[(y + 2) * PAD + x - 2] + in[(y + 2) * PAD + x + 2]};
-        out[i] = GAB_WC * in[y * PAD + x] + GAB_WR * e + GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 +
-                 GAB_WD2 * d4;
+        out[(y - HALO) * TILE_STRIDE + x - HALO] = GAB_WC * in[y * PAD + x] + GAB_WR * e +
+                                                   GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 +
+                                                   GAB_WD2 * d4;
     }
 }
 
@@ -140,9 +149,10 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py
                                     float qgsf, float lambda, float* basis, float* rows, float* pd,
                                     float* pr, __half* ystore, int tid) {
     __syncthreads();
+    const int bs{n + 1};
     const float* src_basis{basis_for(n)};
     for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-        basis[e] = src_basis[e];
+        basis[(e / n) * bs + e % n] = src_basis[e];
     }
     __syncthreads();
 
@@ -150,9 +160,9 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py
         const int fx{e / n};
         const int r{e % n};
         float s{0.0f};
-        const float* prow{y + (py0 + r) * TILE_PX + px0};
+        const float* prow{y + (py0 + r) * TILE_STRIDE + px0};
         for (int c{0}; c < n; ++c) {
-            s += basis[fx * n + c] * prow[c];
+            s += basis[fx * bs + c] * prow[c];
         }
         rows[e] = s;
     }
@@ -166,14 +176,15 @@ __device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py
         const int fy{e % n};
         float coeff{0.0f};
         for (int r{0}; r < n; ++r) {
-            coeff += basis[fy * n + r] * rows[fx * n + r];
+            coeff += basis[fy * bs + r] * rows[fx * n + r];
         }
         ystore[e] = __float2half(coeff);
         if (fx < m && fy < m) {
             continue;
         }
-        int sx{static_cast<int>(lround(fx * 8.0 / n))};
-        int sy{static_cast<int>(lround(fy * 8.0 / n))};
+        // Nearest DCT8 position, ties away from zero.
+        int sx{(fx * 8 + n / 2) / n};
+        int sy{(fy * 8 + n / 2) / n};
         sx = sx > 7 ? 7 : sx;
         sy = sy > 7 ? 7 : sy;
         const float w{static_cast<float>(DCT8_DEQUANT_WEIGHTS[1][sx * 8 + sy])};
@@ -359,11 +370,12 @@ __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, 
             continue;
         }
 
+        const int bs{n + 1};
         __syncthreads();
         if (n != cur_basis_n) {
             const float* src_basis{basis_for(n)};
             for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-                basis[e] = src_basis[e];
+                basis[(e / n) * bs + e % n] = src_basis[e];
             }
             cur_basis_n = n;
             __syncthreads();
@@ -375,9 +387,9 @@ __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, 
             const int fx{e / n};
             const int r{e % n};
             float s{0.0f};
-            const float* prow{src + (py0 + r) * TILE_PX + px0};
+            const float* prow{src + (py0 + r) * TILE_STRIDE + px0};
             for (int col{0}; col < n; ++col) {
-                s += basis[fx * n + col] * prow[col];
+                s += basis[fx * bs + col] * prow[col];
             }
             rows[e] = s;
         }
@@ -387,7 +399,7 @@ __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, 
             const int fy{e % n};
             float coeff{0.0f};
             for (int r{0}; r < n; ++r) {
-                coeff += basis[fy * n + r] * rows[fx * n + r];
+                coeff += basis[fy * bs + r] * rows[fx * n + r];
             }
             dst[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(e))] =
                 __float2half(coeff);
@@ -406,7 +418,7 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     extern __shared__ __align__(16) unsigned char workspace_bytes[];
     float* workspace{reinterpret_cast<float*>(workspace_bytes)};
     float* sharp_y{workspace};
-    float* sh_y{sharp_y + TILE_SAMPLES};
+    float* sh_y{sharp_y + TILE_FLOATS};
     float* sh_pre{sh_y + PAD_SAMPLES};
     float* sh_red{sh_pre + CELLS * CELLS};
     float* raw_x{workspace + RESIDENT_X_B_OFFSET};
@@ -553,8 +565,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     gaborish_tile(sh_y, sharp_y, tid);
     __syncthreads();
 
-    float* basis{sharp_y + TILE_SAMPLES};
-    float* rows{basis + 32 * 32};
+    float* basis{sharp_y + TILE_FLOATS};
+    float* rows{basis + BASIS_FLOATS};
     float* pd{rows + 32 * 32};
     float* pr{pd + FRONTEND_THREADS};
     float* costs{pr + FRONTEND_THREADS};
@@ -564,8 +576,8 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
                        pr, costs, ystore, coeffs + cplane, acs, tid);
 
     float* sharp{workspace};
-    basis = sharp + TILE_SAMPLES;
-    rows = basis + 32 * 32;
+    basis = sharp + TILE_FLOATS;
+    rows = basis + BASIS_FLOATS;
     gaborish_tile(raw_x, sharp, tid);
     __syncthreads();
     forward_channel(sharp, tbx0, tby0, bw, bh, acs, basis, rows, coeffs, tid);
