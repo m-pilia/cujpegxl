@@ -91,6 +91,10 @@ The implementation is a derivative work of libjxl, see the License section below
 
 The source code of this project is almost entirely LLM-generated, using a mix of GLM-5.3, GLM-5.2, GPT-5.6 Sol, and Claude Opus 4.8.
 
+## Disclaimer
+
+JPEG and JPEG XL are trademarks of their respective owners. cujpegxl is an independent project and is not affiliated with or endorsed by the JPEG committee.
+
 ## License
 
 The cujpegxl software is made available under a [BSD-3-Clause license](https://raw.githubusercontent.com/m-pilia/cujpegxl/c369abf5f4436c51bab95635b6ac3ca4ad2a7244/LICENSE?token=GHSAT0AAAAAAD7IWYDCTWYTLNESHJQFQP5S2UFY2GA).
