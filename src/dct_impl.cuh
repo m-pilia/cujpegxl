@@ -53,6 +53,20 @@ __device__ inline float dct_coeff_entry(const float* __restrict__ basis, int n, 
     return coeff;
 }
 
+// Vertical pass for the coefficients (fx, fy) and (fx, fy + 1), with each
+// horizontal-pass row loaded once for both sums.
+__device__ inline void dct_coeff_pair(const float* __restrict__ basis, int n, int fy,
+                                      const float* __restrict__ rows_fx, float& coeff0,
+                                      float& coeff1) {
+    coeff0 = 0.0f;
+    coeff1 = 0.0f;
+    for (int r{0}; r < n; ++r) {
+        const float row{rows_fx[r]};
+        coeff0 += basis[fy * (n + 1) + r] * row;
+        coeff1 += basis[(fy + 1) * (n + 1) + r] * row;
+    }
+}
+
 }  // namespace cujpegxl
 
 #endif  // CUJPEGXL_SRC_DCT_IMPL_CUH_

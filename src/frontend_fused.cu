@@ -441,7 +441,8 @@ __device__ RegionTransform region_transform(int k, std::uint32_t layout, std::si
 }
 
 // DCT of all transforms of the region for CHANNELS planes at once. Each warp's
-// 32 consecutive k fall within one transform.
+// consecutive k fall within one transform. The vertical pass gives each thread
+// the pair k, k + 1 (k even): both share fx and land in adjacent plane slots.
 template <int CHANNELS>
 __device__ void forward_region(const float* const (&sharp)[CHANNELS], const float* bases,
                                float* const (&rows)[CHANNELS], std::uint32_t layout,
@@ -461,7 +462,7 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
         }
     }
     __syncthreads();
-    for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
+    for (int k{2 * tid}; k < TILE_SAMPLES; k += 2 * FRONTEND_THREADS) {
         const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
         if (t.n == 0) {
             continue;
@@ -473,7 +474,10 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
             covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
 #pragma unroll
         for (int c{0}; c < CHANNELS; ++c) {
-            dst[c][slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows[c] + rows_fx));
+            float c0{};
+            float c1{};
+            dct_coeff_pair(basis, t.n, e % t.n, rows[c] + rows_fx, c0, c1);
+            *reinterpret_cast<__half2*>(dst[c] + slot) = __floats2half2_rn(c0, c1);
         }
     }
 }
