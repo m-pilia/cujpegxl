@@ -10,6 +10,9 @@ build --host_copt=-O3
 
 build --@rules_cuda//cuda:compiler=clang
 build --@rules_cuda//cuda:archs=sm_61;sm_87
+# 32-bit shared, constant and local pointers; clang defaults to 64-bit, which
+# spends a register pair on every shared-memory address.
+build --@rules_cuda//cuda:copts=-fcuda-short-ptr
 
 # Drive CUDA device compilation with the registered hermetic clang cc toolchain
 # rather than whatever clang is on PATH, so the PTX ISA version stays matched to
