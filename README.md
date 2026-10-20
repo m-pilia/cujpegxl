@@ -1,5 +1,7 @@
 # cujpegxl - CUDA-accelerated JPEG XL encoder
 
+![logo](doc/logo_light.svg)
+
 [![CI](https://github.com/m-pilia/cujpegxl/actions/workflows/ci.yaml/badge.svg)](https://github.com/m-pilia/cujpegxl/actions/workflows/ci.yaml)
 
 This project is a CUDA port of a JPEG XL encoder, implementing a GPU- and real-time-friendly subset of the JPEG XL algorithm.
