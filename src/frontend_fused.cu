@@ -52,9 +52,12 @@ constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
 static_assert(TILE_SAMPLES + SELECT_COST_FLOATS + 1 <= TILE_FLOATS);
 // The selection's partial cost sums reuse its horizontal-pass rows.
 static_assert(2 * FRONTEND_THREADS <= TILE_SAMPLES);
+// The region DCT's horizontal-pass rows, padded by region_row_index.
+constexpr int REGION_ROWS_FLOATS = TILE_SAMPLES + TILE_SAMPLES / 32;
+static_assert(REGION_ROWS_FLOATS <= TILE_FLOATS);
 // The X/B horizontal-pass rows reuse the raw X and B planes once gaborish has
 // consumed them.
-static_assert(TILE_SAMPLES <= PAD_SAMPLES);
+static_assert(REGION_ROWS_FLOATS <= PAD_SAMPLES);
 constexpr std::size_t RESIDENT_X_B_OFFSET = std::max(LOAD_AQ_LOCAL_PEAK, REGION_LOCAL_PEAK);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
@@ -501,9 +504,18 @@ __device__ RegionTransform region_transform(int k, std::uint32_t layout, std::si
     return {8, k - k % 64, qpx + 8 * (sub % 2), qpy + 8 * (sub / 2), bx, by};
 }
 
-// DCT of all transforms of the region for CHANNELS planes at once. Each warp's
-// consecutive k fall within one transform. The vertical pass gives each thread
-// the pair k, k + 1 (k even): both share fx and land in adjacent plane slots.
+// Shared-memory index of region DCT horizontal-pass entry k: one padding float
+// after every 32 entries. In the vertical pass the lanes of a warp read the rows
+// of up to 16 frequencies fx at the same index; the padding maps them to
+// distinct banks.
+__device__ inline int region_row_index(int k) {
+    return k + k / 32;
+}
+
+// DCT of all transforms of the region for CHANNELS planes at once; the channels
+// share each basis load. Each warp's consecutive k fall within one transform.
+// The vertical pass gives each thread four consecutive k from a multiple of
+// four: they share fx and land in consecutive plane slots.
 template <int CHANNELS>
 __device__ void forward_region(const float* const (&sharp)[CHANNELS], const float* bases,
                                float* const (&rows)[CHANNELS], std::uint32_t layout,
@@ -517,32 +529,51 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
         const int e{k - t.first_k};
         const float* basis_row{dct_basis_row(region_basis(bases, t.n), t.n, e / t.n)};
         const int pixel_row{(t.py0 + e % t.n) * TILE_STRIDE + t.px0};
+        const float* basis_rows[CHANNELS];
+        const float* pixel_rows[CHANNELS];
 #pragma unroll
         for (int c{0}; c < CHANNELS; ++c) {
-            float row[1];
-            dct_dots<1>(t.n, {basis_row}, {sharp[c] + pixel_row}, row);
-            rows[c][k] = row[0];
+            basis_rows[c] = basis_row;
+            pixel_rows[c] = sharp[c] + pixel_row;
+        }
+        float row[CHANNELS];
+        dct_dots<CHANNELS>(t.n, basis_rows, pixel_rows, row);
+#pragma unroll
+        for (int c{0}; c < CHANNELS; ++c) {
+            rows[c][region_row_index(k)] = row[c];
         }
     }
     __syncthreads();
-    for (int k{2 * tid}; k < TILE_SAMPLES; k += 2 * FRONTEND_THREADS) {
+    constexpr int RUN{4};
+    for (int k{RUN * tid}; k < TILE_SAMPLES; k += RUN * FRONTEND_THREADS) {
         const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
         if (t.n == 0) {
             continue;
         }
         const float* basis{region_basis(bases, t.n)};
         const int e{k - t.first_k};
-        const int rows_fx{t.first_k + (e / t.n) * t.n};
-        const float* basis_row0{dct_basis_row(basis, t.n, e % t.n)};
-        const float* basis_row1{dct_basis_row(basis, t.n, e % t.n + 1)};
+        const int rows_fx{region_row_index(t.first_k + (e / t.n) * t.n)};
+        const float* basis_rows[RUN * CHANNELS];
+        const float* vectors[RUN * CHANNELS];
+#pragma unroll
+        for (int c{0}; c < CHANNELS; ++c) {
+#pragma unroll
+            for (int i{0}; i < RUN; ++i) {
+                basis_rows[RUN * c + i] = dct_basis_row(basis, t.n, e % t.n + i);
+                vectors[RUN * c + i] = rows[c] + rows_fx;
+            }
+        }
+        float coeffs[RUN * CHANNELS];
+        dct_dots<RUN * CHANNELS>(t.n, basis_rows, vectors, coeffs);
         const std::size_t slot{
             covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
 #pragma unroll
         for (int c{0}; c < CHANNELS; ++c) {
-            const float* rows_c{rows[c] + rows_fx};
-            float coeff[2];
-            dct_dots<2>(t.n, {basis_row0, basis_row1}, {rows_c, rows_c}, coeff);
-            *reinterpret_cast<__half2*>(dst[c] + slot) = __floats2half2_rn(coeff[0], coeff[1]);
+#pragma unroll
+            for (int i{0}; i < RUN; i += 2) {
+                *reinterpret_cast<__half2*>(dst[c] + slot + i) =
+                    __floats2half2_rn(coeffs[RUN * c + i], coeffs[RUN * c + i + 1]);
+            }
         }
     }
 }
@@ -712,6 +743,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
                                                  TRANSFORM_SELECT_LAMBDA, bases, rows, costs, acs,
                                                  coeffs + cplane, tid)};
     if (layout != WHOLE32_LAYOUT) {
+        // The padded Y rows overlap the selection costs and the layout word.
+        __syncthreads();
         forward_region<1>({sharp_y}, bases, {rows}, layout, tbx0, tby0, bw, bh, {coeffs + cplane},
                           tid);
     }
