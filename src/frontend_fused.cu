@@ -47,8 +47,9 @@ constexpr int BASIS16_OFFSET = 8 * (8 + 1);
 constexpr int BASIS32_OFFSET = BASIS16_OFFSET + 16 * (16 + 1);
 constexpr std::size_t BASES_OFFSET = 2 * TILE_FLOATS;
 constexpr std::size_t REGION_LOCAL_PEAK = BASES_OFFSET + BASIS32_OFFSET + 32 * (32 + 1);
+// The selection costs are followed by one word for the region layout.
 constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
-static_assert(TILE_SAMPLES + SELECT_COST_FLOATS <= TILE_FLOATS);
+static_assert(TILE_SAMPLES + SELECT_COST_FLOATS + 1 <= TILE_FLOATS);
 // The selection's partial cost sums reuse its horizontal-pass rows.
 static_assert(2 * FRONTEND_THREADS <= TILE_SAMPLES);
 // The X/B horizontal-pass rows reuse the raw X and B planes once gaborish has
@@ -231,10 +232,14 @@ __device__ void candidate_coeff(const float* basis, const float* rows, int idx, 
 // the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
 // accumulates into slot e % 256 in increasing e. Each candidate size spreads its
 // coefficients over the warps so that the leading strides fold locally.
-__device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
-                                  std::size_t bw, std::size_t bh, float qgsf, float lambda,
-                                  const float* bases, float* rows, float* costs,
-                                  std::int8_t* __restrict__ acs, int tid) {
+//
+// Returns the region layout: byte q holds the side (8, 16 or 32) of the
+// transforms covering quadrant q, or 0 if the quadrant lies outside the image.
+__device__ std::uint32_t select_transforms(const float* __restrict__ y, std::size_t rbx,
+                                           std::size_t rby, std::size_t bw, std::size_t bh,
+                                           float qgsf, float lambda, const float* bases,
+                                           float* rows, float* costs, std::int8_t* __restrict__ acs,
+                                           int tid) {
     const float* basis8{region_basis(bases, 8)};
     const float* basis16{region_basis(bases, 16)};
     const float* basis32{region_basis(bases, 32)};
@@ -243,6 +248,7 @@ __device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, 
     float* cost8{costs};
     float* cost16{cost8 + 16};
     float* cost32{cost16 + 4};
+    std::uint32_t* layout_word{reinterpret_cast<std::uint32_t*>(cost32 + 1)};
     constexpr float INF{1.0e30f};
     const int lane{tid % 32};
     const int warp{tid / 32};
@@ -323,6 +329,7 @@ __device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, 
 
     if (tid == 0) {
         float split_cost{0.0f};
+        std::uint32_t split_layout{0};
         int quad_choice[2][2];
         for (int qy{0}; qy < 2; ++qy) {
             for (int qx{0}; qx < 2; ++qx) {
@@ -353,10 +360,13 @@ __device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, 
                     quad_choice[qy][qx] = 8;
                     split_cost += sum8;
                 }
+                split_layout |= static_cast<std::uint32_t>(quad_choice[qy][qx])
+                                << (8 * (qy * 2 + qx));
             }
         }
 
-        if (fit32 && *cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS) {
+        const bool whole32{fit32 && *cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS};
+        if (whole32) {
             write_first_block(acs, bw, rbx, rby, 32);
         } else {
             for (int qy{0}; qy < 2; ++qy) {
@@ -383,8 +393,10 @@ __device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, 
                 }
             }
         }
+        *layout_word = whole32 ? 0x20202020u : split_layout;
     }
     __syncthreads();
+    return *layout_word;
 }
 
 // Transform of a region (one CUDA block's TB x TB blocks) that owns region
@@ -392,6 +404,7 @@ __device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, 
 // order, so quadrant q holds k in [256 q, 256 q + 256) unless the region is one
 // DCT32; within a quadrant split into 8x8 transforms, sub-block (dx, dy) holds
 // the 64 entries from 64 * (2 dy + dx). n == 0 marks a k outside the image.
+// `layout` is the region layout returned by select_transforms.
 struct RegionTransform {
     int n;
     int first_k;
@@ -401,20 +414,21 @@ struct RegionTransform {
     std::size_t by;
 };
 
-__device__ RegionTransform region_transform(int k, std::size_t rbx, std::size_t rby, std::size_t bw,
-                                            std::size_t bh, const std::int8_t* __restrict__ acs) {
-    if (acs[rby * bw + rbx] == 32) {
+__device__ RegionTransform region_transform(int k, std::uint32_t layout, std::size_t rbx,
+                                            std::size_t rby, std::size_t bw, std::size_t bh) {
+    const int q{k / 256};
+    const int n{static_cast<int>((layout >> (8 * q)) & 0xffu)};
+    if (n == 32) {
         return {32, 0, 0, 0, rbx, rby};
     }
-    const int q{k / 256};
+    if (n == 0) {
+        return {};
+    }
     const int qpx{16 * (q % 2)};
     const int qpy{16 * (q / 2)};
     const std::size_t qbx{rbx + static_cast<std::size_t>(qpx / 8)};
     const std::size_t qby{rby + static_cast<std::size_t>(qpy / 8)};
-    if (qbx >= bw || qby >= bh) {
-        return {};
-    }
-    if (acs[qby * bw + qbx] == 16) {
+    if (n == 16) {
         return {16, 256 * q, qpx, qpy, qbx, qby};
     }
     const int sub{(k % 256) / 64};
@@ -430,11 +444,11 @@ __device__ RegionTransform region_transform(int k, std::size_t rbx, std::size_t 
 // 32 consecutive k fall within one transform.
 template <int CHANNELS>
 __device__ void forward_region(const float* const (&sharp)[CHANNELS], const float* bases,
-                               float* const (&rows)[CHANNELS], std::size_t rbx, std::size_t rby,
-                               std::size_t bw, std::size_t bh, const std::int8_t* __restrict__ acs,
+                               float* const (&rows)[CHANNELS], std::uint32_t layout,
+                               std::size_t rbx, std::size_t rby, std::size_t bw, std::size_t bh,
                                __half* const (&dst)[CHANNELS], int tid) {
     for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
-        const RegionTransform t{region_transform(k, rbx, rby, bw, bh, acs)};
+        const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
         if (t.n == 0) {
             continue;
         }
@@ -448,7 +462,7 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
     }
     __syncthreads();
     for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
-        const RegionTransform t{region_transform(k, rbx, rby, bw, bh, acs)};
+        const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
         if (t.n == 0) {
             continue;
         }
@@ -624,11 +638,11 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     float* bases{workspace + BASES_OFFSET};
     load_bases(bases, tid);
     __syncthreads();
-    select_transforms(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, bases, rows,
-                      costs, acs, tid);
+    const std::uint32_t layout{select_transforms(
+        sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, bases, rows, costs, acs, tid)};
 
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    forward_region<1>({sharp_y}, bases, {rows}, tbx0, tby0, bw, bh, acs, {coeffs + cplane}, tid);
+    forward_region<1>({sharp_y}, bases, {rows}, layout, tbx0, tby0, bw, bh, {coeffs + cplane}, tid);
     __syncthreads();
 
     float* sharp_x{workspace};
@@ -636,7 +650,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    forward_region<2>({sharp_x, sharp_b}, bases, {raw_x, raw_b}, tbx0, tby0, bw, bh, acs,
+    forward_region<2>({sharp_x, sharp_b}, bases, {raw_x, raw_b}, layout, tbx0, tby0, bw, bh,
                       {coeffs, coeffs + 2 * cplane}, tid);
 }
 
