@@ -50,8 +50,16 @@ constexpr std::size_t RESIDENT_X_B_PEAK = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8;
 constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = std::max(LOAD_AQ_LOCAL_PEAK, RESIDENT_X_B_PEAK);
 constexpr std::size_t SELECT_X_B_WORKSPACE_PEAK = RESIDENT_X_B_PEAK;
-constexpr std::size_t X_B_DCT_LOCAL_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 32;
+// The X/B DCT keeps the 8-, 16- and 32-point bases resident at these offsets.
+constexpr int X_B_BASIS16_OFFSET = 8 * (8 + 1);
+constexpr int X_B_BASIS32_OFFSET = X_B_BASIS16_OFFSET + 16 * (16 + 1);
+constexpr std::size_t X_B_BASES_FLOATS = X_B_BASIS32_OFFSET + 32 * (32 + 1);
+constexpr std::size_t X_B_DCT_LOCAL_PEAK = 2 * TILE_FLOATS + X_B_BASES_FLOATS;
 constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = std::max(X_B_DCT_LOCAL_PEAK, RESIDENT_X_B_PEAK);
+// The X/B horizontal-pass rows reuse the raw X and B planes once gaborish has
+// consumed them, so the gaborish outputs and bases must stay clear of them.
+static_assert(X_B_DCT_LOCAL_PEAK <= RESIDENT_X_B_OFFSET);
+static_assert(TILE_SAMPLES <= PAD_SAMPLES);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_PEAK;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 static_assert(LOAD_AQ_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
@@ -403,40 +411,80 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
     __syncthreads();
 }
 
-__device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, std::size_t rby,
-                                std::size_t bw, std::size_t bh, const std::int8_t* __restrict__ acs,
-                                float* basis, float* rows, __half* dst, int tid) {
-    int cur_basis_n{0};
-    for (int p{0}; p < 16; ++p) {
-        const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
-        const std::size_t by{rby + static_cast<std::size_t>(p / 4)};
-        if (bx >= bw || by >= bh) {
+// Transform of a region (one CUDA block's TB x TB blocks) that owns region
+// coefficient k. The region coefficients concatenate the transforms in quadrant
+// order, so quadrant q holds k in [256 q, 256 q + 256) unless the region is one
+// DCT32; within a quadrant split into 8x8 transforms, sub-block (dx, dy) holds
+// the 64 entries from 64 * (2 dy + dx). n == 0 marks a k outside the image.
+struct RegionTransform {
+    int n;
+    int first_k;
+    int px0;
+    int py0;
+    std::size_t bx;
+    std::size_t by;
+};
+
+__device__ RegionTransform region_transform(int k, std::size_t rbx, std::size_t rby, std::size_t bw,
+                                            std::size_t bh, const std::int8_t* __restrict__ acs) {
+    if (acs[rby * bw + rbx] == 32) {
+        return {32, 0, 0, 0, rbx, rby};
+    }
+    const int q{k / 256};
+    const int qpx{16 * (q % 2)};
+    const int qpy{16 * (q / 2)};
+    const std::size_t qbx{rbx + static_cast<std::size_t>(qpx / 8)};
+    const std::size_t qby{rby + static_cast<std::size_t>(qpy / 8)};
+    if (qbx >= bw || qby >= bh) {
+        return {};
+    }
+    if (acs[qby * bw + qbx] == 16) {
+        return {16, 256 * q, qpx, qpy, qbx, qby};
+    }
+    const int sub{(k % 256) / 64};
+    const std::size_t bx{qbx + static_cast<std::size_t>(sub % 2)};
+    const std::size_t by{qby + static_cast<std::size_t>(sub / 2)};
+    if (bx >= bw || by >= bh) {
+        return {};
+    }
+    return {8, k - k % 64, qpx + 8 * (sub % 2), qpy + 8 * (sub / 2), bx, by};
+}
+
+__device__ inline const float* x_b_basis(const float* bases, int n) {
+    return bases + (n == 32 ? X_B_BASIS32_OFFSET : (n == 16 ? X_B_BASIS16_OFFSET : 0));
+}
+
+// DCT of all transforms of the region for X and B at once. Each warp's 32
+// consecutive k fall within one transform.
+__device__ void forward_x_b(const float* __restrict__ sharp_x, const float* __restrict__ sharp_b,
+                            const float* bases, float* rows_x, float* rows_b, std::size_t rbx,
+                            std::size_t rby, std::size_t bw, std::size_t bh,
+                            const std::int8_t* __restrict__ acs, __half* dst_x, __half* dst_b,
+                            int tid) {
+    for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
+        const RegionTransform t{region_transform(k, rbx, rby, bw, bh, acs)};
+        if (t.n == 0) {
             continue;
         }
-        const int n{acs[by * bw + bx]};
-        if (n == ACS_COVERED) {
+        const float* basis{x_b_basis(bases, t.n)};
+        const int e{k - t.first_k};
+        const int pixel_row{(t.py0 + e % t.n) * TILE_STRIDE + t.px0};
+        rows_x[k] = dct_rows_entry(basis, t.n, e / t.n, sharp_x + pixel_row);
+        rows_b[k] = dct_rows_entry(basis, t.n, e / t.n, sharp_b + pixel_row);
+    }
+    __syncthreads();
+    for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
+        const RegionTransform t{region_transform(k, rbx, rby, bw, bh, acs)};
+        if (t.n == 0) {
             continue;
         }
-
-        __syncthreads();
-        if (n != cur_basis_n) {
-            load_dct_basis(basis_for(n), basis, n, tid, FRONTEND_THREADS);
-            cur_basis_n = n;
-            __syncthreads();
-        }
-
-        const int px0{static_cast<int>(bx - rbx) * 8};
-        const int py0{static_cast<int>(by - rby) * 8};
-        for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-            rows[e] = dct_rows_entry(basis, n, e / n, src + (py0 + e % n) * TILE_STRIDE + px0);
-        }
-        __syncthreads();
-        for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-            const float coeff{dct_coeff_entry(basis, n, e % n, rows + (e / n) * n)};
-            dst[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(e))] =
-                __float2half(coeff);
-        }
-        __syncthreads();
+        const float* basis{x_b_basis(bases, t.n)};
+        const int e{k - t.first_k};
+        const int rows_fx{t.first_k + (e / t.n) * t.n};
+        const std::size_t slot{
+            covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
+        dst_x[slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows_x + rows_fx));
+        dst_b[slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows_b + rows_fx));
     }
 }
 
@@ -607,15 +655,17 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
     select_and_store_y(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows, pd,
                        pr, costs, ystore, coeffs + cplane, acs, tid);
 
-    float* sharp{workspace};
-    basis = sharp + TILE_FLOATS;
-    rows = basis + BASIS_FLOATS;
-    gaborish_tile(raw_x, sharp, tid);
+    float* sharp_x{workspace};
+    float* sharp_b{sharp_x + TILE_FLOATS};
+    float* bases{sharp_b + TILE_FLOATS};
+    load_dct_basis(g_basis8, bases, 8, tid, FRONTEND_THREADS);
+    load_dct_basis(g_basis16, bases + X_B_BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
+    load_dct_basis(g_basis32, bases + X_B_BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
+    gaborish_tile(raw_x, sharp_x, tid);
+    gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    forward_channel(sharp, tbx0, tby0, bw, bh, acs, basis, rows, coeffs, tid);
-    gaborish_tile(raw_b, sharp, tid);
-    __syncthreads();
-    forward_channel(sharp, tbx0, tby0, bw, bh, acs, basis, rows, coeffs + 2 * cplane, tid);
+    forward_x_b(sharp_x, sharp_b, bases, raw_x, raw_b, tbx0, tby0, bw, bh, acs, coeffs,
+                coeffs + 2 * cplane, tid);
 }
 
 }  // namespace
