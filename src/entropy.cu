@@ -750,15 +750,19 @@ __device__ void for_each_token_ctx(const std::int16_t* plane, std::size_t bx, st
     }
 }
 
-// Builds the mixed-block non-zero grids in one scan per first-block/channel:
-// `nz_grid` gets the normalized count ((nz + covered - 1) >> log2_covered)
-// broadcast to all covered positions (used for neighbor prediction), while
-// `nz_exact` records the raw count at the first-block position (consumed by the
-// tokenizers so they skip re-counting).
+// Builds the mixed-block non-zero grids, one warp per 8x8 position: `nz_grid`
+// gets the normalized count ((nz + covered - 1) >> log2_covered) broadcast to all
+// covered positions (used for neighbor prediction), while `nz_exact` records the
+// raw count at the first-block position (consumed by the tokenizers so they skip
+// re-counting). The count over order[covered..size) is order-free: since `order`
+// is a permutation, it equals the count over all of the transform's slots, read
+// as coalesced 128-byte rows, minus the count at the order[0..covered) slots.
+constexpr unsigned int NZ_GRID_THREADS = 256;
+
 __global__ void ac_nzeros_grid_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                       std::size_t bw, std::size_t bh, std::size_t nblocks,
                                       std::int32_t* nz_grid, std::int32_t* nz_exact) {
-    const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
+    const std::size_t block{(blockIdx.x * static_cast<std::size_t>(blockDim.x) + threadIdx.x) / 32};
     if (block >= bw * bh) {
         return;
     }
@@ -766,29 +770,45 @@ __global__ void ac_nzeros_grid_kernel(const std::int16_t* ac, const std::int8_t*
     if (side == ACS_COVERED) {
         return;
     }
+    const unsigned int lane{threadIdx.x % 32};
     const std::size_t bx{block % bw};
     const std::size_t by{block / bw};
     const int cx{side / 8};
     const std::uint32_t covered{static_cast<std::uint32_t>(cx * cx)};
-    const std::uint32_t size{static_cast<std::uint32_t>(side * side)};
     const std::uint32_t l2{side == 16 ? 2u : (side == 32 ? 4u : 0u)};
-    const std::uint32_t* order{natural_order_dev(side)};
-    for (int p{0}; p < 3; ++p) {
-        const int c{CHANNEL_ORDER[p]};
-        const std::int16_t* plane{ac + static_cast<std::size_t>(c) * nblocks * COEFFS_PER_BLOCK};
-        std::int32_t nz{0};
-        for (std::uint32_t k{covered}; k < size; ++k) {
-            if (plane[covered_plane_slot(side, bx, by, bw, order[k])] != 0) {
-                ++nz;
-            }
+    const std::size_t plane_stride{nblocks * COEFFS_PER_BLOCK};
+
+    std::int32_t nz[3]{0, 0, 0};
+    for (std::uint32_t q{0}; q < covered; ++q) {
+        const std::size_t sub{(by + q / cx) * bw + (bx + q % cx)};
+        std::uint32_t words[3];
+        for (int c{0}; c < 3; ++c) {
+            words[c] = reinterpret_cast<const std::uint32_t*>(
+                ac + static_cast<std::size_t>(c) * plane_stride + sub * COEFFS_PER_BLOCK)[lane];
         }
-        nz_exact[static_cast<std::size_t>(c) * nblocks + block] = nz;
-        const std::int32_t norm{
-            static_cast<std::int32_t>((static_cast<std::uint32_t>(nz) + covered - 1) >> l2)};
-        for (int dy{0}; dy < cx; ++dy) {
-            for (int dx{0}; dx < cx; ++dx) {
-                nz_grid[static_cast<std::size_t>(c) * nblocks + (by + dy) * bw + (bx + dx)] = norm;
-            }
+        for (int c{0}; c < 3; ++c) {
+            nz[c] += __popc(__ballot_sync(~0u, (words[c] & 0xFFFFu) != 0)) +
+                     __popc(__ballot_sync(~0u, (words[c] >> 16) != 0));
+        }
+    }
+    const bool llf_lane{lane < covered};
+    const std::size_t llf_slot{
+        llf_lane ? covered_plane_slot(side, bx, by, bw, natural_order_dev(side)[lane]) : 0};
+    for (int c{0}; c < 3; ++c) {
+        const bool llf_nonzero{llf_lane &&
+                               ac[static_cast<std::size_t>(c) * plane_stride + llf_slot] != 0};
+        nz[c] -= __popc(__ballot_sync(~0u, llf_nonzero));
+    }
+
+    for (int c{0}; c < 3; ++c) {
+        const std::size_t base{static_cast<std::size_t>(c) * nblocks};
+        if (lane == 0) {
+            nz_exact[base + block] = nz[c];
+        }
+        if (llf_lane) {
+            const std::int32_t norm{
+                static_cast<std::int32_t>((static_cast<std::uint32_t>(nz[c]) + covered - 1) >> l2)};
+            nz_grid[base + (by + lane / cx) * bw + (bx + lane % cx)] = norm;
         }
     }
 }
@@ -1002,9 +1022,10 @@ bool ac_nonzero_grids(const std::int16_t* ac, const std::int8_t* acs, std::size_
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    const unsigned int threads{256};
-    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((nblocks + threads - 1) / threads),
-                            threads>>>(ac, acs, bw, bh, nblocks, nz_grid, nz_exact);
+    const std::size_t blocks_per_cta{NZ_GRID_THREADS / 32};
+    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((nblocks + blocks_per_cta - 1) /
+                                                      blocks_per_cta),
+                            NZ_GRID_THREADS>>>(ac, acs, bw, bh, nblocks, nz_grid, nz_exact);
     return cudaGetLastError() == cudaSuccess;
 }
 
