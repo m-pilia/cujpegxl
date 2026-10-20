@@ -118,10 +118,13 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     // Per-DcGroup first-block counts (drive the AcMetadata `count` field) reduced
     // on-device, replacing the host count loop and the full acs D2H copy.
     std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
-    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fbc) {
+    std::int32_t* d_nz_grid{scope.alloc<std::int32_t>(3 * bw * bh)};
+    std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * bw * bh)};
+    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fbc || !d_nz_grid || !d_nz_exact) {
         return false;
     }
-    if (!ac_build_histogram(ac_device, acs, width, height, d_ac_hist) ||
+    if (!ac_nonzero_grids(ac_device, acs, width, height, d_nz_grid, d_nz_exact) ||
+        !ac_build_histogram(ac_device, acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist) ||
         !dc_first_block_counts(acs, width, height, d_fbc)) {
@@ -183,9 +186,9 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    const bool ac_encoded{ac_encode_groups(ac_device, acs, width, height, d_ac_depth, d_ac_bits,
-                                           d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets,
-                                           &ac_total)};
+    const bool ac_encoded{ac_encode_groups(ac_device, acs, d_nz_grid, d_nz_exact, width, height,
+                                           d_ac_depth, d_ac_bits, d_ac_body, ac_capacity,
+                                           d_ac_sizes, d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
         return false;
     }

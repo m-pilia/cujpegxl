@@ -152,6 +152,12 @@ int main(int argc, char** argv) {
                 args.distance, args.iterations);
 
     cudaSetDevice(0);
+    // Mirrors frame_encoder.cu: without it every sync returns the entropy wrappers'
+    // cudaMallocAsync scratch to the driver and the next frame re-allocates it.
+    cudaMemPool_t pool{};
+    cudaDeviceGetDefaultMemPool(&pool, 0);
+    std::uint64_t threshold{UINT64_MAX};
+    cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold);
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t blocks{bw * bh};
@@ -169,6 +175,8 @@ int main(int argc, char** argv) {
     std::int32_t* d_qf{device_alloc<std::int32_t>(blocks)};
     std::int16_t* d_ac16{device_alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
     std::int32_t* d_dc32{device_alloc<std::int32_t>(3 * blocks)};
+    std::int32_t* d_nz_grid{device_alloc<std::int32_t>(3 * blocks)};
+    std::int32_t* d_nz_exact{device_alloc<std::int32_t>(3 * blocks)};
     std::uint32_t* d_ac_hist{device_alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
@@ -212,6 +220,7 @@ int main(int argc, char** argv) {
     Stage s_fe{"frontend_fused"};
     Stage s_cfl{"estimate_cfl_covered"};
     Stage s_qz{"quantize_residual"};
+    Stage s_nz{"ac_nonzero_grids"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
@@ -244,7 +253,11 @@ int main(int argc, char** argv) {
         });
 
         // Entropy sub-stages, in encode_frame order.
-        timed(s_ach, record, [&] { ac_build_histogram(d_ac16, d_acs, width, height, d_ac_hist); });
+        timed(s_nz, record,
+              [&] { ac_nonzero_grids(d_ac16, d_acs, width, height, d_nz_grid, d_nz_exact); });
+        timed(s_ach, record, [&] {
+            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist);
+        });
         timed(s_dch, record, [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist); });
         timed(s_amh, record,
               [&] { acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist); });
@@ -264,8 +277,9 @@ int main(int argc, char** argv) {
         std::size_t ac_total{0};
         std::size_t dc_total{0};
         timed(s_ace, record, [&] {
-            ac_encode_groups(d_ac16, d_acs, width, height, d_ac_depth, d_ac_bits, d_ac_body,
-                             ac_capacity, d_ac_sizes, d_ac_offsets, &ac_total);
+            ac_encode_groups(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_depth,
+                             d_ac_bits, d_ac_body, ac_capacity, d_ac_sizes, d_ac_offsets,
+                             &ac_total);
         });
         timed(s_dce, record, [&] {
             dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_dc_depth, d_dc_bits,
@@ -314,7 +328,7 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc,
+    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_nz,  &s_ach, &s_dch, &s_amh, &s_fbc,
                           &s_acg, &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};

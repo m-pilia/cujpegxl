@@ -44,6 +44,8 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     std::uint8_t* d_depth{nullptr};
     std::uint16_t* d_bits{nullptr};
     std::uint32_t* d_hist{nullptr};
+    std::int32_t* d_nz_grid{nullptr};
+    std::int32_t* d_nz_exact{nullptr};
     std::uint32_t* d_sizes{nullptr};
     std::uint32_t* d_offsets{nullptr};
     std::uint8_t* d_out{nullptr};
@@ -51,15 +53,17 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) && upload(depth, &d_depth) &&
             upload(bits, &d_bits) &&
             cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_nz_grid, 3 * blocks * sizeof(std::int32_t)) == cudaSuccess &&
+            cudaMalloc(&d_nz_exact, 3 * blocks * sizeof(std::int32_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
-    (void)blocks;
 
     std::size_t total_bytes{0};
-    ok = ok && ac_build_histogram(d_ac, d_acs, width, height, d_hist);
-    ok = ok && ac_encode_groups(d_ac, d_acs, width, height, d_depth, d_bits, d_out, capacity,
-                                d_sizes, d_offsets, &total_bytes);
+    ok = ok && ac_nonzero_grids(d_ac, d_acs, width, height, d_nz_grid, d_nz_exact);
+    ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist);
+    ok = ok && ac_encode_groups(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_depth, d_bits,
+                                d_out, capacity, d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
         out.histogram.assign(AC_HIST_SPAN, 0);
@@ -81,6 +85,8 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     cudaFree(d_depth);
     cudaFree(d_bits);
     cudaFree(d_hist);
+    cudaFree(d_nz_grid);
+    cudaFree(d_nz_exact);
     cudaFree(d_sizes);
     cudaFree(d_offsets);
     cudaFree(d_out);

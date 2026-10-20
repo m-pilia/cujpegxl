@@ -996,8 +996,21 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height) {
     return xg * yg;
 }
 
-bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                        std::size_t height, std::uint32_t* histogram) {
+bool ac_nonzero_grids(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
+                      std::size_t height, std::int32_t* nz_grid, std::int32_t* nz_exact) {
+    ensure_constants();
+    const std::size_t bw{width / 8};
+    const std::size_t bh{height / 8};
+    const std::size_t nblocks{bw * bh};
+    const unsigned int threads{256};
+    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((nblocks + threads - 1) / threads),
+                            threads>>>(ac, acs, bw, bh, nblocks, nz_grid, nz_exact);
+    return cudaGetLastError() == cudaSuccess;
+}
+
+bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
+                        const std::int32_t* nz_exact, std::size_t width, std::size_t height,
+                        std::uint32_t* histogram) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1005,34 +1018,21 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, std::siz
     if (cudaMemsetAsync(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t), 0) != cudaSuccess) {
         return false;
     }
-    std::int32_t* nz_grid{nullptr};
-    std::int32_t* nz_exact{nullptr};
-    if (cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
-        return false;
-    }
-    if (cudaMallocAsync(&nz_exact, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
-        cudaFreeAsync(nz_grid, 0);
-        return false;
-    }
-    const unsigned int gthreads{256};
-    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((bw * bh + gthreads - 1) / gthreads),
-                            gthreads>>>(ac, acs, bw, bh, nblocks, nz_grid, nz_exact);
     const std::size_t total{3 * bw * bh};
     const unsigned int threads{256};
     const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
     histogram_kernel<<<blocks, threads>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, histogram);
-    const bool ok{cudaGetLastError() == cudaSuccess};
-    cudaFreeAsync(nz_grid, 0);
-    cudaFreeAsync(nz_exact, 0);
-    return ok;
+    return cudaGetLastError() == cudaSuccess;
 }
 
-static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                                  std::size_t height, const std::uint8_t* context_map,
-                                  const std::uint8_t* depth, const std::uint16_t* bits,
-                                  std::size_t num_clusters, std::uint8_t* out,
-                                  std::size_t out_capacity, std::uint32_t* group_sizes,
-                                  std::uint32_t* group_offsets, std::size_t* total_bytes) {
+static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs,
+                                  const std::int32_t* nz_grid, const std::int32_t* nz_exact,
+                                  std::size_t width, std::size_t height,
+                                  const std::uint8_t* context_map, const std::uint8_t* depth,
+                                  const std::uint16_t* bits, std::size_t num_clusters,
+                                  std::uint8_t* out, std::size_t out_capacity,
+                                  std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                                  std::size_t* total_bytes) {
     ensure_constants();
     if (num_clusters == 0 || num_clusters > 256) {
         return false;
@@ -1044,26 +1044,11 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     const std::size_t num_groups{ac_num_groups(width, height)};
 
     unsigned long long* run_offsets{nullptr};
-    std::int32_t* nz_grid{nullptr};
-    std::int32_t* nz_exact{nullptr};
     if (cudaMallocAsync(&run_offsets, num_groups * AC_EMIT_THREADS * sizeof(unsigned long long),
-                        0) != cudaSuccess ||
-        cudaMallocAsync(&nz_grid, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess ||
-        cudaMallocAsync(&nz_exact, 3 * nblocks * sizeof(std::int32_t), 0) != cudaSuccess) {
-        cudaFreeAsync(run_offsets, 0);
-        cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(nz_exact, 0);
+                        0) != cudaSuccess) {
         return false;
     }
-    const auto free_run = [&] {
-        cudaFreeAsync(run_offsets, 0);
-        cudaFreeAsync(nz_grid, 0);
-        cudaFreeAsync(nz_exact, 0);
-    };
-
-    const unsigned int gthreads{256};
-    ac_nzeros_grid_kernel<<<static_cast<unsigned int>((bw * bh + gthreads - 1) / gthreads),
-                            gthreads>>>(ac, acs, bw, bh, nblocks, nz_grid, nz_exact);
+    const auto free_run = [&] { cudaFreeAsync(run_offsets, 0); };
 
     const unsigned int grid{static_cast<unsigned int>(num_groups)};
     group_size_kernel<<<grid, AC_EMIT_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg,
@@ -1120,12 +1105,14 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
     return ok;
 }
 
-bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                      std::size_t height, const std::uint8_t* depth, const std::uint16_t* bits,
-                      std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
+bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
+                      const std::int32_t* nz_exact, std::size_t width, std::size_t height,
+                      const std::uint8_t* depth, const std::uint16_t* bits, std::uint8_t* out,
+                      std::size_t out_capacity, std::uint32_t* group_sizes,
                       std::uint32_t* group_offsets, std::size_t* total_bytes) {
-    return ac_encode_groups_impl(ac, acs, width, height, nullptr, depth, bits, AC_NUM_CLUSTERS, out,
-                                 out_capacity, group_sizes, group_offsets, total_bytes);
+    return ac_encode_groups_impl(ac, acs, nz_grid, nz_exact, width, height, nullptr, depth, bits,
+                                 AC_NUM_CLUSTERS, out, out_capacity, group_sizes, group_offsets,
+                                 total_bytes);
 }
 
 std::size_t dc_num_groups(std::size_t width, std::size_t height) {
