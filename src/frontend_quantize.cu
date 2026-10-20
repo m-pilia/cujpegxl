@@ -115,88 +115,129 @@ __global__ void estimate_cfl_covered_kernel(const __half* __restrict__ coeffs,
     }
 }
 
-// One thread per first-block. Quantizes the AC with per-tile CfL residuals (each
-// coefficient independent, so the raw coefficients and the Y roundtrip are
-// per-iteration scalars, not buffered), then derives the DC from the compacted
-// cx*cx low-frequency corner with the base correlation. Reading coefficients on
-// demand replaces the former kernel's four `[32*32]` local arrays (16 KB/thread,
-// spilled) with a cx*cx <= 16-entry corner that stays in registers.
-__global__ void quantize_residual_kernel(
-    const __half* __restrict__ coeffs, const std::int8_t* __restrict__ acs,
-    const std::int8_t* __restrict__ ytox_map, const std::int8_t* __restrict__ ytob_map,
-    const std::int32_t* __restrict__ quant_field, std::size_t bw, std::size_t bh, std::size_t cmw,
-    float gsf, float dc_scale, std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc) {
-    const std::size_t blk{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x};
-    if (blk >= bw * bh) {
-        return;
-    }
-    const int side{acs == nullptr ? 8 : acs[blk]};
-    if (side == ACS_COVERED) {
-        return;
-    }
-    const std::size_t bx{blk % bw};
-    const std::size_t by{blk / bw};
-    const int n{side};
-    const int cx{n / 8};
-    const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    const std::size_t nblk{bw * bh};
-    const float qgsf{static_cast<float>(quant_field[blk]) * gsf};
+struct OwningTransform {
+    std::uint32_t bx;
+    std::uint32_t by;
+    int side;
+};
 
-    const std::size_t tile{(by / 8) * cmw + (bx / 8)};
-    const float ytox{cfl_ytox_ratio(ytox_map == nullptr ? 0 : ytox_map[tile])};
-    const float ytob{cfl_ytob_ratio(ytob_map == nullptr ? 0 : ytob_map[tile])};
+// Transform covering the 8x8 block (bx, by). Relies on the front end's region
+// layout: a DCT32 first-block sits on a 4-block-aligned position and a DCT16 on
+// a 2-block-aligned one, so only those two candidates need to be inspected.
+__device__ inline OwningTransform owning_transform(const std::int8_t* acs, std::uint32_t bw,
+                                                   std::uint32_t bx, std::uint32_t by) {
+    const std::uint32_t bx32{bx & ~3u};
+    const std::uint32_t by32{by & ~3u};
+    if (acs[by32 * bw + bx32] == 32) {
+        return {bx32, by32, 32};
+    }
+    const std::uint32_t bx16{bx & ~1u};
+    const std::uint32_t by16{by & ~1u};
+    if (acs[by16 * bw + bx16] == 16) {
+        return {bx16, by16, 16};
+    }
+    return {bx, by, 8};
+}
+
+// One thread per covered-block coefficient slot: the slot index is the thread
+// index, so loads and stores are coalesced and a DCT32 spreads over 1024 threads.
+// Each coefficient's Y quantization and X/B CfL residuals are independent of all
+// other coefficients. LLF-corner slots are zeroed; their DC is derived by
+// quantize_dc_kernel.
+__global__ void quantize_ac_kernel(const __half* __restrict__ coeffs,
+                                   const std::int8_t* __restrict__ acs,
+                                   const std::int8_t* __restrict__ ytox_map,
+                                   const std::int8_t* __restrict__ ytob_map,
+                                   const std::int32_t* __restrict__ quant_field, std::uint32_t bw,
+                                   std::uint32_t bh, std::uint32_t cmw, float gsf,
+                                   std::int16_t* __restrict__ ac) {
+    const std::uint32_t cplane{bw * bh * static_cast<std::uint32_t>(COEFFS_PER_BLOCK)};
+    const std::uint32_t slot{blockIdx.x * blockDim.x + threadIdx.x};
+    if (slot >= cplane) {
+        return;
+    }
+    const std::uint32_t blk{slot / static_cast<std::uint32_t>(COEFFS_PER_BLOCK)};
+    const std::uint32_t bx{blk % bw};
+    const std::uint32_t by{blk / bw};
+    const OwningTransform t{owning_transform(acs, bw, bx, by)};
+    const int n{t.side};
+    const int covered_ordinal{
+        static_cast<int>((by - t.by) * static_cast<std::uint32_t>(n / 8) + (bx - t.bx))};
+    const int raw{covered_ordinal * static_cast<int>(COEFFS_PER_BLOCK) +
+                  static_cast<int>(slot % COEFFS_PER_BLOCK)};
+    if (raw_is_llf(raw, n)) {
+        ac[slot] = 0;
+        ac[cplane + slot] = 0;
+        ac[2 * cplane + slot] = 0;
+        return;
+    }
+    const float qgsf{static_cast<float>(quant_field[t.by * bw + t.bx]) * gsf};
+    const std::uint32_t tile{(t.by / 8) * cmw + (t.bx / 8)};
+    const float ytox{cfl_ytox_ratio(ytox_map[tile])};
+    const float ytob{cfl_ytob_ratio(ytob_map[tile])};
+
+    const float xr{__half2float(coeffs[slot])};
+    const float yr{__half2float(coeffs[cplane + slot])};
+    const float br{__half2float(coeffs[2 * cplane + slot])};
+    const float wy{dequant_weight(n, 1, raw)};
+    const int qy{static_cast<int>(lrintf(yr * qgsf / wy))};
+    const float y_round{static_cast<float>(qy) * wy / qgsf};
+    ac[cplane + slot] = static_cast<std::int16_t>(qy);
+
+    const float wx{dequant_weight(n, 0, raw)};
+    ac[slot] = static_cast<std::int16_t>(lrintf((xr - ytox * y_round) * qgsf / wx));
+    const float wb{dequant_weight(n, 2, raw)};
+    ac[2 * cplane + slot] = static_cast<std::int16_t>(lrintf((br - ytob * y_round) * qgsf / wb));
+}
+
+// One thread per 8x8 block: derives that block's DC from its transform's
+// compacted cx*cx low-frequency corner and quantizes it, with the base
+// correlation removed from B.
+__global__ void quantize_dc_kernel(const __half* __restrict__ coeffs,
+                                   const std::int8_t* __restrict__ acs, std::uint32_t bw,
+                                   std::uint32_t bh, float dc_scale,
+                                   std::int32_t* __restrict__ dc) {
+    const std::uint32_t nblk{bw * bh};
+    const std::uint32_t blk{blockIdx.x * blockDim.x + threadIdx.x};
+    if (blk >= nblk) {
+        return;
+    }
+    const std::uint32_t bx{blk % bw};
+    const std::uint32_t by{blk / bw};
+    const OwningTransform t{owning_transform(acs, bw, bx, by)};
+    const int n{t.side};
+    const int cx{n / 8};
+    const std::size_t cplane{static_cast<std::size_t>(nblk) * COEFFS_PER_BLOCK};
 
     float llf_x[16];
     float llf_y[16];
     float llf_b[16];
-    for (int raw{0}; raw < n * n; ++raw) {
-        const std::size_t slot{covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))};
-        const float xr{__half2float(coeffs[slot])};
-        const float yr{__half2float(coeffs[cplane + slot])};
-        const float br{__half2float(coeffs[2 * cplane + slot])};
-        if (raw_is_llf(raw, n)) {
-            const int lp{(raw / n) * cx + (raw % n)};
-            llf_x[lp] = xr;
-            llf_y[lp] = yr;
-            llf_b[lp] = br;
-            ac[slot] = 0;
-            ac[cplane + slot] = 0;
-            ac[2 * cplane + slot] = 0;
-            continue;
+    for (int fx{0}; fx < cx; ++fx) {
+        for (int fy{0}; fy < cx; ++fy) {
+            const std::size_t slot{
+                covered_plane_slot(n, t.bx, t.by, bw, static_cast<std::size_t>(fx * n + fy))};
+            const int lp{fx * cx + fy};
+            llf_x[lp] = __half2float(coeffs[slot]);
+            llf_y[lp] = __half2float(coeffs[cplane + slot]);
+            llf_b[lp] = __half2float(coeffs[2 * cplane + slot]);
         }
-        const float wy{dequant_weight(n, 1, raw)};
-        const int qy{static_cast<int>(lrintf(yr * qgsf / wy))};
-        const float y_round{static_cast<float>(qy) * wy / qgsf};
-        ac[cplane + slot] = static_cast<std::int16_t>(qy);
-
-        const float wx{dequant_weight(n, 0, raw)};
-        ac[slot] = static_cast<std::int16_t>(lrintf((xr - ytox * y_round) * qgsf / wx));
-        const float wb{dequant_weight(n, 2, raw)};
-        ac[2 * cplane + slot] =
-            static_cast<std::int16_t>(lrintf((br - ytob * y_round) * qgsf / wb));
     }
+    const std::size_t out_x{bx - t.bx};
+    const std::size_t out_y{by - t.by};
+    const std::size_t m{static_cast<std::size_t>(cx)};
+    const LlfDcWeights w{llf_dc_weights(m, out_x, out_y)};
+    const float dc_x{dc_from_llf_at(m, llf_x, m, w)};
+    const float dc_y{dc_from_llf_at(m, llf_y, m, w)};
+    const float dc_b{dc_from_llf_at(m, llf_b, m, w)};
 
-    float dc_x[16];
-    float dc_y[16];
-    float dc_b[16];
-    dc_from_llf_strided(cx, llf_x, cx, dc_x);
-    dc_from_llf_strided(cx, llf_y, cx, dc_y);
-    dc_from_llf_strided(cx, llf_b, cx, dc_b);
     const float dcq_x{DC_INV_QUANT[0] * dc_scale};
     const float dcq_y{DC_INV_QUANT[1] * dc_scale};
     const float dcq_b{DC_INV_QUANT[2] * dc_scale};
-    for (int oy{0}; oy < cx; ++oy) {
-        for (int ox{0}; ox < cx; ++ox) {
-            const int p{oy * cx + ox};
-            const std::size_t dblk{(by + oy) * bw + (bx + ox)};
-            const int qdc_y{static_cast<int>(lrintf(dc_y[p] * dcq_y))};
-            const float y_dc_round{static_cast<float>(qdc_y) / dcq_y};
-            dc[nblk + dblk] = qdc_y;
-            dc[dblk] = static_cast<int>(lrintf(dc_x[p] * dcq_x));
-            dc[2 * nblk + dblk] =
-                static_cast<int>(lrintf((dc_b[p] - CFL_BASE_B * y_dc_round) * dcq_b));
-        }
-    }
+    const int qdc_y{static_cast<int>(lrintf(dc_y * dcq_y))};
+    const float y_dc_round{static_cast<float>(qdc_y) / dcq_y};
+    dc[nblk + blk] = qdc_y;
+    dc[blk] = static_cast<int>(lrintf(dc_x * dcq_x));
+    dc[2 * nblk + blk] = static_cast<int>(lrintf((dc_b - CFL_BASE_B * y_dc_round) * dcq_b));
 }
 
 }  // namespace
@@ -224,10 +265,18 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::
     const QuantCalibration cal{calibrate_quant(distance)};
     const float gsf{cal.global_scale_float};
     const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
-    const unsigned int threads{128};
-    const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    quantize_residual_kernel<<<blocks, threads>>>(coeffs, acs, ytox_map, ytob_map, quant_field, bw,
-                                                  bh, cmw, gsf, dc_scale, ac, dc);
+    const std::uint32_t bw32{static_cast<std::uint32_t>(bw)};
+    const std::uint32_t bh32{static_cast<std::uint32_t>(bh)};
+
+    const unsigned int ac_threads{256};
+    const unsigned int ac_blocks{
+        static_cast<unsigned int>(ceil_div(bw * bh * COEFFS_PER_BLOCK, ac_threads))};
+    quantize_ac_kernel<<<ac_blocks, ac_threads>>>(coeffs, acs, ytox_map, ytob_map, quant_field,
+                                                  bw32, bh32, static_cast<std::uint32_t>(cmw), gsf,
+                                                  ac);
+    const unsigned int dc_threads{128};
+    const unsigned int dc_blocks{static_cast<unsigned int>(ceil_div(bw * bh, dc_threads))};
+    quantize_dc_kernel<<<dc_blocks, dc_threads>>>(coeffs, acs, bw32, bh32, dc_scale, dc);
     return cudaGetLastError() == cudaSuccess;
 }
 

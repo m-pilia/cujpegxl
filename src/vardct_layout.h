@@ -74,33 +74,60 @@ CUJPEGXL_VL_HD inline double vl_ortho_basis(std::size_t m, std::size_t k, std::s
                       static_cast<double>(k) / md);
 }
 
-// Low-frequency -> DC derivation from the m*m low-frequency corner (m =
-// covered_blocks_side), read as `llf[fx*stride + fy]`. Writes the m*m DC values
-// (row-major, dc[Y*m + X] for covered block row Y, column X), matching libjxl's
-// DCFromLowestFrequencies for the square DCTNxN strategy. `stride` is the source
-// block's row pitch: block_dim for a full transposed-raster block, or m for a
-// compacted corner.
-CUJPEGXL_VL_HD inline void dc_from_llf_strided(std::size_t m, const float* llf, std::size_t stride,
-                                               float* dc) {
+// Separable reinterpreting-IDCT weights of the m*m low-frequency corner (m =
+// covered_blocks_side) for the covered block at column `out_x`, row `out_y`:
+// the orthonormal basis times libjxl's DCTResampleScales<N, N/8>. Shared by all
+// channels of that block.
+struct LlfDcWeights {
+    double x[4];
+    double y[4];
+    double scale[4];
+};
+
+CUJPEGXL_VL_HD inline LlfDcWeights llf_dc_weights(std::size_t m, std::size_t out_x,
+                                                  std::size_t out_y) {
+    LlfDcWeights w{};
+    // A DCT8's DC is its single LLF coefficient (see dc_from_llf_at).
     if (m == 1) {
-        dc[0] = llf[0];
-        return;
+        return w;
     }
-    // libjxl DCTResampleScales<N, N/8> for the covered-side ReinterpretingIDCT.
     const double scale16[2]{1.0, 0.901764195028874394};
     const double scale32[4]{1.0, 0.974886821136879522, 0.901764195028874394, 0.787054918159101335};
-    const double* scale{m == 2 ? scale16 : scale32};
+    for (std::size_t f{0}; f < m; ++f) {
+        w.x[f] = vl_ortho_basis(m, f, out_x);
+        w.y[f] = vl_ortho_basis(m, f, out_y);
+        w.scale[f] = m == 2 ? scale16[f] : scale32[f];
+    }
+    return w;
+}
+
+// Low-frequency -> DC derivation from the m*m low-frequency corner, read as
+// `llf[fx*stride + fy]`, for the covered block whose weights are `w`, matching
+// libjxl's DCFromLowestFrequencies for the square DCTNxN strategy. `stride` is
+// the source block's row pitch: block_dim for a full transposed-raster block, or
+// m for a compacted corner.
+CUJPEGXL_VL_HD inline float dc_from_llf_at(std::size_t m, const float* llf, std::size_t stride,
+                                           const LlfDcWeights& w) {
+    if (m == 1) {
+        return llf[0];
+    }
+    double sum{0.0};
+    for (std::size_t fx{0}; fx < m; ++fx) {
+        for (std::size_t fy{0}; fy < m; ++fy) {
+            const double c{llf[fx * stride + fy]};
+            sum += w.x[fx] * w.y[fy] * c * w.scale[fx] * w.scale[fy];
+        }
+    }
+    return static_cast<float>(static_cast<double>(m) * sum);
+}
+
+// All m*m DC values of the corner (row-major, dc[Y*m + X] for covered block row
+// Y, column X); see dc_from_llf_at.
+CUJPEGXL_VL_HD inline void dc_from_llf_strided(std::size_t m, const float* llf, std::size_t stride,
+                                               float* dc) {
     for (std::size_t out_y{0}; out_y < m; ++out_y) {
         for (std::size_t out_x{0}; out_x < m; ++out_x) {
-            double sum{0.0};
-            for (std::size_t fx{0}; fx < m; ++fx) {
-                for (std::size_t fy{0}; fy < m; ++fy) {
-                    const double c{llf[fx * stride + fy]};
-                    sum += vl_ortho_basis(m, fx, out_x) * vl_ortho_basis(m, fy, out_y) * c *
-                           scale[fx] * scale[fy];
-                }
-            }
-            dc[out_y * m + out_x] = static_cast<float>(static_cast<double>(m) * sum);
+            dc[out_y * m + out_x] = dc_from_llf_at(m, llf, stride, llf_dc_weights(m, out_x, out_y));
         }
     }
 }

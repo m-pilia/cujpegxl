@@ -23,8 +23,8 @@
 namespace cujpegxl {
 namespace {
 
-constexpr std::size_t WIDTH = 128;
-constexpr std::size_t HEIGHT = 128;
+constexpr std::size_t WIDTH = 136;
+constexpr std::size_t HEIGHT = 120;
 constexpr std::size_t BW = WIDTH / 8;
 constexpr std::size_t BH = HEIGHT / 8;
 constexpr std::size_t CPLANE = BW * BH * COEFFS_PER_BLOCK;
@@ -56,7 +56,8 @@ void place(std::vector<std::int8_t>& acs, int side, std::size_t bx, std::size_t 
 }
 
 // Builds FP16 covered-block coefficients with a correlated chroma signal so CfL
-// estimation has something to find, over a mixed DCT32/DCT16/DCT8 tiling.
+// estimation has something to find, over a mixed DCT32/DCT16/DCT8 tiling whose
+// block grid ends in partial 32x32 regions on both axes.
 struct Frame {
     std::vector<__half> coeffs;
     std::vector<std::int8_t> acs;
@@ -69,6 +70,8 @@ Frame make_frame() {
     place(f.acs, 32, 0, 0);
     place(f.acs, 16, 4, 0);
     place(f.acs, 16, 0, 4);
+    place(f.acs, 32, 8, 8);
+    place(f.acs, 16, 14, 12);
 
     std::mt19937 rng{5};
     std::normal_distribution<float> nd{0.0f, 0.03f};
