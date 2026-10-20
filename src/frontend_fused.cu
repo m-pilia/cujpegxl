@@ -38,36 +38,32 @@ constexpr int TILE_FLOATS = TILE_PX * TILE_STRIDE;
 constexpr int BASIS_FLOATS = 32 * (32 + 1);
 constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
-constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
-constexpr std::size_t SELECT_YSTORE_HALFS = 16 * 8 * 8 + 4 * 16 * 16 + 32 * 32;
-constexpr std::size_t SELECT_YSTORE_FLOATS =
-    (SELECT_YSTORE_HALFS * sizeof(__half) + sizeof(float) - 1) / sizeof(float);
-constexpr std::size_t SELECT_WORKSPACE_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 32 +
-                                              2 * FRONTEND_THREADS + SELECT_COST_FLOATS +
-                                              SELECT_YSTORE_FLOATS;
-constexpr std::size_t RESIDENT_X_B_OFFSET = SELECT_WORKSPACE_PEAK;
-constexpr std::size_t RESIDENT_X_B_PEAK = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
+// The raw X and B planes stay resident from the load to the X/B gaborish at
+// RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8 * TB * TB;
-static_assert(LOAD_AQ_LOCAL_PEAK <= RESIDENT_X_B_OFFSET);
-constexpr std::size_t LOAD_AQ_WORKSPACE_PEAK = std::max(LOAD_AQ_LOCAL_PEAK, RESIDENT_X_B_PEAK);
-constexpr std::size_t SELECT_X_B_WORKSPACE_PEAK = RESIDENT_X_B_PEAK;
-// The X/B DCT keeps the 8-, 16- and 32-point bases resident at these offsets.
-constexpr int X_B_BASIS16_OFFSET = 8 * (8 + 1);
-constexpr int X_B_BASIS32_OFFSET = X_B_BASIS16_OFFSET + 16 * (16 + 1);
-constexpr std::size_t X_B_BASES_FLOATS = X_B_BASIS32_OFFSET + 32 * (32 + 1);
-constexpr std::size_t X_B_DCT_LOCAL_PEAK = 2 * TILE_FLOATS + X_B_BASES_FLOATS;
-constexpr std::size_t X_B_DCT_WORKSPACE_PEAK = std::max(X_B_DCT_LOCAL_PEAK, RESIDENT_X_B_PEAK);
+constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
+constexpr std::size_t SELECT_LOCAL_PEAK = TILE_FLOATS + BASIS_FLOATS + 32 * 32 + SELECT_COST_FLOATS;
+// The selection's partial cost sums reuse its horizontal-pass rows.
+static_assert(2 * FRONTEND_THREADS <= 32 * 32);
+// The region DCT passes keep the 8-, 16- and 32-point bases resident above two
+// tile planes: the Y pass reads sharp Y from the first and keeps its
+// horizontal-pass rows in the second, the X/B pass holds sharp X and B there.
+constexpr int BASIS16_OFFSET = 8 * (8 + 1);
+constexpr int BASIS32_OFFSET = BASIS16_OFFSET + 16 * (16 + 1);
+constexpr std::size_t BASES_OFFSET = 2 * TILE_FLOATS;
+constexpr std::size_t REGION_DCT_LOCAL_PEAK = BASES_OFFSET + BASIS32_OFFSET + 32 * (32 + 1);
+static_assert(TILE_SAMPLES <= TILE_FLOATS);
 // The X/B horizontal-pass rows reuse the raw X and B planes once gaborish has
-// consumed them, so the gaborish outputs and bases must stay clear of them.
-static_assert(X_B_DCT_LOCAL_PEAK <= RESIDENT_X_B_OFFSET);
+// consumed them.
 static_assert(TILE_SAMPLES <= PAD_SAMPLES);
-constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_PEAK;
+constexpr std::size_t RESIDENT_X_B_OFFSET =
+    std::max({LOAD_AQ_LOCAL_PEAK, SELECT_LOCAL_PEAK, REGION_DCT_LOCAL_PEAK});
+constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
-static_assert(LOAD_AQ_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
-static_assert(SELECT_X_B_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
-static_assert(X_B_DCT_WORKSPACE_PEAK <= WORKSPACE_FLOATS);
-static_assert(WORKSPACE_FLOATS == std::max({LOAD_AQ_WORKSPACE_PEAK, SELECT_X_B_WORKSPACE_PEAK,
-                                            X_B_DCT_WORKSPACE_PEAK}));
+// Four resident blocks per SM: sm_61 has 96 KB of shared memory per SM, and
+// FRONTEND_BLOCKS_PER_SM * FRONTEND_THREADS threads leave 64 registers each.
+constexpr int FRONTEND_BLOCKS_PER_SM = 4;
+static_assert(FRONTEND_BLOCKS_PER_SM * WORKSPACE_BYTES <= 96 * 1024);
 
 __device__ float g_basis8[8 * 8];
 __device__ float g_basis16[16 * 16];
@@ -222,11 +218,10 @@ __device__ void candidate_rows(const float* __restrict__ y, float* basis, float*
 
 template <int N>
 __device__ void candidate_coeff(const float* basis, const float* rows, int idx, int e, float qgsf,
-                                __half* ystore, float& dist, float& rate) {
+                                float& dist, float& rate) {
     const int fx{e / N};
     const int fy{e % N};
     const float coeff{dct_coeff_entry(basis, N, fy, rows + idx * N * N + fx * N)};
-    ystore[idx * N * N + e] = __float2half(coeff);
     accumulate_coeff_cost(coeff, fx, fy, N, qgsf, dist, rate);
 }
 
@@ -234,17 +229,15 @@ __device__ void candidate_coeff(const float* basis, const float* rows, int idx, 
 // the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
 // accumulates into slot e % 256 in increasing e. Each candidate size spreads its
 // coefficients over the warps so that the leading strides fold locally.
-__device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
-                                   std::size_t bw, std::size_t bh, float qgsf, float lambda,
-                                   float* basis, float* rows, float* pd, float* pr, float* costs,
-                                   __half* ystore, __half* ycoeffs, std::int8_t* __restrict__ acs,
-                                   int tid) {
+__device__ void select_transforms(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
+                                  std::size_t bw, std::size_t bh, float qgsf, float lambda,
+                                  float* basis, float* rows, float* costs,
+                                  std::int8_t* __restrict__ acs, int tid) {
+    float* pd{rows};
+    float* pr{rows + FRONTEND_THREADS};
     float* cost8{costs};
     float* cost16{cost8 + 16};
     float* cost32{cost16 + 4};
-    __half* ystore8{ystore};
-    __half* ystore16{ystore8 + 16 * 64};
-    __half* ystore32{ystore16 + 4 * 256};
     constexpr float INF{1.0e30f};
     const int lane{tid % 32};
     const int warp{tid / 32};
@@ -258,8 +251,8 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
         float r0{0.0f};
         float d1{0.0f};
         float r1{0.0f};
-        candidate_coeff<8>(basis, rows, idx, lane, qgsf, ystore8, d0, r0);
-        candidate_coeff<8>(basis, rows, idx, lane + 32, qgsf, ystore8, d1, r1);
+        candidate_coeff<8>(basis, rows, idx, lane, qgsf, d0, r0);
+        candidate_coeff<8>(basis, rows, idx, lane + 32, qgsf, d1, r1);
         const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
         const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
         if (lane == 0) {
@@ -280,10 +273,13 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
         float r[4]{};
 #pragma unroll
         for (int h{0}; h < 4; ++h) {
-            candidate_coeff<16>(basis, rows, q, j + 64 * h, qgsf, ystore16, d[h], r[h]);
+            candidate_coeff<16>(basis, rows, q, j + 64 * h, qgsf, d[h], r[h]);
         }
-        pd[tid] = __fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]));
-        pr[tid] = __fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]));
+        const float dist{__fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]))};
+        const float rate{__fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]))};
+        __syncthreads();
+        pd[tid] = dist;
+        pr[tid] = rate;
     }
     __syncthreads();
     if (warp % 2 == 0) {
@@ -303,8 +299,9 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
     float dist32{0.0f};
     float rate32{0.0f};
     for (int e{tid}; e < 32 * 32; e += FRONTEND_THREADS) {
-        candidate_coeff<32>(basis, rows, 0, e, qgsf, ystore32, dist32, rate32);
+        candidate_coeff<32>(basis, rows, 0, e, qgsf, dist32, rate32);
     }
+    __syncthreads();
     pd[tid] = dist32;
     pr[tid] = rate32;
     __syncthreads();
@@ -381,35 +378,6 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
         }
     }
     __syncthreads();
-
-    for (int p{0}; p < 16; ++p) {
-        const std::size_t bx{rbx + static_cast<std::size_t>(p % 4)};
-        const std::size_t by{rby + static_cast<std::size_t>(p / 4)};
-        if (bx >= bw || by >= bh) {
-            continue;
-        }
-        const int n{acs[by * bw + bx]};
-        if (n == ACS_COVERED) {
-            continue;
-        }
-
-        const std::size_t lx{bx - rbx};
-        const std::size_t ly{by - rby};
-        const __half* src{nullptr};
-        if (n == 32) {
-            src = ystore32;
-        } else if (n == 16) {
-            const std::size_t q{(ly / 2) * 2 + lx / 2};
-            src = ystore16 + q * 256;
-        } else {
-            const std::size_t idx{((ly / 2) * 2 + lx / 2) * 4 + (ly % 2) * 2 + lx % 2};
-            src = ystore8 + idx * 64;
-        }
-        for (int raw{tid}; raw < n * n; raw += FRONTEND_THREADS) {
-            ycoeffs[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(raw))] = src[raw];
-        }
-    }
-    __syncthreads();
 }
 
 // Transform of a region (one CUDA block's TB x TB blocks) that owns region
@@ -451,27 +419,29 @@ __device__ RegionTransform region_transform(int k, std::size_t rbx, std::size_t 
     return {8, k - k % 64, qpx + 8 * (sub % 2), qpy + 8 * (sub / 2), bx, by};
 }
 
-__device__ inline const float* x_b_basis(const float* bases, int n) {
-    return bases + (n == 32 ? X_B_BASIS32_OFFSET : (n == 16 ? X_B_BASIS16_OFFSET : 0));
+__device__ inline const float* region_basis(const float* bases, int n) {
+    return bases + (n == 32 ? BASIS32_OFFSET : (n == 16 ? BASIS16_OFFSET : 0));
 }
 
-// DCT of all transforms of the region for X and B at once. Each warp's 32
-// consecutive k fall within one transform.
-__device__ void forward_x_b(const float* __restrict__ sharp_x, const float* __restrict__ sharp_b,
-                            const float* bases, float* rows_x, float* rows_b, std::size_t rbx,
-                            std::size_t rby, std::size_t bw, std::size_t bh,
-                            const std::int8_t* __restrict__ acs, __half* dst_x, __half* dst_b,
-                            int tid) {
+// DCT of all transforms of the region for CHANNELS planes at once. Each warp's
+// 32 consecutive k fall within one transform.
+template <int CHANNELS>
+__device__ void forward_region(const float* const (&sharp)[CHANNELS], const float* bases,
+                               float* const (&rows)[CHANNELS], std::size_t rbx, std::size_t rby,
+                               std::size_t bw, std::size_t bh, const std::int8_t* __restrict__ acs,
+                               __half* const (&dst)[CHANNELS], int tid) {
     for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
         const RegionTransform t{region_transform(k, rbx, rby, bw, bh, acs)};
         if (t.n == 0) {
             continue;
         }
-        const float* basis{x_b_basis(bases, t.n)};
+        const float* basis{region_basis(bases, t.n)};
         const int e{k - t.first_k};
         const int pixel_row{(t.py0 + e % t.n) * TILE_STRIDE + t.px0};
-        rows_x[k] = dct_rows_entry(basis, t.n, e / t.n, sharp_x + pixel_row);
-        rows_b[k] = dct_rows_entry(basis, t.n, e / t.n, sharp_b + pixel_row);
+#pragma unroll
+        for (int c{0}; c < CHANNELS; ++c) {
+            rows[c][k] = dct_rows_entry(basis, t.n, e / t.n, sharp[c] + pixel_row);
+        }
     }
     __syncthreads();
     for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
@@ -479,23 +449,25 @@ __device__ void forward_x_b(const float* __restrict__ sharp_x, const float* __re
         if (t.n == 0) {
             continue;
         }
-        const float* basis{x_b_basis(bases, t.n)};
+        const float* basis{region_basis(bases, t.n)};
         const int e{k - t.first_k};
         const int rows_fx{t.first_k + (e / t.n) * t.n};
         const std::size_t slot{
             covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
-        dst_x[slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows_x + rows_fx));
-        dst_b[slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows_b + rows_fx));
+#pragma unroll
+        for (int c{0}; c < CHANNELS; ++c) {
+            dst[c][slot] = __float2half(dct_coeff_entry(basis, t.n, e % t.n, rows[c] + rows_fx));
+        }
     }
 }
 
-__global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
-                                      cudaTextureObject_t chroma_tex, std::size_t width,
-                                      std::size_t height, std::size_t bw, std::size_t bh, float km0,
-                                      float km1, float km2, float km3, float mul_pb, float add_pb,
-                                      float inv_global_scale, float qgsf,
-                                      __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
-                                      std::int32_t* __restrict__ quant_field) {
+__global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
+    frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
+                          cudaTextureObject_t chroma_tex, std::size_t width, std::size_t height,
+                          std::size_t bw, std::size_t bh, float km0, float km1, float km2,
+                          float km3, float mul_pb, float add_pb, float inv_global_scale, float qgsf,
+                          __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
+                          std::int32_t* __restrict__ quant_field) {
     extern __shared__ __align__(16) unsigned char workspace_bytes[];
     float* workspace{reinterpret_cast<float*>(workspace_bytes)};
     float* sharp_y{workspace};
@@ -646,25 +618,27 @@ __global__ void frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std
 
     float* basis{sharp_y + TILE_FLOATS};
     float* rows{basis + BASIS_FLOATS};
-    float* pd{rows + 32 * 32};
-    float* pr{pd + FRONTEND_THREADS};
-    float* costs{pr + FRONTEND_THREADS};
-    __half* ystore{reinterpret_cast<__half*>(costs + SELECT_COST_FLOATS)};
+    float* costs{rows + 32 * 32};
+    select_transforms(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows,
+                      costs, acs, tid);
+
+    float* bases{workspace + BASES_OFFSET};
+    load_dct_basis(g_basis8, bases, 8, tid, FRONTEND_THREADS);
+    load_dct_basis(g_basis16, bases + BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
+    load_dct_basis(g_basis32, bases + BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
+    __syncthreads();
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    select_and_store_y(sharp_y, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, basis, rows, pd,
-                       pr, costs, ystore, coeffs + cplane, acs, tid);
+    forward_region<1>({sharp_y}, bases, {workspace + TILE_FLOATS}, tbx0, tby0, bw, bh, acs,
+                      {coeffs + cplane}, tid);
+    __syncthreads();
 
     float* sharp_x{workspace};
     float* sharp_b{sharp_x + TILE_FLOATS};
-    float* bases{sharp_b + TILE_FLOATS};
-    load_dct_basis(g_basis8, bases, 8, tid, FRONTEND_THREADS);
-    load_dct_basis(g_basis16, bases + X_B_BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
-    load_dct_basis(g_basis32, bases + X_B_BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    forward_x_b(sharp_x, sharp_b, bases, raw_x, raw_b, tbx0, tby0, bw, bh, acs, coeffs,
-                coeffs + 2 * cplane, tid);
+    forward_region<2>({sharp_x, sharp_b}, bases, {raw_x, raw_b}, tbx0, tby0, bw, bh, acs,
+                      {coeffs, coeffs + 2 * cplane}, tid);
 }
 
 }  // namespace
