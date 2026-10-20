@@ -6,6 +6,7 @@
 /bazel-*
 examples/*/bazel-*
 MODULE.bazel.lock.tmp*
+.bazelrc.user
 
 # Generated corpus buffers (produced on demand from the source frames)
 *.nv12

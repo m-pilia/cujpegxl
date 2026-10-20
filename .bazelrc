@@ -52,3 +52,5 @@ test:tsan --test_tag_filters=-no-sanitizers
 build:clang-tidy --aspects=//tools/lint:linters.bzl%clang_tidy
 build:clang-tidy --output_groups=rules_lint_human
 build:clang-tidy --@aspect_rules_lint//lint:fail_on_violation
+
+try-import .bazelrc.user
