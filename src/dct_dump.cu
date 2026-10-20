@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Runs a forward square DCT on a planar XYB float32 file and writes the
-// coefficients as float32.
+// Runs the front end's forward square DCT (dct_impl.cuh) on a planar XYB
+// float32 file and writes the coefficients as float32: per plane, NxN blocks in
+// raster order with N*N coefficients each in libjxl's transposed raster order.
 
 #include <cstdio>
 #include <cstdlib>
@@ -11,8 +12,46 @@
 
 #include <cuda_runtime.h>
 
-#include "dct.h"
+#include "dct_impl.cuh"
 #include "dump_io.h"
+
+namespace {
+
+template <int N>
+__global__ void forward_dct_kernel(const float* __restrict__ xyb, std::size_t width,
+                                   std::size_t height, float* __restrict__ coeffs) {
+    __shared__ float basis[N * (N + 1)];
+    __shared__ float tile[N * N];
+    __shared__ float rows[N * N];
+
+    const std::size_t bx{blockIdx.x};
+    const std::size_t by{blockIdx.y};
+    const std::size_t plane{width * height};
+    const float* src{xyb + blockIdx.z * plane};
+    const int e{static_cast<int>(threadIdx.x)};
+    const int hi{e / N};
+    const int lo{e % N};
+
+    basis[hi * (N + 1) + lo] = cujpegxl::dct_basis_entry(N, hi, lo);
+    tile[hi * N + lo] = src[(by * N + hi) * width + bx * N + lo];
+    __syncthreads();
+    rows[e] = cujpegxl::dct_rows_entry(basis, N, hi, tile + lo * N);
+    __syncthreads();
+    const std::size_t block_index{by * (width / N) + bx};
+    coeffs[blockIdx.z * plane + block_index * (N * N) + e] =
+        cujpegxl::dct_coeff_entry(basis, N, lo, rows + hi * N);
+}
+
+template <int N>
+bool forward_dct(const float* xyb, std::size_t width, std::size_t height, float* coeffs) {
+    const dim3 grid{static_cast<unsigned int>(width / N), static_cast<unsigned int>(height / N), 3};
+    forward_dct_kernel<N><<<grid, N * N>>>(xyb, width, height, coeffs);
+    const cudaError_t launch{cudaGetLastError()};
+    const cudaError_t sync{cudaDeviceSynchronize()};
+    return launch == cudaSuccess && sync == cudaSuccess;
+}
+
+}  // namespace
 
 int run_dct_dump(int argc, char** argv) {
     if (argc != 7 || std::strcmp(argv[1], "dctn") != 0) {
@@ -46,11 +85,11 @@ int run_dct_dump(int argc, char** argv) {
     }
     cudaMemcpy(d_xyb, xyb.data(), count * sizeof(float), cudaMemcpyHostToDevice);
 
-    const bool ok{block_dim == 16   ? cujpegxl::forward_dct16(d_xyb, width, height, d_coeffs)
-                  : block_dim == 32 ? cujpegxl::forward_dct32(d_xyb, width, height, d_coeffs)
-                                    : cujpegxl::forward_dct8(d_xyb, width, height, d_coeffs)};
+    const bool ok{block_dim == 16   ? forward_dct<16>(d_xyb, width, height, d_coeffs)
+                  : block_dim == 32 ? forward_dct<32>(d_xyb, width, height, d_coeffs)
+                                    : forward_dct<8>(d_xyb, width, height, d_coeffs)};
     if (!ok) {
-        std::fprintf(stderr, "dct_dump: forward_dct%zu failed\n", block_dim);
+        std::fprintf(stderr, "dct_dump: forward DCT%zu failed\n", block_dim);
         return 1;
     }
 

@@ -44,12 +44,9 @@ cuda_library(
     deps = [":xyb_impl"],
 )
 
-cuda_library(
-    name = "dct",
-    testonly = True,
-    srcs = ["dct.cu"],
-    hdrs = ["dct.h"],
-    copts = RUNTIME_COPTS,
+cc_library(
+    name = "dct_impl",
+    hdrs = ["dct_impl.cuh"],
 )
 
 cc_library(
@@ -191,7 +188,7 @@ cuda_library(
     testonly = True,
     srcs = ["dct_dump.cu"],
     deps = [
-        ":dct",
+        ":dct_impl",
         ":dump_io",
     ],
 )
@@ -234,6 +231,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        ":dct_impl",
         ":quant_consts",
         ":transform_select_impl",
         ":vardct_layout",

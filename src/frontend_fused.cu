@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 
 #include "adaptive_quant_impl.cuh"
+#include "dct_impl.cuh"
 #include "gaborish.h"
 #include "quant_calibration.h"
 #include "quant_weights_dct8.h"
@@ -29,10 +30,9 @@ constexpr int TILE_PX = TB * 8;
 constexpr int PAD = TILE_PX + 2 * HALO;
 constexpr int CELLS = 2 * TB;
 constexpr int TILE_SAMPLES = TILE_PX * TILE_PX;
-// The DCT row pass has each warp lane read a different tile row at the same
-// column, and the column pass a different basis row at the same column. Odd
-// row strides (TILE_PX + 1 for the tile, n + 1 for an n-point basis) map those
-// lanes to distinct shared-memory banks.
+// The DCT horizontal pass has the lanes of a warp read different tile rows at
+// the same column; the odd row stride maps them to distinct shared-memory banks.
+// BASIS_FLOATS holds the 32-point basis padded the same way (dct_impl.cuh).
 constexpr int TILE_STRIDE = TILE_PX + 1;
 constexpr int TILE_FLOATS = TILE_PX * TILE_STRIDE;
 constexpr int BASIS_FLOATS = 32 * (32 + 1);
@@ -65,13 +65,9 @@ __device__ float g_basis16[16 * 16];
 __device__ float g_basis32[32 * 32];
 
 __device__ void fill_basis(float* basis, int n, int i) {
-    if (i >= n * n) {
-        return;
+    if (i < n * n) {
+        basis[i] = dct_basis_entry(n, i / n, i % n);
     }
-    const int k{i / n};
-    const int t{i % n};
-    const double g{k == 0 ? 1.0 / n : 1.4142135623730950488 / n};
-    basis[i] = static_cast<float>(g * cos(3.14159265358979323846 * (t + 0.5) * k / n));
 }
 
 __global__ void init_frontend_basis_kernel() {
@@ -93,13 +89,25 @@ __device__ const float* basis_for(int n) {
     return n == 32 ? g_basis32 : (n == 16 ? g_basis16 : g_basis8);
 }
 
-// Full-mask warp sum reduction. Both warps of the 64-thread block are fully
-// populated here, so every lane participates.
+// Full-mask warp sum, valid on lane 0. Pairs lanes like a halving tree
+// v[i] += v[i + s] for s = 16..1; the adds are non-contractible, so callers can
+// reproduce a shared-memory tree reduction bit for bit.
 __device__ inline float warp_reduce_sum(float v) {
     for (int off{16}; off > 0; off >>= 1) {
-        v += __shfl_down_sync(0xffffffffu, v, off);
+        v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, off));
     }
     return v;
+}
+
+// Sum of the 256 partials v[0..255] in the pairing of the halving tree
+// v[i] += v[i + s] for s = 128..1, evaluated by one warp; valid on lane 0.
+// Lane l folds strides 128, 64 and 32 over v[l + 32 * k] locally.
+__device__ float warp_tree_sum_256(const float* __restrict__ v, int lane) {
+    const float w0{__fadd_rn(v[lane], v[lane + 128])};
+    const float w1{__fadd_rn(v[lane + 32], v[lane + 160])};
+    const float w2{__fadd_rn(v[lane + 64], v[lane + 192])};
+    const float w3{__fadd_rn(v[lane + 96], v[lane + 224])};
+    return warp_reduce_sum(__fadd_rn(__fadd_rn(w0, w2), __fadd_rn(w1, w3)));
 }
 
 // FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
@@ -145,69 +153,78 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
     }
 }
 
-__device__ float coop_block_ac_cost(const float* __restrict__ y, int px0, int py0, int n,
-                                    float qgsf, float lambda, float* basis, float* rows, float* pd,
-                                    float* pr, __half* ystore, int tid) {
-    __syncthreads();
-    const int bs{n + 1};
-    const float* src_basis{basis_for(n)};
-    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-        basis[(e / n) * bs + e % n] = src_basis[e];
-    }
-    __syncthreads();
-
-    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-        const int fx{e / n};
-        const int r{e % n};
-        float s{0.0f};
-        const float* prow{y + (py0 + r) * TILE_STRIDE + px0};
-        for (int c{0}; c < n; ++c) {
-            s += basis[fx * bs + c] * prow[c];
-        }
-        rows[e] = s;
-    }
-    __syncthreads();
-
+// Rate-distortion contribution of one Y candidate coefficient quantized with the
+// nearest DCT8 weight; the LLF corner is excluded.
+__device__ inline void accumulate_coeff_cost(float coeff, int fx, int fy, int n, float qgsf,
+                                             float& dist, float& rate) {
     const int m{n / 8};
-    float dist{0.0f};
-    float rate{0.0f};
-    for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-        const int fx{e / n};
-        const int fy{e % n};
-        float coeff{0.0f};
-        for (int r{0}; r < n; ++r) {
-            coeff += basis[fy * bs + r] * rows[fx * n + r];
-        }
-        ystore[e] = __float2half(coeff);
-        if (fx < m && fy < m) {
-            continue;
-        }
-        // Nearest DCT8 position, ties away from zero.
-        int sx{(fx * 8 + n / 2) / n};
-        int sy{(fy * 8 + n / 2) / n};
-        sx = sx > 7 ? 7 : sx;
-        sy = sy > 7 ? 7 : sy;
-        const float w{static_cast<float>(DCT8_DEQUANT_WEIGHTS[1][sx * 8 + sy])};
-        const float q{rintf(coeff * qgsf / w)};
-        const float err{q * w / qgsf - coeff};
-        dist += err * err;
-        if (q != 0.0f) {
-            rate += 1.0f + log2f(1.0f + fabsf(q));
-        }
+    if (fx < m && fy < m) {
+        return;
     }
-    pd[tid] = dist;
-    pr[tid] = rate;
-    __syncthreads();
-    for (int s{FRONTEND_THREADS / 2}; s > 0; s >>= 1) {
-        if (tid < s) {
-            pd[tid] += pd[tid + s];
-            pr[tid] += pr[tid + s];
-        }
-        __syncthreads();
+    // Nearest DCT8 position, ties away from zero.
+    int sx{(fx * 8 + n / 2) / n};
+    int sy{(fy * 8 + n / 2) / n};
+    sx = sx > 7 ? 7 : sx;
+    sy = sy > 7 ? 7 : sy;
+    const float w{static_cast<float>(DCT8_DEQUANT_WEIGHTS[1][sx * 8 + sy])};
+    const float q{rintf(coeff * qgsf / w)};
+    const float err{q * w / qgsf - coeff};
+    dist += err * err;
+    if (q != 0.0f) {
+        rate += 1.0f + log2f(1.0f + fabsf(q));
     }
-    return static_cast<float>(n * n) * pd[0] + lambda * pr[0];
 }
 
+__device__ inline float candidate_cost(int n, float dist, float rate, float lambda) {
+    return static_cast<float>(n * n) * dist + lambda * rate;
+}
+
+// Tile pixel origin of candidate idx of size N. The sixteen 8x8 candidates are
+// ordered by 16x16 quadrant, then by position within the quadrant.
+template <int N>
+__device__ inline void candidate_origin(int idx, int& px0, int& py0) {
+    if (N == 8) {
+        px0 = 16 * ((idx / 4) % 2) + 8 * (idx % 2);
+        py0 = 16 * (idx / 8) + 8 * ((idx / 2) % 2);
+    } else if (N == 16) {
+        px0 = 16 * (idx % 2);
+        py0 = 16 * (idx / 2);
+    } else {
+        px0 = 0;
+        py0 = 0;
+    }
+}
+
+// Loads the N-point basis and runs the horizontal pass of all 1024 / (N * N)
+// candidates of size N into rows[idx * N * N + fx * N + r].
+template <int N>
+__device__ void candidate_rows(const float* __restrict__ y, float* basis, float* rows, int tid) {
+    load_dct_basis(basis_for(N), basis, N, tid, FRONTEND_THREADS);
+    __syncthreads();
+    for (int k{tid}; k < 32 * 32; k += FRONTEND_THREADS) {
+        const int e{k % (N * N)};
+        int px0{};
+        int py0{};
+        candidate_origin<N>(k / (N * N), px0, py0);
+        rows[k] = dct_rows_entry(basis, N, e / N, y + (py0 + e % N) * TILE_STRIDE + px0);
+    }
+    __syncthreads();
+}
+
+template <int N>
+__device__ void candidate_coeff(const float* basis, const float* rows, int idx, int e, float qgsf,
+                                __half* ystore, float& dist, float& rate) {
+    const int fx{e / N};
+    const int fy{e % N};
+    const float coeff{dct_coeff_entry(basis, N, fy, rows + idx * N * N + fx * N)};
+    ystore[idx * N * N + e] = __float2half(coeff);
+    accumulate_coeff_cost(coeff, fx, fy, N, qgsf, dist, rate);
+}
+
+// A candidate's distortion and rate are sums over 256 slots in the pairing of
+// the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
+// accumulates into slot e % 256 in increasing e. Each candidate size spreads its
+// coefficients over the warps so that the leading strides fold locally.
 __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx, std::size_t rby,
                                    std::size_t bw, std::size_t bh, float qgsf, float lambda,
                                    float* basis, float* rows, float* pd, float* pr, float* costs,
@@ -220,47 +237,78 @@ __device__ void select_and_store_y(const float* __restrict__ y, std::size_t rbx,
     __half* ystore16{ystore8 + 16 * 64};
     __half* ystore32{ystore16 + 4 * 256};
     constexpr float INF{1.0e30f};
+    const int lane{tid % 32};
+    const int warp{tid / 32};
 
-    for (int idx{0}; idx < 16; ++idx) {
-        const int qy{idx / 8};
-        const int qx{(idx / 4) % 2};
-        const int dy{(idx / 2) % 2};
-        const int dx{idx % 2};
-        const std::size_t bbx{rbx + 2 * static_cast<std::size_t>(qx) + dx};
-        const std::size_t bby{rby + 2 * static_cast<std::size_t>(qy) + dy};
-        const bool exist{bbx < bw && bby < bh};
-        const float c{exist
-                          ? coop_block_ac_cost(y, 16 * qx + 8 * dx, 16 * qy + 8 * dy, 8, qgsf,
-                                               lambda, basis, rows, pd, pr, ystore8 + idx * 64, tid)
-                          : INF};
-        if (tid == 0) {
-            cost8[idx] = c;
+    // 8x8: each warp owns two candidates; lane l holds coefficients l and l + 32
+    // (slots 64..255 are empty).
+    candidate_rows<8>(y, basis, rows, tid);
+    for (int j{0}; j < 2; ++j) {
+        const int idx{2 * warp + j};
+        float d0{0.0f};
+        float r0{0.0f};
+        float d1{0.0f};
+        float r1{0.0f};
+        candidate_coeff<8>(basis, rows, idx, lane, qgsf, ystore8, d0, r0);
+        candidate_coeff<8>(basis, rows, idx, lane + 32, qgsf, ystore8, d1, r1);
+        const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
+        const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
+        if (lane == 0) {
+            const std::size_t bbx{rbx + static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
+            const std::size_t bby{rby + static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
+            cost8[idx] = bbx < bw && bby < bh ? candidate_cost(8, dist, rate, lambda) : INF;
         }
-        __syncthreads();
+    }
+    __syncthreads();
+
+    // 16x16: warps 2q and 2q + 1 own candidate q; local lane j holds
+    // coefficients j + 64 * h and folds strides 128 and 64.
+    candidate_rows<16>(y, basis, rows, tid);
+    {
+        const int q{warp / 2};
+        const int j{tid % 64};
+        float d[4]{};
+        float r[4]{};
+#pragma unroll
+        for (int h{0}; h < 4; ++h) {
+            candidate_coeff<16>(basis, rows, q, j + 64 * h, qgsf, ystore16, d[h], r[h]);
+        }
+        pd[tid] = __fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]));
+        pr[tid] = __fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]));
+    }
+    __syncthreads();
+    if (warp % 2 == 0) {
+        const int q{warp / 2};
+        const float dist{warp_reduce_sum(__fadd_rn(pd[tid], pd[tid + 32]))};
+        const float rate{warp_reduce_sum(__fadd_rn(pr[tid], pr[tid + 32]))};
+        if (lane == 0) {
+            const std::size_t bx{rbx + 2 * static_cast<std::size_t>(q % 2)};
+            const std::size_t by{rby + 2 * static_cast<std::size_t>(q / 2)};
+            const bool fit16{bx + 2 <= bw && by + 2 <= bh};
+            cost16[q] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
+        }
     }
 
-    for (int q{0}; q < 4; ++q) {
-        const int qy{q / 2};
-        const int qx{q % 2};
-        const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
-        const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
-        const bool fit16{bx + 2 <= bw && by + 2 <= bh};
-        const float c{fit16 ? coop_block_ac_cost(y, qx * 16, qy * 16, 16, qgsf, lambda, basis, rows,
-                                                 pd, pr, ystore16 + q * 256, tid)
-                            : INF};
-        if (tid == 0) {
-            cost16[q] = c;
-        }
-        __syncthreads();
+    // 32x32: thread t holds coefficients t + 256 * h; warp 0 reduces.
+    candidate_rows<32>(y, basis, rows, tid);
+    float dist32{0.0f};
+    float rate32{0.0f};
+    for (int e{tid}; e < 32 * 32; e += FRONTEND_THREADS) {
+        candidate_coeff<32>(basis, rows, 0, e, qgsf, ystore32, dist32, rate32);
     }
-
+    pd[tid] = dist32;
+    pr[tid] = rate32;
+    __syncthreads();
     const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
-    const float c32{
-        fit32 ? coop_block_ac_cost(y, 0, 0, 32, qgsf, lambda, basis, rows, pd, pr, ystore32, tid)
-              : INF};
-    if (tid == 0) {
-        *cost32 = c32;
+    if (warp == 0) {
+        const float dist{warp_tree_sum_256(pd, lane)};
+        const float rate{warp_tree_sum_256(pr, lane)};
+        if (lane == 0) {
+            *cost32 = fit32 ? candidate_cost(32, dist, rate, lambda) : INF;
+        }
+    }
 
+    if (tid == 0) {
         float split_cost{0.0f};
         int quad_choice[2][2];
         for (int qy{0}; qy < 2; ++qy) {
@@ -370,13 +418,9 @@ __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, 
             continue;
         }
 
-        const int bs{n + 1};
         __syncthreads();
         if (n != cur_basis_n) {
-            const float* src_basis{basis_for(n)};
-            for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-                basis[(e / n) * bs + e % n] = src_basis[e];
-            }
+            load_dct_basis(basis_for(n), basis, n, tid, FRONTEND_THREADS);
             cur_basis_n = n;
             __syncthreads();
         }
@@ -384,23 +428,11 @@ __device__ void forward_channel(const float* __restrict__ src, std::size_t rbx, 
         const int px0{static_cast<int>(bx - rbx) * 8};
         const int py0{static_cast<int>(by - rby) * 8};
         for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-            const int fx{e / n};
-            const int r{e % n};
-            float s{0.0f};
-            const float* prow{src + (py0 + r) * TILE_STRIDE + px0};
-            for (int col{0}; col < n; ++col) {
-                s += basis[fx * bs + col] * prow[col];
-            }
-            rows[e] = s;
+            rows[e] = dct_rows_entry(basis, n, e / n, src + (py0 + e % n) * TILE_STRIDE + px0);
         }
         __syncthreads();
         for (int e{tid}; e < n * n; e += FRONTEND_THREADS) {
-            const int fx{e / n};
-            const int fy{e % n};
-            float coeff{0.0f};
-            for (int r{0}; r < n; ++r) {
-                coeff += basis[fy * bs + r] * rows[fx * n + r];
-            }
+            const float coeff{dct_coeff_entry(basis, n, e % n, rows + (e / n) * n)};
             dst[covered_plane_slot(n, bx, by, bw, static_cast<std::size_t>(e))] =
                 __float2half(coeff);
         }
