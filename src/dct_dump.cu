@@ -35,11 +35,14 @@ __global__ void forward_dct_kernel(const float* __restrict__ xyb, std::size_t wi
     basis[hi * (N + 1) + lo] = cujpegxl::dct_basis_entry(N, hi, lo);
     tile[hi * N + lo] = src[(by * N + hi) * width + bx * N + lo];
     __syncthreads();
-    rows[e] = cujpegxl::dct_rows_entry(basis, N, hi, tile + lo * N);
+    float row[1];
+    cujpegxl::dct_dots<1>(N, {cujpegxl::dct_basis_row(basis, N, hi)}, {tile + lo * N}, row);
+    rows[e] = row[0];
     __syncthreads();
+    float coeff[1];
+    cujpegxl::dct_dots<1>(N, {cujpegxl::dct_basis_row(basis, N, lo)}, {rows + hi * N}, coeff);
     const std::size_t block_index{by * (width / N) + bx};
-    coeffs[blockIdx.z * plane + block_index * (N * N) + e] =
-        cujpegxl::dct_coeff_entry(basis, N, lo, rows + hi * N);
+    coeffs[blockIdx.z * plane + block_index * (N * N) + e] = coeff[0];
 }
 
 template <int N>

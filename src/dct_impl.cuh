@@ -32,38 +32,27 @@ __device__ inline void load_dct_basis(const float* __restrict__ src, float* __re
     }
 }
 
-// Horizontal pass: frequency fx of one pixel row.
-__device__ inline float dct_rows_entry(const float* __restrict__ basis, int n, int fx,
-                                       const float* __restrict__ pixel_row) {
-    float s{0.0f};
-    for (int c{0}; c < n; ++c) {
-        s += basis[fx * (n + 1) + c] * pixel_row[c];
-    }
-    return s;
+__device__ inline const float* dct_basis_row(const float* basis, int n, int k) {
+    return basis + k * (n + 1);
 }
 
-// Vertical pass: coefficient (fx, fy) from the n horizontal-pass rows of
-// frequency fx.
-__device__ inline float dct_coeff_entry(const float* __restrict__ basis, int n, int fy,
-                                        const float* __restrict__ rows_fx) {
-    float coeff{0.0f};
-    for (int r{0}; r < n; ++r) {
-        coeff += basis[fy * (n + 1) + r] * rows_fx[r];
+// W dot products out[w] = sum_i basis_rows[w][i] * vectors[w][i], accumulated
+// in increasing i. Both passes are such dot products: frequency fx with a
+// pixel row (horizontal), frequency fy with the horizontal-pass rows of
+// frequency fx (vertical). Outputs that share a basis row or a vector are
+// passed the same pointer, so the shared operand is loaded once per i.
+template <int W>
+__device__ inline void dct_dots(int n, const float* const (&basis_rows)[W],
+                                const float* const (&vectors)[W], float (&out)[W]) {
+#pragma unroll
+    for (int w{0}; w < W; ++w) {
+        out[w] = 0.0f;
     }
-    return coeff;
-}
-
-// Vertical pass for the coefficients (fx, fy) and (fx, fy + 1), with each
-// horizontal-pass row loaded once for both sums.
-__device__ inline void dct_coeff_pair(const float* __restrict__ basis, int n, int fy,
-                                      const float* __restrict__ rows_fx, float& coeff0,
-                                      float& coeff1) {
-    coeff0 = 0.0f;
-    coeff1 = 0.0f;
-    for (int r{0}; r < n; ++r) {
-        const float row{rows_fx[r]};
-        coeff0 += basis[fy * (n + 1) + r] * row;
-        coeff1 += basis[(fy + 1) * (n + 1) + r] * row;
+    for (int i{0}; i < n; ++i) {
+#pragma unroll
+        for (int w{0}; w < W; ++w) {
+            out[w] += basis_rows[w][i] * vectors[w][i];
+        }
     }
 }
 

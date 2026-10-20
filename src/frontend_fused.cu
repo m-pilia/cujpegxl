@@ -204,29 +204,60 @@ __device__ inline void candidate_origin(int idx, int& px0, int& py0) {
     }
 }
 
+constexpr int SELECT_ENTRIES_PER_THREAD{32 * 32 / FRONTEND_THREADS};
+
 // Horizontal pass of all 1024 / (N * N) candidates of size N into
-// rows[idx * N * N + fx * N + r].
+// rows[idx * N * N + fx * N + r]. Thread t computes the entries
+// k = t + 256 j: for N = 32 they share the pixel row, otherwise they share fx
+// across four candidates.
 template <int N>
 __device__ void candidate_rows(const float* __restrict__ y, const float* basis, float* rows,
                                int tid) {
-    for (int k{tid}; k < 32 * 32; k += FRONTEND_THREADS) {
-        const int e{k % (N * N)};
+    const float* basis_rows[SELECT_ENTRIES_PER_THREAD];
+    const float* pixel_rows[SELECT_ENTRIES_PER_THREAD];
+#pragma unroll
+    for (int j{0}; j < SELECT_ENTRIES_PER_THREAD; ++j) {
+        int fx{};
+        int r{};
+        int idx{};
+        if (N == 32) {
+            fx = tid / 32 + 8 * j;
+            r = tid % 32;
+        } else {
+            const int e{tid % (N * N)};
+            fx = e / N;
+            r = e % N;
+            idx = tid / (N * N) + j * (FRONTEND_THREADS / (N * N));
+        }
         int px0{};
         int py0{};
-        candidate_origin<N>(k / (N * N), px0, py0);
-        rows[k] = dct_rows_entry(basis, N, e / N, y + (py0 + e % N) * TILE_STRIDE + px0);
+        candidate_origin<N>(idx, px0, py0);
+        basis_rows[j] = dct_basis_row(basis, N, fx);
+        pixel_rows[j] = y + (py0 + r) * TILE_STRIDE + px0;
+    }
+    float entries[SELECT_ENTRIES_PER_THREAD];
+    dct_dots<SELECT_ENTRIES_PER_THREAD>(N, basis_rows, pixel_rows, entries);
+#pragma unroll
+    for (int j{0}; j < SELECT_ENTRIES_PER_THREAD; ++j) {
+        rows[tid + FRONTEND_THREADS * j] = entries[j];
     }
     __syncthreads();
 }
 
+// Vertical pass of the coefficients (fx + h * rows_step / N, fy) of one thread,
+// h = 0..3, from the horizontal-pass rows rows_fx of frequency fx. They share
+// the basis row of fy.
 template <int N>
-__device__ float candidate_coeff(const float* basis, const float* rows, int idx, int e, float qgsf,
-                                 float& dist, float& rate) {
-    const int fx{e / N};
-    const int fy{e % N};
-    const float coeff{dct_coeff_entry(basis, N, fy, rows + idx * N * N + fx * N)};
-    accumulate_coeff_cost(coeff, fx, fy, N, qgsf, dist, rate);
-    return coeff;
+__device__ void candidate_coeffs(const float* basis, const float* rows_fx, int rows_step, int fy,
+                                 float (&coeffs)[SELECT_ENTRIES_PER_THREAD]) {
+    const float* basis_rows[SELECT_ENTRIES_PER_THREAD];
+    const float* vectors[SELECT_ENTRIES_PER_THREAD];
+#pragma unroll
+    for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
+        basis_rows[h] = dct_basis_row(basis, N, fy);
+        vectors[h] = rows_fx + h * rows_step;
+    }
+    dct_dots<SELECT_ENTRIES_PER_THREAD>(N, basis_rows, vectors, coeffs);
 }
 
 constexpr std::uint32_t WHOLE32_LAYOUT{0x20202020u};
@@ -259,22 +290,31 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     const int warp{tid / 32};
 
     // 8x8: each warp owns two candidates; lane l holds coefficients l and l + 32
-    // (slots 64..255 are empty).
+    // of each (slots 64..255 are empty).
     candidate_rows<8>(y, basis8, rows, tid);
-    for (int j{0}; j < 2; ++j) {
-        const int idx{2 * warp + j};
-        float d0{0.0f};
-        float r0{0.0f};
-        float d1{0.0f};
-        float r1{0.0f};
-        candidate_coeff<8>(basis8, rows, idx, lane, qgsf, d0, r0);
-        candidate_coeff<8>(basis8, rows, idx, lane + 32, qgsf, d1, r1);
-        const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
-        const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
-        if (lane == 0) {
-            const std::size_t bbx{rbx + static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
-            const std::size_t bby{rby + static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
-            cost8[idx] = bbx < bw && bby < bh ? candidate_cost(8, dist, rate, lambda) : INF;
+    {
+        const int fx{lane / 8};
+        const int fy{lane % 8};
+        float coeffs[SELECT_ENTRIES_PER_THREAD];
+        candidate_coeffs<8>(basis8, rows + 2 * warp * 64 + fx * 8, 32, fy, coeffs);
+#pragma unroll
+        for (int j{0}; j < 2; ++j) {
+            const int idx{2 * warp + j};
+            float d0{0.0f};
+            float r0{0.0f};
+            float d1{0.0f};
+            float r1{0.0f};
+            accumulate_coeff_cost(coeffs[2 * j], fx, fy, 8, qgsf, d0, r0);
+            accumulate_coeff_cost(coeffs[2 * j + 1], fx + 4, fy, 8, qgsf, d1, r1);
+            const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
+            const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
+            if (lane == 0) {
+                const std::size_t bbx{rbx +
+                                      static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
+                const std::size_t bby{rby +
+                                      static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
+                cost8[idx] = bbx < bw && bby < bh ? candidate_cost(8, dist, rate, lambda) : INF;
+            }
         }
     }
     __syncthreads();
@@ -285,11 +325,15 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     {
         const int q{warp / 2};
         const int j{tid % 64};
+        const int fx{j / 16};
+        const int fy{j % 16};
+        float coeffs[SELECT_ENTRIES_PER_THREAD];
+        candidate_coeffs<16>(basis16, rows + q * 256 + fx * 16, 64, fy, coeffs);
         float d[4]{};
         float r[4]{};
 #pragma unroll
         for (int h{0}; h < 4; ++h) {
-            candidate_coeff<16>(basis16, rows, q, j + 64 * h, qgsf, d[h], r[h]);
+            accumulate_coeff_cost(coeffs[h], fx + 4 * h, fy, 16, qgsf, d[h], r[h]);
         }
         const float dist{__fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]))};
         const float rate{__fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]))};
@@ -317,11 +361,19 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
     float dist32{0.0f};
     float rate32{0.0f};
-    for (int e{tid}; e < 32 * 32; e += FRONTEND_THREADS) {
-        const float coeff{candidate_coeff<32>(basis32, rows, 0, e, qgsf, dist32, rate32)};
-        if (fit32) {
-            y_plane[covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(e))] =
-                __float2half_rn(coeff);
+    {
+        const int fx{tid / 32};
+        const int fy{tid % 32};
+        float coeffs[SELECT_ENTRIES_PER_THREAD];
+        candidate_coeffs<32>(basis32, rows + fx * 32, 256, fy, coeffs);
+#pragma unroll
+        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
+            accumulate_coeff_cost(coeffs[h], fx + 8 * h, fy, 32, qgsf, dist32, rate32);
+            if (fit32) {
+                const int e{tid + FRONTEND_THREADS * h};
+                y_plane[covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(e))] =
+                    __float2half_rn(coeffs[h]);
+            }
         }
     }
     __syncthreads();
@@ -462,12 +514,14 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
         if (t.n == 0) {
             continue;
         }
-        const float* basis{region_basis(bases, t.n)};
         const int e{k - t.first_k};
+        const float* basis_row{dct_basis_row(region_basis(bases, t.n), t.n, e / t.n)};
         const int pixel_row{(t.py0 + e % t.n) * TILE_STRIDE + t.px0};
 #pragma unroll
         for (int c{0}; c < CHANNELS; ++c) {
-            rows[c][k] = dct_rows_entry(basis, t.n, e / t.n, sharp[c] + pixel_row);
+            float row[1];
+            dct_dots<1>(t.n, {basis_row}, {sharp[c] + pixel_row}, row);
+            rows[c][k] = row[0];
         }
     }
     __syncthreads();
@@ -479,14 +533,16 @@ __device__ void forward_region(const float* const (&sharp)[CHANNELS], const floa
         const float* basis{region_basis(bases, t.n)};
         const int e{k - t.first_k};
         const int rows_fx{t.first_k + (e / t.n) * t.n};
+        const float* basis_row0{dct_basis_row(basis, t.n, e % t.n)};
+        const float* basis_row1{dct_basis_row(basis, t.n, e % t.n + 1)};
         const std::size_t slot{
             covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
 #pragma unroll
         for (int c{0}; c < CHANNELS; ++c) {
-            float c0{};
-            float c1{};
-            dct_coeff_pair(basis, t.n, e % t.n, rows[c] + rows_fx, c0, c1);
-            *reinterpret_cast<__half2*>(dst[c] + slot) = __floats2half2_rn(c0, c1);
+            const float* rows_c{rows[c] + rows_fx};
+            float coeff[2];
+            dct_dots<2>(t.n, {basis_row0, basis_row1}, {rows_c, rows_c}, coeff);
+            *reinterpret_cast<__half2*>(dst[c] + slot) = __floats2half2_rn(coeff[0], coeff[1]);
         }
     }
 }
