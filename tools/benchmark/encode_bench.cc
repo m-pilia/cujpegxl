@@ -200,7 +200,7 @@ struct BenchImage {
     std::vector<std::uint8_t> host;
     std::uint8_t* d_luma{nullptr};
     std::uint8_t* d_chroma{nullptr};
-    std::unique_ptr<cujpegxl::tools::DevicePlanarYuv> planar{};
+    std::unique_ptr<cujpegxl::tools::DevicePlanarYuv> planar;
 };
 
 BenchImage load_nv12(const std::string& path, std::uint32_t width, std::uint32_t height) {

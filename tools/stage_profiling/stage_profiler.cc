@@ -311,13 +311,14 @@ int main(int argc, char** argv) {
             const std::size_t body_size{dc_global.size() + dc_total + ac_global_size + ac_total};
             std::size_t at{0};
             cudaMemcpyAsync(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice,
-                            0);
+                            nullptr);
             at += dc_global.size();
-            cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, 0);
+            cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, nullptr);
             at += dc_total;
-            cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice, 0);
+            cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice,
+                            nullptr);
             at += ac_global_size;
-            cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, 0);
+            cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, nullptr);
             const std::size_t codestream_size{head.size() + body_size};
             std::vector<std::uint8_t> file{bitstream::container_framing(codestream_size)};
             const std::size_t framing{file.size()};
