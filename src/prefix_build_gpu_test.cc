@@ -194,7 +194,7 @@ void check_dc_group_blobs(std::size_t width, std::size_t height, Lcg& rng) {
 
     ASSERT_TRUE(build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                             d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
-                                            d_pre_bits, d_mid, d_mid_off, d_mid_bits));
+                                            d_pre_bits, d_mid, d_mid_off, d_mid_bits, nullptr));
 
     const auto dev_dc_depth{device_download(d_dc_depth, num_dc * HISTOGRAM_STRIDE)};
     const auto dev_dc_bits{device_download(d_dc_bits, num_dc * HISTOGRAM_STRIDE)};

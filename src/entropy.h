@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <cuda_runtime_api.h>
+
 #include "ac_context.h"
 #include "vardct_layout.h"
 
@@ -62,6 +64,10 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height);
 // Per-group slot stride of the dc_first_blocks position lists.
 constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
 
+// The DcGroup wrappers below (dc_first_blocks, dc_build_histograms,
+// acmeta_build_histograms, dc_encode_groups) enqueue all their work on `stream`,
+// so the DC path can run concurrently with the AC path.
+
 // Per-DcGroup first-blocks (blocks whose transform is not ACS_COVERED). `acs` is
 // the per-8x8 transform signal (nullptr = all 8x8, so every block is one).
 // `positions` (device, dc_num_groups * DC_FIRST_BLOCK_STRIDE std::size_t)
@@ -71,7 +77,7 @@ constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
 // ACS/QF column (a first-block ordinal) back to its block through these lists.
 // Deterministic. Returns false on a CUDA error.
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::size_t* positions, std::size_t* counts);
+                     std::size_t* positions, std::size_t* counts, cudaStream_t stream);
 
 // Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
 // Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer
@@ -80,7 +86,7 @@ bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t heig
 // uint32 (zeroed by the call). Deterministic (integer atomics). Returns false on
 // a CUDA error.
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
-                         std::uint32_t* histograms);
+                         std::uint32_t* histograms, cudaStream_t stream);
 
 // Per-DcGroup AcMetadata token histogram, pooled over the metadata samples of
 // that group: the structural zero samples (YtoX, YtoB, ACS row 0, EPF) plus the
@@ -94,7 +100,8 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
 // and the per-first-block quant-field tokens (plus the structural EPF zeros).
 bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
                              const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                             std::size_t width, std::size_t height, std::uint32_t* histograms);
+                             std::size_t width, std::size_t height, std::uint32_t* histograms,
+                             cudaStream_t stream);
 
 // Emit each DcGroup's byte-aligned section (extra_precision + VarDCTDC modular +
 // AcMetadata count + AcMetadata modular) concatenated into `out`, mirroring the
@@ -105,6 +112,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 // byte offset in `out` and `total_bytes` the section total. Fails if
 // `out_capacity` is exceeded. Deterministic. All device pointers except
 // `total_bytes`. `scratch` holds dc_encode_scratch_bytes(width, height) bytes.
+// Synchronizes `stream` once, to read the section total before the emit pass.
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block
 // raster order); its value at each block is written as the block's ACS+QF row-1
@@ -125,7 +133,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
                       std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                      std::size_t* total_bytes);
+                      std::size_t* total_bytes, cudaStream_t stream);
 
 std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height);
 

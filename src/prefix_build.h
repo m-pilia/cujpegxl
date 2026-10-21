@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <cuda_runtime_api.h>
+
 namespace cujpegxl {
 
 // Fixed byte stride reserved for each DcGroup header blob in the device blob
@@ -37,8 +39,8 @@ bool build_ac_global_device(const std::uint32_t* d_ac_hist, std::size_t num_ac_g
 // (offsets into `d_blob_pre_off` / `d_blob_mid_off`, bit lengths into
 // `d_blob_pre_bits` / `d_blob_mid_bits`) and the DC and AcMetadata prefix codes
 // into `d_dc_depth` / `d_dc_bits` / `d_am_depth` / `d_am_bits`
-// (num_dc_groups * HISTOGRAM_STRIDE). Deterministic. Returns false on a CUDA
-// error.
+// (num_dc_groups * HISTOGRAM_STRIDE). All work is enqueued on `stream`.
+// Deterministic. Returns false on a CUDA error.
 bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
                                  const std::uint32_t* d_dc_hist, const std::uint32_t* d_am_hist,
                                  const std::size_t* d_fbc, std::uint8_t* d_dc_depth,
@@ -46,7 +48,7 @@ bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
                                  std::uint16_t* d_am_bits, std::uint8_t* d_blob_pre,
                                  std::uint32_t* d_blob_pre_off, std::uint32_t* d_blob_pre_bits,
                                  std::uint8_t* d_blob_mid, std::uint32_t* d_blob_mid_off,
-                                 std::uint32_t* d_blob_mid_bits);
+                                 std::uint32_t* d_blob_mid_bits, cudaStream_t stream);
 
 }  // namespace cujpegxl
 

@@ -69,6 +69,54 @@ const DeviceCtxMapBlob& ac_ctxmap_blob_device() {
     return blob;
 }
 
+// Non-blocking stream of the DC path, created once on the device active at
+// first encode (the single target device, as for the context-map blob).
+cudaStream_t dc_path_stream() {
+    static const cudaStream_t stream{[] {
+        cudaStream_t s{nullptr};
+        return cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess ? s : nullptr;
+    }()};
+    return stream;
+}
+
+// Forks `side` off the legacy default stream: work enqueued on `side` starts
+// after the default stream's work enqueued so far, and join() makes the
+// default stream wait for `side`'s work. Destruction joins as well, so on an
+// early return the DeviceScope frees (ordered on the default stream) cannot
+// overtake work still pending on `side`.
+class StreamFork {
+public:
+    explicit StreamFork(cudaStream_t side) : side_{side} {
+        forked_ = cudaEventCreateWithFlags(&event_, cudaEventDisableTiming) == cudaSuccess &&
+                  cudaEventRecord(event_, 0) == cudaSuccess &&
+                  cudaStreamWaitEvent(side_, event_, 0) == cudaSuccess;
+    }
+    StreamFork(const StreamFork&) = delete;
+    StreamFork& operator=(const StreamFork&) = delete;
+    ~StreamFork() {
+        if (forked_ && !joined_ && !join()) {
+            cudaStreamSynchronize(side_);
+        }
+        if (event_ != nullptr) {
+            cudaEventDestroy(event_);
+        }
+    }
+
+    bool forked() const { return forked_; }
+
+    bool join() {
+        joined_ = cudaEventRecord(event_, side_) == cudaSuccess &&
+                  cudaStreamWaitEvent(0, event_, 0) == cudaSuccess;
+        return joined_;
+    }
+
+private:
+    cudaStream_t side_{nullptr};
+    cudaEvent_t event_{nullptr};
+    bool forked_{false};
+    bool joined_{false};
+};
+
 // A device allocation freed when the encode returns, keeping the orchestrator's
 // many scratch buffers out of the happy-path control flow. Backed by the
 // stream-ordered pool allocator so the freed blocks are recycled across frames.
@@ -136,26 +184,14 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
     const Clock::time_point entropy_gpu_start{Clock::now()};
 
+    // Everything the DC path touches is allocated before the fork: an
+    // allocation ordered on the default stream after it would not be ordered
+    // before the DC stream's use.
     std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::size_t* d_fb_pos{scope.alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
-    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc) {
-        return ENCODE_FAILED;
-    }
-    if (!ac_build_histogram(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_hist) ||
-        !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
-        !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist) ||
-        !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc)) {
-        return ENCODE_FAILED;
-    }
-
-    // Prefix-code build and header serialization run on-device, so the AC/DC/
-    // AcMetadata histograms stay resident: no histogram device-to-host copy, host
-    // Huffman construction, or depth/bits/blob upload between the histogram and
-    // encode kernels. DcGlobal depends only on the quantizer, so it stays on host.
-    const DeviceCtxMapBlob& ctxmap{ac_ctxmap_blob_device()};
     std::uint8_t* d_ac_depth{
         scope.alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_ac_bits{
@@ -174,19 +210,46 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
     std::uint8_t* d_mid{scope.alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
     std::uint32_t* d_mid_off{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_mid_bits{scope.alloc<std::uint32_t>(num_dc)};
-    if (!ctxmap.bytes || !d_ac_depth || !d_ac_bits || !d_ac_section || !d_section_sizes ||
-        !d_dc_depth || !d_dc_bits || !d_am_depth || !d_am_bits || !d_pre || !d_pre_off ||
-        !d_pre_bits || !d_mid || !d_mid_off || !d_mid_bits) {
+    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(caps.ac_groups)};
+    std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(caps.dc_groups)};
+    std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
+    std::uint8_t* d_dc_scratch{scope.alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
+    const DeviceCtxMapBlob& ctxmap{ac_ctxmap_blob_device()};
+    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc || !d_ac_depth ||
+        !d_ac_bits || !d_ac_section || !d_section_sizes || !d_dc_depth || !d_dc_bits ||
+        !d_am_depth || !d_am_bits || !d_pre || !d_pre_off || !d_pre_bits || !d_mid || !d_mid_off ||
+        !d_mid_bits || !d_ac_body || !d_dc_body || !d_ac_offsets || !d_dc_offsets ||
+        !d_dc_scratch || !ctxmap.bytes) {
         return ENCODE_FAILED;
     }
     std::uint32_t* d_dc_sizes{d_section_sizes};
     std::uint32_t* d_ac_global_size{d_section_sizes + num_dc};
     std::uint32_t* d_ac_sizes{d_section_sizes + num_dc + 1};
-    if (!build_ac_global_device(d_ac_hist, num_ac, ctxmap.bytes, ctxmap.nbits, d_ac_depth,
-                                d_ac_bits, d_ac_section, caps.ac_global, d_ac_global_size) ||
+
+    // The DC path (DcGroup histograms, prefix codes and sections) depends on the
+    // AC path only through the section sizes, and its few DcGroups underfill the
+    // device, so it runs on its own stream alongside the AC path.
+    const cudaStream_t dc_stream{dc_path_stream()};
+    StreamFork dc_fork{dc_stream};
+    if (dc_stream == nullptr || !dc_fork.forked()) {
+        return ENCODE_FAILED;
+    }
+
+    // Prefix-code build and header serialization run on-device, so the AC/DC/
+    // AcMetadata histograms stay resident: no histogram device-to-host copy, host
+    // Huffman construction, or depth/bits/blob upload between the histogram and
+    // encode kernels. DcGlobal depends only on the quantizer, so it stays on host.
+    if (!dc_build_histograms(dc_device, width, height, d_dc_hist, dc_stream) ||
+        !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist,
+                                 dc_stream) ||
+        !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc, dc_stream) ||
         !build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                      d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
-                                     d_mid, d_mid_off, d_mid_bits)) {
+                                     d_mid, d_mid_off, d_mid_bits, dc_stream) ||
+        !ac_build_histogram(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_hist) ||
+        !build_ac_global_device(d_ac_hist, num_ac, ctxmap.bytes, ctxmap.nbits, d_ac_depth,
+                                d_ac_bits, d_ac_section, caps.ac_global, d_ac_global_size)) {
         return ENCODE_FAILED;
     }
     entropy.gpu_us += us_since(entropy_gpu_start);
@@ -196,27 +259,15 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     const Clock::time_point entropy_encode_start{Clock::now()};
-    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(caps.ac_groups)};
-    std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(caps.dc_groups)};
-    std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
-    std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint8_t* d_dc_scratch{scope.alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
-    if (!d_ac_body || !d_dc_body || !d_ac_offsets || !d_dc_offsets || !d_dc_scratch) {
-        return ENCODE_FAILED;
-    }
-
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    const bool ac_encoded{ac_encode_groups(ac_device, acs, nz_grid, nz_exact, width, height,
-                                           d_ac_depth, d_ac_bits, d_ac_body, caps.ac_groups,
-                                           d_ac_sizes, d_ac_offsets, &ac_total)};
-    if (!ac_encoded) {
-        return ENCODE_FAILED;
-    }
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
                           d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
-                          caps.dc_groups, d_dc_sizes, d_dc_offsets, &dc_total)) {
+                          caps.dc_groups, d_dc_sizes, d_dc_offsets, &dc_total, dc_stream) ||
+        !ac_encode_groups(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_depth, d_ac_bits,
+                          d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets, &ac_total) ||
+        !dc_fork.join()) {
         return ENCODE_FAILED;
     }
 

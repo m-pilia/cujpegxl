@@ -637,14 +637,14 @@ bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
                                  std::uint16_t* d_am_bits, std::uint8_t* d_blob_pre,
                                  std::uint32_t* d_blob_pre_off, std::uint32_t* d_blob_pre_bits,
                                  std::uint8_t* d_blob_mid, std::uint32_t* d_blob_mid_off,
-                                 std::uint32_t* d_blob_mid_bits) {
+                                 std::uint32_t* d_blob_mid_bits, cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
     const std::size_t ydg{ceil_div(bh, DC_GROUP_BLOCKS)};
     const std::size_t num_groups{xdg * ydg};
 
-    dc_group_blobs_kernel<<<static_cast<unsigned int>(2 * num_groups), CODE_THREADS>>>(
+    dc_group_blobs_kernel<<<static_cast<unsigned int>(2 * num_groups), CODE_THREADS, 0, stream>>>(
         bw, bh, xdg, d_dc_hist, d_am_hist, d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits,
         d_blob_pre, d_blob_pre_off, d_blob_pre_bits, d_blob_mid, d_blob_mid_off, d_blob_mid_bits);
     return cudaGetLastError() == cudaSuccess;

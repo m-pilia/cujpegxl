@@ -1346,57 +1346,60 @@ std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height) {
 }
 
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::size_t* positions, std::size_t* counts) {
+                     std::size_t* positions, std::size_t* counts, cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
     std::uint32_t* row_counts{nullptr};
-    if (cudaMallocAsync(&row_counts, num_groups * DC_GROUP_BLOCKS * sizeof(std::uint32_t), 0) !=
-        cudaSuccess) {
+    if (cudaMallocAsync(&row_counts, num_groups * DC_GROUP_BLOCKS * sizeof(std::uint32_t),
+                        stream) != cudaSuccess) {
         return false;
     }
     const dim3 grid{static_cast<unsigned int>(bh), static_cast<unsigned int>(xdg)};
-    first_block_row_count_kernel<<<grid, FIRST_BLOCK_THREADS>>>(acs, bw, xdg, row_counts);
-    first_block_scatter_kernel<<<grid, FIRST_BLOCK_THREADS>>>(acs, bw, bh, xdg, row_counts,
-                                                              positions, counts);
+    first_block_row_count_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(acs, bw, xdg,
+                                                                           row_counts);
+    first_block_scatter_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(
+        acs, bw, bh, xdg, row_counts, positions, counts);
     const bool ok{cudaGetLastError() == cudaSuccess};
-    cudaFreeAsync(row_counts, 0);
+    cudaFreeAsync(row_counts, stream);
     return ok;
 }
 
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
-                         std::uint32_t* histograms) {
+                         std::uint32_t* histograms, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t), 0) !=
-        cudaSuccess) {
+    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
+                        stream) != cudaSuccess) {
         return false;
     }
-    dc_histogram_kernel<<<group_hist_grid(DC_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS>>>(
+    dc_histogram_kernel<<<group_hist_grid(DC_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS, 0, stream>>>(
         dc, bw, bh, nblocks, xdg, histograms);
     return cudaGetLastError() == cudaSuccess;
 }
 
 bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
                              const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                             std::size_t width, std::size_t height, std::uint32_t* histograms) {
+                             std::size_t width, std::size_t height, std::uint32_t* histograms,
+                             cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t), 0) !=
-        cudaSuccess) {
+    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
+                        stream) != cudaSuccess) {
         return false;
     }
-    acmeta_histogram_kernel<<<group_hist_grid(ACMETA_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS>>>(
-        quant_field, acs, ytox_map, ytob_map, bw, bh, cmw, xdg, histograms);
+    acmeta_histogram_kernel<<<group_hist_grid(ACMETA_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS, 0,
+                              stream>>>(quant_field, acs, ytox_map, ytob_map, bw, bh, cmw, xdg,
+                                        histograms);
     return cudaGetLastError() == cudaSuccess;
 }
 
@@ -1411,7 +1414,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
                       std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                      std::size_t* total_bytes) {
+                      std::size_t* total_bytes, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1423,17 +1426,18 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     const DcEncodeScratch s{carve_dc_encode_scratch(scratch, num_groups)};
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
-    dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
+    dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS, 0, stream>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
         blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,
         s.chunk_bits);
-    dc_chunk_scan_kernel<<<1, DC_CHUNKS>>>(num_groups, s.chunk_bits, s.chunk_base, group_sizes,
-                                           group_offsets, s.total_bytes);
+    dc_chunk_scan_kernel<<<1, DC_CHUNKS, 0, stream>>>(num_groups, s.chunk_bits, s.chunk_base,
+                                                      group_sizes, group_offsets, s.total_bytes);
     std::uint32_t total{0};
     if (cudaGetLastError() != cudaSuccess ||
-        cudaMemcpy(&total, s.total_bytes, sizeof(std::uint32_t), cudaMemcpyDeviceToHost) !=
-            cudaSuccess) {
+        cudaMemcpyAsync(&total, s.total_bytes, sizeof(std::uint32_t), cudaMemcpyDeviceToHost,
+                        stream) != cudaSuccess ||
+        cudaStreamSynchronize(stream) != cudaSuccess) {
         return false;
     }
     *total_bytes = total;
@@ -1445,11 +1449,11 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     // section region must start zeroed. Round up to the 32-bit word the last bits
     // land in; the wrapper's capacity has slack for the padding.
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemsetAsync(out, 0, zero_bytes, 0) != cudaSuccess) {
+    if (cudaMemsetAsync(out, 0, zero_bytes, stream) != cudaSuccess) {
         return false;
     }
 
-    dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
+    dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS, 0, stream>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
         blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,

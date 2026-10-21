@@ -110,13 +110,13 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             cudaMalloc(&d_out, capacity) == cudaSuccess};
 
     std::size_t total_bytes{0};
-    ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist);
-    ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist);
-    ok = ok && dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc);
+    ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist, nullptr);
+    ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
+    ok = ok && dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc, nullptr);
     ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                                 d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                                 d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_scratch, d_out,
-                                capacity, d_sizes, d_offsets, &total_bytes);
+                                capacity, d_sizes, d_offsets, &total_bytes, nullptr);
 
     if (ok) {
         std::vector<std::uint32_t> flat_dc(code_span, 0);
