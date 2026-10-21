@@ -89,6 +89,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     std::size_t* d_fbc{nullptr};
     std::uint32_t* d_sizes{nullptr};
     std::uint32_t* d_offsets{nullptr};
+    std::uint8_t* d_scratch{nullptr};
     std::uint8_t* d_out{nullptr};
 
     bool ok{upload(dc, &d_dc) && upload(acs, &d_acs) && upload(ytox_map, &d_mx) &&
@@ -105,16 +106,17 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             cudaMalloc(&d_fbc, num_groups * sizeof(std::size_t)) == cudaSuccess &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_scratch, dc_encode_scratch_bytes(width, height)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
 
     std::size_t total_bytes{0};
     ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist);
     ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist);
     ok = ok && dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc);
-    ok = ok &&
-         dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc, d_dc_depth,
-                          d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid,
-                          d_mid_off, d_mid_bits, d_out, capacity, d_sizes, d_offsets, &total_bytes);
+    ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
+                                d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+                                d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_scratch, d_out,
+                                capacity, d_sizes, d_offsets, &total_bytes);
 
     if (ok) {
         std::vector<std::uint32_t> flat_dc(code_span, 0);
@@ -165,6 +167,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     cudaFree(d_fbc);
     cudaFree(d_sizes);
     cudaFree(d_offsets);
+    cudaFree(d_scratch);
     cudaFree(d_out);
     return ok;
 }

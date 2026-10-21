@@ -105,9 +105,10 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 // host DcGroup reference byte-for-byte. Per group the host supplies the two
 // header bit blobs bracketing the token runs and the two shared prefix codes;
 // the device emits the DC tokens (from `dc`) and the AcMetadata tokens (from the
-// group geometry and the per-block `quant_field`). A CUB exclusive scan of the
-// per-group byte sizes fixes each group's offset. Fails if `out_capacity` is
-// exceeded. Deterministic. All device pointers except `total_bytes`.
+// group geometry and the per-block `quant_field`). `group_offsets` receives each group's
+// byte offset in `out` and `total_bytes` the section total. Fails if
+// `out_capacity` is exceeded. Deterministic. All device pointers except
+// `total_bytes`. `scratch` holds dc_encode_scratch_bytes(width, height) bytes.
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block
 // raster order); its value at each block is written as the block's ACS+QF row-1
@@ -126,8 +127,11 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
                       const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
-                      std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes);
+                      std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
+                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                      std::size_t* total_bytes);
+
+std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height);
 
 }  // namespace cujpegxl
 

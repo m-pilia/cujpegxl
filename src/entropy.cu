@@ -704,6 +704,30 @@ __global__ void group_chunk_scan_kernel(std::size_t num_groups,
     }
 }
 
+// group_chunk_scan_kernel for the few DcGroups (4 at 4K): one block walks the
+// groups in order, so the group byte offsets and the section total come out of
+// the same launch instead of a separate device-wide scan.
+__global__ void dc_chunk_scan_kernel(std::size_t num_groups, const unsigned long long* chunk_bits,
+                                     unsigned long long* chunk_base, std::uint32_t* group_sizes,
+                                     std::uint32_t* group_offsets, std::uint32_t* total_bytes) {
+    __shared__ unsigned long long sh[DC_CHUNKS];
+    std::uint32_t offset{0};
+    for (std::size_t g{0}; g < num_groups; ++g) {
+        const std::size_t chunk{g * DC_CHUNKS + threadIdx.x};
+        unsigned long long group_bits{0};
+        chunk_base[chunk] = block_scan_exclusive(chunk_bits[chunk], sh, group_bits);
+        const auto size{static_cast<std::uint32_t>((group_bits + 7) / 8)};
+        if (threadIdx.x == 0) {
+            group_sizes[g] = size;
+            group_offsets[g] = offset;
+        }
+        offset += size;
+    }
+    if (threadIdx.x == 0) {
+        *total_bytes = offset;
+    }
+}
+
 __global__ void dc_chunk_emit_kernel(
     const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
     std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
@@ -1221,6 +1245,25 @@ __global__ void ac_chunk_emit_kernel(const std::int16_t* ac, const std::int8_t* 
     }
 }
 
+struct DcEncodeScratch {
+    unsigned long long* chunk_bits{nullptr};
+    unsigned long long* chunk_base{nullptr};
+    std::uint32_t* run_offsets{nullptr};
+    std::uint32_t* total_bytes{nullptr};
+};
+
+// Layout sized by dc_encode_scratch_bytes; the 64-bit arrays come first so every
+// array is naturally aligned.
+DcEncodeScratch carve_dc_encode_scratch(std::uint8_t* scratch, std::size_t num_groups) {
+    const std::size_t chunks{num_groups * DC_CHUNKS};
+    auto* const chunk_bits{reinterpret_cast<unsigned long long*>(scratch)};
+    auto* const run_offsets{reinterpret_cast<std::uint32_t*>(chunk_bits + 2 * chunks)};
+    return DcEncodeScratch{.chunk_bits = chunk_bits,
+                           .chunk_base = chunk_bits + chunks,
+                           .run_offsets = run_offsets,
+                           .total_bytes = run_offsets + chunks * DC_EMIT_THREADS};
+}
+
 }  // namespace
 
 std::size_t ac_num_groups(std::size_t width, std::size_t height) {
@@ -1375,6 +1418,12 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height) {
     return xdg * ydg;
 }
 
+std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height) {
+    const std::size_t chunks{dc_num_groups(width, height) * DC_CHUNKS};
+    return 2 * chunks * sizeof(unsigned long long) +
+           chunks * DC_EMIT_THREADS * sizeof(std::uint32_t) + sizeof(std::uint32_t);
+}
+
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
                      std::size_t* positions, std::size_t* counts) {
     const std::size_t bw{width / 8};
@@ -1439,8 +1488,9 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
                       const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
-                      std::uint8_t* out, std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes) {
+                      std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
+                      std::uint32_t* group_sizes, std::uint32_t* group_offsets,
+                      std::size_t* total_bytes) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1449,67 +1499,24 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
 
-    std::uint32_t* run_offsets{nullptr};
-    unsigned long long* chunk_bits{nullptr};
-    unsigned long long* chunk_base{nullptr};
-    const auto free_chunks = [&] {
-        cudaFreeAsync(run_offsets, 0);
-        cudaFreeAsync(chunk_bits, 0);
-        cudaFreeAsync(chunk_base, 0);
-    };
-    if (cudaMallocAsync(&run_offsets,
-                        num_groups * DC_CHUNKS * DC_EMIT_THREADS * sizeof(std::uint32_t),
-                        0) != cudaSuccess ||
-        cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
-            cudaSuccess ||
-        cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
-            cudaSuccess) {
-        free_chunks();
-        return false;
-    }
+    const DcEncodeScratch s{carve_dc_encode_scratch(scratch, num_groups)};
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
-        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, run_offsets,
-        chunk_bits);
-    group_chunk_scan_kernel<DC_CHUNKS><<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
-        num_groups, chunk_bits, chunk_base, group_sizes);
-    if (cudaGetLastError() != cudaSuccess) {
-        free_chunks();
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,
+        s.chunk_bits);
+    dc_chunk_scan_kernel<<<1, DC_CHUNKS>>>(num_groups, s.chunk_bits, s.chunk_base, group_sizes,
+                                           group_offsets, s.total_bytes);
+    std::uint32_t total{0};
+    if (cudaGetLastError() != cudaSuccess ||
+        cudaMemcpy(&total, s.total_bytes, sizeof(std::uint32_t), cudaMemcpyDeviceToHost) !=
+            cudaSuccess) {
         return false;
     }
-
-    void* d_temp{nullptr};
-    std::size_t temp_bytes{0};
-    cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups));
-    if (cudaMallocAsync(&d_temp, temp_bytes, 0) != cudaSuccess) {
-        free_chunks();
-        return false;
-    }
-    cub::DeviceScan::ExclusiveSum(d_temp, temp_bytes, group_sizes, group_offsets,
-                                  static_cast<int>(num_groups));
-    const cudaError_t scan_status{cudaGetLastError()};
-    cudaFreeAsync(d_temp, 0);
-    if (scan_status != cudaSuccess) {
-        free_chunks();
-        return false;
-    }
-
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess) {
-        free_chunks();
-        return false;
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
+    *total_bytes = total;
     if (*total_bytes > out_capacity) {
-        free_chunks();
         return false;
     }
 
@@ -1518,18 +1525,15 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     // land in; the wrapper's capacity has slack for the padding.
     const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
     if (cudaMemsetAsync(out, 0, zero_bytes, 0) != cudaSuccess) {
-        free_chunks();
         return false;
     }
 
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
-        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, run_offsets, chunk_base,
-        out, group_offsets);
-    const bool ok{cudaGetLastError() == cudaSuccess};
-    free_chunks();
-    return ok;
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,
+        s.chunk_base, out, group_offsets);
+    return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace cujpegxl

@@ -195,7 +195,10 @@ int main(int argc, char** argv) {
     std::uint16_t* d_ac_bits{
         device_alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_ac_section{device_alloc<std::uint8_t>(AC_SECTION_CAP)};
-    std::uint32_t* d_ac_section_len{device_alloc<std::uint32_t>(1)};
+    std::uint32_t* d_section_sizes{device_alloc<std::uint32_t>(num_dc + 1 + num_ac)};
+    std::uint32_t* d_dc_sizes{d_section_sizes};
+    std::uint32_t* d_ac_global_size{d_section_sizes + num_dc};
+    std::uint32_t* d_ac_sizes{d_section_sizes + num_dc + 1};
     std::uint8_t* d_dc_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_dc_bits{device_alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_am_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
@@ -211,10 +214,9 @@ int main(int argc, char** argv) {
     const std::size_t dc_capacity{48 * bw * bh + 2 * num_dc * DC_BLOB_STRIDE + num_dc * 64 + 4096};
     std::uint8_t* d_ac_body{device_alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_dc_body{device_alloc<std::uint8_t>(dc_capacity)};
-    std::uint32_t* d_ac_sizes{device_alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{device_alloc<std::uint32_t>(num_ac)};
-    std::uint32_t* d_dc_sizes{device_alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{device_alloc<std::uint32_t>(num_dc)};
+    std::uint8_t* d_dc_scratch{device_alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
     std::uint8_t* d_body{
         device_alloc<std::uint8_t>(ac_capacity + dc_capacity + AC_SECTION_CAP + 4096)};
 
@@ -265,7 +267,7 @@ int main(int argc, char** argv) {
         timed(s_fbc, record, [&] { dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc); });
         timed(s_acg, record, [&] {
             build_ac_global_device(d_ac_hist, num_ac, d_ctxmap, ctxmap.nbits, d_ac_depth, d_ac_bits,
-                                   d_ac_section, AC_SECTION_CAP, d_ac_section_len);
+                                   d_ac_section, AC_SECTION_CAP, d_ac_global_size);
         });
         timed(s_dcb, record, [&] {
             build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
@@ -285,27 +287,19 @@ int main(int argc, char** argv) {
         timed(s_dce, record, [&] {
             dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                              d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
-                             d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
-                             d_dc_sizes, d_dc_offsets, &dc_total);
+                             d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
+                             dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total);
         });
 
-        std::vector<std::uint32_t> ac_sizes(num_ac);
-        std::vector<std::uint32_t> dc_sizes(num_dc);
-        std::uint32_t ac_global_size{0};
+        std::vector<std::uint32_t> section_sizes(1 + num_dc + 1 + num_ac);
         timed(s_sz, record, [&] {
-            cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(&ac_global_size, d_ac_section_len, sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
+            section_sizes[0] = static_cast<std::uint32_t>(dc_global.size());
+            cudaMemcpy(section_sizes.data() + 1, d_section_sizes,
+                       (num_dc + 1 + num_ac) * sizeof(std::uint32_t), cudaMemcpyDeviceToHost);
         });
 
         timed(s_asm, record, [&] {
-            std::vector<std::uint32_t> section_sizes{static_cast<std::uint32_t>(dc_global.size())};
-            section_sizes.insert(section_sizes.end(), dc_sizes.begin(), dc_sizes.end());
-            section_sizes.push_back(ac_global_size);
-            section_sizes.insert(section_sizes.end(), ac_sizes.begin(), ac_sizes.end());
+            const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
             const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
                 static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                 section_sizes)};

@@ -142,7 +142,9 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     std::uint16_t* d_ac_bits{
         scope.alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_ac_section{scope.alloc<std::uint8_t>(AC_SECTION_CAP)};
-    std::uint32_t* d_ac_section_len{scope.alloc<std::uint32_t>(1)};
+    // Section sizes after DcGlobal in codestream order (DcGroups, AcGlobal,
+    // AcGroups), so one device-to-host copy fetches them all.
+    std::uint32_t* d_section_sizes{scope.alloc<std::uint32_t>(num_dc + 1 + num_ac)};
     std::uint8_t* d_dc_depth{scope.alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_dc_bits{scope.alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_am_depth{scope.alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
@@ -153,13 +155,16 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     std::uint8_t* d_mid{scope.alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
     std::uint32_t* d_mid_off{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_mid_bits{scope.alloc<std::uint32_t>(num_dc)};
-    if (!ctxmap.bytes || !d_ac_depth || !d_ac_bits || !d_ac_section || !d_ac_section_len ||
+    if (!ctxmap.bytes || !d_ac_depth || !d_ac_bits || !d_ac_section || !d_section_sizes ||
         !d_dc_depth || !d_dc_bits || !d_am_depth || !d_am_bits || !d_pre || !d_pre_off ||
         !d_pre_bits || !d_mid || !d_mid_off || !d_mid_bits) {
         return false;
     }
+    std::uint32_t* d_dc_sizes{d_section_sizes};
+    std::uint32_t* d_ac_global_size{d_section_sizes + num_dc};
+    std::uint32_t* d_ac_sizes{d_section_sizes + num_dc + 1};
     if (!build_ac_global_device(d_ac_hist, num_ac, ctxmap.bytes, ctxmap.nbits, d_ac_depth,
-                                d_ac_bits, d_ac_section, AC_SECTION_CAP, d_ac_section_len) ||
+                                d_ac_bits, d_ac_section, AC_SECTION_CAP, d_ac_global_size) ||
         !build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                      d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
                                      d_mid, d_mid_off, d_mid_bits)) {
@@ -176,11 +181,10 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     const std::size_t dc_capacity{48 * bw * bh + 2 * num_dc * DC_BLOB_STRIDE + num_dc * 64 + 4096};
     std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
     std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
-    std::uint32_t* d_ac_sizes{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
-    std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    if (!d_ac_body || !d_dc_body || !d_ac_sizes || !d_ac_offsets || !d_dc_sizes || !d_dc_offsets) {
+    std::uint8_t* d_dc_scratch{scope.alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
+    if (!d_ac_body || !d_dc_body || !d_ac_offsets || !d_dc_offsets || !d_dc_scratch) {
         return false;
     }
 
@@ -194,35 +198,22 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     }
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
                           d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
-                          d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
-                          d_dc_sizes, d_dc_offsets, &dc_total)) {
+                          d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
+                          dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;
     }
 
-    std::vector<std::uint32_t> ac_sizes(num_ac, 0);
-    std::vector<std::uint32_t> dc_sizes(num_dc, 0);
-    std::uint32_t ac_global_size{0};
-    if (cudaMemcpy(ac_sizes.data(), d_ac_sizes, num_ac * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(&ac_global_size, d_ac_section_len, sizeof(std::uint32_t),
+    std::vector<std::uint32_t> section_sizes(1 + num_dc + 1 + num_ac, 0);
+    section_sizes[0] = static_cast<std::uint32_t>(dc_global.size());
+    if (cudaMemcpy(section_sizes.data() + 1, d_section_sizes,
+                   (num_dc + 1 + num_ac) * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return false;
     }
+    const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
     entropy.gpu_us += us_since(entropy_encode_start);
 
-    // Sections in codestream order: DcGlobal, DcGroups, AcGlobal, AcGroups.
     const Clock::time_point assembly_head_start{Clock::now()};
-    std::vector<std::uint32_t> section_sizes{};
-    section_sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
-    for (std::uint32_t s : dc_sizes) {
-        section_sizes.push_back(s);
-    }
-    section_sizes.push_back(ac_global_size);
-    for (std::uint32_t s : ac_sizes) {
-        section_sizes.push_back(s);
-    }
     const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
         static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), section_sizes)};
     assembly.cpu_us += us_since(assembly_head_start);
