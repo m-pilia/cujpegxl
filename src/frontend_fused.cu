@@ -160,25 +160,35 @@ __device__ void erode_cells(const float* __restrict__ pre, float* __restrict__ e
     }
 }
 
+// Each thread filters a strip of GAB_STRIP_ROWS outputs in one column, sliding
+// a window of 5-wide input rows held in registers, so each input row is read
+// from shared memory once rather than once per output it contributes to.
+constexpr int GAB_STRIP_ROWS{TILE_SAMPLES / FRONTEND_THREADS};
+static_assert(GAB_STRIP_ROWS * FRONTEND_THREADS == TILE_SAMPLES);
+
 __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ out, int tid) {
-    for (int i{tid}; i < TILE_SAMPLES; i += FRONTEND_THREADS) {
-        const int x{i % TILE_PX + HALO};
-        const int y{i / TILE_PX + HALO};
-        const float e{in[y * PAD + x - 1] + in[y * PAD + x + 1] + in[(y - 1) * PAD + x] +
-                      in[(y + 1) * PAD + x]};
-        const float r2{in[y * PAD + x - 2] + in[y * PAD + x + 2] + in[(y - 2) * PAD + x] +
-                       in[(y + 2) * PAD + x]};
-        const float dg{in[(y - 1) * PAD + x - 1] + in[(y - 1) * PAD + x + 1] +
-                       in[(y + 1) * PAD + x - 1] + in[(y + 1) * PAD + x + 1]};
-        const float l8{in[(y - 1) * PAD + x - 2] + in[(y - 1) * PAD + x + 2] +
-                       in[(y + 1) * PAD + x - 2] + in[(y + 1) * PAD + x + 2] +
-                       in[(y - 2) * PAD + x - 1] + in[(y - 2) * PAD + x + 1] +
-                       in[(y + 2) * PAD + x - 1] + in[(y + 2) * PAD + x + 1]};
-        const float d4{in[(y - 2) * PAD + x - 2] + in[(y - 2) * PAD + x + 2] +
-                       in[(y + 2) * PAD + x - 2] + in[(y + 2) * PAD + x + 2]};
-        out[(y - HALO) * TILE_STRIDE + x - HALO] = GAB_WC * in[y * PAD + x] + GAB_WR * e +
-                                                   GAB_WR2 * r2 + GAB_WD * dg + GAB_WL * l8 +
-                                                   GAB_WD2 * d4;
+    constexpr int WIDTH{2 * HALO + 1};
+    const int x0{tid % TILE_PX};
+    const int y0{tid / TILE_PX * GAB_STRIP_ROWS};
+    float w[GAB_STRIP_ROWS + 2 * HALO][WIDTH];
+#pragma unroll
+    for (int r{0}; r < GAB_STRIP_ROWS + 2 * HALO; ++r) {
+#pragma unroll
+        for (int c{0}; c < WIDTH; ++c) {
+            w[r][c] = in[(y0 + r) * PAD + x0 + c];
+        }
+    }
+#pragma unroll
+    for (int k{0}; k < GAB_STRIP_ROWS; ++k) {
+        const auto at = [&](int dy, int dx) { return w[k + HALO + dy][HALO + dx]; };
+        const float e{at(0, -1) + at(0, 1) + at(-1, 0) + at(1, 0)};
+        const float r2{at(0, -2) + at(0, 2) + at(-2, 0) + at(2, 0)};
+        const float dg{at(-1, -1) + at(-1, 1) + at(1, -1) + at(1, 1)};
+        const float l8{at(-1, -2) + at(-1, 2) + at(1, -2) + at(1, 2) + at(-2, -1) + at(-2, 1) +
+                       at(2, -1) + at(2, 1)};
+        const float d4{at(-2, -2) + at(-2, 2) + at(2, -2) + at(2, 2)};
+        out[(y0 + k) * TILE_STRIDE + x0] = GAB_WC * at(0, 0) + GAB_WR * e + GAB_WR2 * r2 +
+                                           GAB_WD * dg + GAB_WL * l8 + GAB_WD2 * d4;
     }
 }
 
