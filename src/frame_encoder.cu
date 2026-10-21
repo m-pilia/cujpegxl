@@ -26,6 +26,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+constexpr EncodeResult ENCODE_FAILED{EncodeStatus::FAILED, 0};
+
 double us_since(Clock::time_point start) {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
@@ -91,18 +93,41 @@ struct DeviceScope {
 
 }  // namespace
 
-bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
-                  const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                  std::size_t width, std::size_t height, const bitstream::QuantParams& qp,
-                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats) {
+SectionCapacities section_capacities(std::size_t width, std::size_t height) {
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    const std::size_t num_ac{bitstream::ac_group_count(width, height)};
+    const std::size_t num_dc{bitstream::dc_group_count(width, height)};
+    return SectionCapacities{3 * blocks * 384 + num_ac * 64 + 4096,
+                             48 * blocks + 2 * num_dc * DC_BLOB_STRIDE + num_dc * 64 + 4096,
+                             std::size_t{1} << 16};
+}
+
+std::size_t max_encoded_size(std::size_t width, std::size_t height) {
+    // The container framing, codestream headers, FrameHeader and DcGlobal take
+    // well under FIXED_HEADERS_BOUND; a TOC entry takes at most 4 bytes.
+    constexpr std::size_t FIXED_HEADERS_BOUND{1024};
+    constexpr std::size_t TOC_ENTRY_BOUND{4};
+    const std::size_t num_sections{bitstream::dc_group_count(width, height) +
+                                   bitstream::ac_group_count(width, height) + 2};
+    const SectionCapacities caps{section_capacities(width, height)};
+    return caps.ac_groups + caps.dc_groups + caps.ac_global + FIXED_HEADERS_BOUND +
+           TOC_ENTRY_BOUND * num_sections;
+}
+
+EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
+                          const std::int8_t* acs, const std::int8_t* ytox_map,
+                          const std::int8_t* ytob_map, std::size_t width, std::size_t height,
+                          const bitstream::QuantParams& qp, const std::int32_t* quant_field,
+                          std::uint8_t* out_file, std::size_t out_capacity,
+                          std::vector<StageTiming>* stats) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
     if (num_ac <= 1) {
-        return false;
+        return ENCODE_FAILED;
     }
+    const SectionCapacities caps{section_capacities(width, height)};
     int device{0};
     cudaGetDevice(&device);
     retain_default_mempool(device);
@@ -121,27 +146,26 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * bw * bh)};
     if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc || !d_nz_grid ||
         !d_nz_exact) {
-        return false;
+        return ENCODE_FAILED;
     }
     if (!ac_nonzero_grids(ac_device, acs, width, height, d_nz_grid, d_nz_exact) ||
         !ac_build_histogram(ac_device, acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist) ||
         !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc)) {
-        return false;
+        return ENCODE_FAILED;
     }
 
     // Prefix-code build and header serialization run on-device, so the AC/DC/
     // AcMetadata histograms stay resident: no histogram device-to-host copy, host
     // Huffman construction, or depth/bits/blob upload between the histogram and
     // encode kernels. DcGlobal depends only on the quantizer, so it stays on host.
-    constexpr std::size_t AC_SECTION_CAP{1u << 16};
     const DeviceCtxMapBlob& ctxmap{ac_ctxmap_blob_device()};
     std::uint8_t* d_ac_depth{
         scope.alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_ac_bits{
         scope.alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
-    std::uint8_t* d_ac_section{scope.alloc<std::uint8_t>(AC_SECTION_CAP)};
+    std::uint8_t* d_ac_section{scope.alloc<std::uint8_t>(caps.ac_global)};
     // Section sizes after DcGlobal in codestream order (DcGroups, AcGlobal,
     // AcGroups), so one device-to-host copy fetches them all.
     std::uint32_t* d_section_sizes{scope.alloc<std::uint32_t>(num_dc + 1 + num_ac)};
@@ -158,17 +182,17 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     if (!ctxmap.bytes || !d_ac_depth || !d_ac_bits || !d_ac_section || !d_section_sizes ||
         !d_dc_depth || !d_dc_bits || !d_am_depth || !d_am_bits || !d_pre || !d_pre_off ||
         !d_pre_bits || !d_mid || !d_mid_off || !d_mid_bits) {
-        return false;
+        return ENCODE_FAILED;
     }
     std::uint32_t* d_dc_sizes{d_section_sizes};
     std::uint32_t* d_ac_global_size{d_section_sizes + num_dc};
     std::uint32_t* d_ac_sizes{d_section_sizes + num_dc + 1};
     if (!build_ac_global_device(d_ac_hist, num_ac, ctxmap.bytes, ctxmap.nbits, d_ac_depth,
-                                d_ac_bits, d_ac_section, AC_SECTION_CAP, d_ac_global_size) ||
+                                d_ac_bits, d_ac_section, caps.ac_global, d_ac_global_size) ||
         !build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                      d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
                                      d_mid, d_mid_off, d_mid_bits)) {
-        return false;
+        return ENCODE_FAILED;
     }
     entropy.gpu_us += us_since(entropy_gpu_start);
 
@@ -177,30 +201,28 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     const Clock::time_point entropy_encode_start{Clock::now()};
-    const std::size_t ac_capacity{3 * bw * bh * 384 + num_ac * 64 + 4096};
-    const std::size_t dc_capacity{48 * bw * bh + 2 * num_dc * DC_BLOB_STRIDE + num_dc * 64 + 4096};
-    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(ac_capacity)};
-    std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(dc_capacity)};
+    std::uint8_t* d_ac_body{scope.alloc<std::uint8_t>(caps.ac_groups)};
+    std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(caps.dc_groups)};
     std::uint32_t* d_ac_offsets{scope.alloc<std::uint32_t>(num_ac)};
     std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
     std::uint8_t* d_dc_scratch{scope.alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
     if (!d_ac_body || !d_dc_body || !d_ac_offsets || !d_dc_offsets || !d_dc_scratch) {
-        return false;
+        return ENCODE_FAILED;
     }
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
     const bool ac_encoded{ac_encode_groups(ac_device, acs, d_nz_grid, d_nz_exact, width, height,
-                                           d_ac_depth, d_ac_bits, d_ac_body, ac_capacity,
+                                           d_ac_depth, d_ac_bits, d_ac_body, caps.ac_groups,
                                            d_ac_sizes, d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
-        return false;
+        return ENCODE_FAILED;
     }
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
                           d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
-                          dc_capacity, d_dc_sizes, d_dc_offsets, &dc_total)) {
-        return false;
+                          caps.dc_groups, d_dc_sizes, d_dc_offsets, &dc_total)) {
+        return ENCODE_FAILED;
     }
 
     std::vector<std::uint32_t> section_sizes(1 + num_dc + 1 + num_ac, 0);
@@ -208,7 +230,7 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     if (cudaMemcpy(section_sizes.data() + 1, d_section_sizes,
                    (num_dc + 1 + num_ac) * sizeof(std::uint32_t),
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
-        return false;
+        return ENCODE_FAILED;
     }
     const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
     entropy.gpu_us += us_since(entropy_encode_start);
@@ -219,10 +241,17 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     assembly.cpu_us += us_since(assembly_head_start);
 
     const std::size_t body_size{dc_global.size() + dc_total + ac_global_size + ac_total};
+    const std::size_t codestream_size{head.size() + body_size};
+    const std::vector<std::uint8_t> framing{bitstream::container_framing(codestream_size)};
+    const std::size_t file_size{framing.size() + codestream_size};
+    if (file_size > out_capacity) {
+        return EncodeResult{EncodeStatus::BUFFER_TOO_SMALL, file_size};
+    }
+
     const Clock::time_point assembly_gather_start{Clock::now()};
     std::uint8_t* d_body{scope.alloc<std::uint8_t>(body_size)};
     if (!d_body) {
-        return false;
+        return ENCODE_FAILED;
     }
     std::size_t at{0};
     const bool gathered{
@@ -235,28 +264,23 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
         (at += ac_global_size, cudaMemcpyAsync(d_body + at, d_ac_body, ac_total,
                                                cudaMemcpyDeviceToDevice, 0) == cudaSuccess)};
     if (!gathered) {
-        return false;
+        return ENCODE_FAILED;
     }
     if (stats != nullptr) {
         cudaDeviceSynchronize();
     }
     assembly.gpu_us += us_since(assembly_gather_start);
 
-    const std::size_t codestream_size{head.size() + body_size};
-    std::vector<std::uint8_t> file{bitstream::container_framing(codestream_size)};
-    const std::size_t framing{file.size()};
-    file.resize(framing + codestream_size);
-    std::copy(head.begin(), head.end(), file.begin() + framing);
-    if (cudaMemcpy(file.data() + framing + head.size(), d_body, body_size,
-                   cudaMemcpyDeviceToHost) != cudaSuccess) {
-        return false;
+    std::uint8_t* const head_dst{std::copy(framing.begin(), framing.end(), out_file)};
+    std::uint8_t* const body_dst{std::copy(head.begin(), head.end(), head_dst)};
+    if (cudaMemcpy(body_dst, d_body, body_size, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return ENCODE_FAILED;
     }
     if (stats != nullptr) {
         stats->push_back(entropy);
         stats->push_back(assembly);
     }
-    out_file = std::move(file);
-    return true;
+    return EncodeResult{EncodeStatus::OK, file_size};
 }
 
 bitstream::QuantParams quant_params_for_distance(float distance) {
@@ -264,12 +288,13 @@ bitstream::QuantParams quant_params_for_distance(float distance) {
     return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
 }
 
-bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats) {
+EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
+                         const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
+                         std::size_t height, std::int32_t device_ordinal, float distance,
+                         const bitstream::QuantParams& qp, std::uint8_t* out_file,
+                         std::size_t out_capacity, std::vector<StageTiming>* stats) {
     if (cudaSetDevice(device_ordinal) != cudaSuccess) {
-        return false;
+        return ENCODE_FAILED;
     }
     retain_default_mempool(device_ordinal);
 
@@ -285,7 +310,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
     std::int16_t* d_ac16{scope.alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
     std::int32_t* d_dc32{scope.alloc<std::int32_t>(3 * blocks)};
     if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32) {
-        return false;
+        return ENCODE_FAILED;
     }
 
     constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
@@ -296,7 +321,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
         if (!aligned || cudaMemcpy2DAsync(aligned, aligned_pitch, chroma, chroma_pitch, width,
                                           height / 2, cudaMemcpyDeviceToDevice, 0) != cudaSuccess) {
-            return false;
+            return ENCODE_FAILED;
         }
         chroma_src = aligned;
         chroma_src_pitch = aligned_pitch;
@@ -308,7 +333,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         !estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb) ||
         !quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, distance, d_ac16,
                            d_dc32)) {
-        return false;
+        return ENCODE_FAILED;
     }
     if (stats != nullptr) {
         // The frontend now runs sync-free past the fused kernel (cfl/quantize only
@@ -319,7 +344,7 @@ bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::ui
         stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
     }
     return encode_frame(d_ac16, d_dc32, d_acs, d_mx, d_mb, width, height, qp, d_qf, out_file,
-                        stats);
+                        out_capacity, stats);
 }
 
 }  // namespace cujpegxl

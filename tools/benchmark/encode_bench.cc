@@ -360,7 +360,8 @@ int run(int argc, char** argv) {
     const cujpegxl::bitstream::QuantParams qp{
         args.codec == "cujpegxl" ? cujpegxl::quant_params_for_distance(args.distance)
                                  : cujpegxl::bitstream::QuantParams{}};
-    std::vector<std::uint8_t> cujpegxl_out{};
+    std::vector<std::uint8_t> cujpegxl_out(
+        args.codec == "cujpegxl" ? cujpegxl::max_encoded_size(args.width, args.height) : 0);
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
 
     std::unique_ptr<cujpegxl::tools::NvjpegEncoder> nvjpeg{};
@@ -372,11 +373,12 @@ int run(int argc, char** argv) {
     auto encode_cujpegxl = [&](const BenchImage& img) -> double {
         cujpegxl_stages.clear();
         const auto t0{std::chrono::steady_clock::now()};
-        const bool ok{cujpegxl::encode_nv12(
-            img.d_luma, args.width, img.d_chroma, args.width, args.width, args.height, args.device,
-            args.distance, qp, cujpegxl_out, args.profile ? &cujpegxl_stages : nullptr)};
+        const cujpegxl::EncodeResult result{
+            cujpegxl::encode_nv12(img.d_luma, args.width, img.d_chroma, args.width, args.width,
+                                  args.height, args.device, args.distance, qp, cujpegxl_out.data(),
+                                  cujpegxl_out.size(), args.profile ? &cujpegxl_stages : nullptr)};
         const auto t1{std::chrono::steady_clock::now()};
-        if (!ok) {
+        if (result.status != cujpegxl::EncodeStatus::OK) {
             die("cujpegxl encode failed");
         }
         return std::chrono::duration<double, std::micro>(t1 - t0).count();

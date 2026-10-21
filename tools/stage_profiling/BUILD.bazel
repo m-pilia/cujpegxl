@@ -13,6 +13,7 @@ cc_binary(
     deps = [
         "//src:ac_context",
         "//src:entropy",
+        "//src:frame_encoder",
         "//src:frontend_fused",
         "//src:frontend_quantize",
         "//src:prefix_build",

@@ -23,9 +23,31 @@ struct StageTiming {
     double cpu_us{0.0};
 };
 
-// Assembles a complete ISOBMFF `.jxl` file (returned in `out_file`, host bytes)
-// from device-resident quantized coefficients in the mixed-block {8,16,32} + CfL
-// covered-block layout.
+enum class EncodeStatus : std::uint8_t { OK, BUFFER_TOO_SMALL, FAILED };
+
+struct EncodeResult {
+    EncodeStatus status{EncodeStatus::FAILED};
+    // The bytes written on OK; the capacity the file needs on BUFFER_TOO_SMALL.
+    std::size_t file_size{0};
+};
+
+// Device capacities of the coded sections. encode_frame fails when a section
+// outgrows its capacity, so these bound the coded body of a frame.
+struct SectionCapacities {
+    std::size_t ac_groups{0};
+    std::size_t dc_groups{0};
+    std::size_t ac_global{0};
+};
+
+SectionCapacities section_capacities(std::size_t width, std::size_t height);
+
+// Upper bound of the `.jxl` file size of a width x height frame: with an output
+// buffer of this capacity, an encode never reports BUFFER_TOO_SMALL.
+std::size_t max_encoded_size(std::size_t width, std::size_t height);
+
+// Assembles a complete ISOBMFF `.jxl` file into the host buffer `out_file` of
+// `out_capacity` bytes from device-resident quantized coefficients in the
+// mixed-block {8,16,32} + CfL covered-block layout.
 //
 // `ac_device` holds three channel-major int16 planes of (width/8 * height/8) * 64
 // slots (covered-block layout; a first-block of side N owns its coefficients,
@@ -41,15 +63,17 @@ struct StageTiming {
 // headers, FrameHeader, DcGlobal, AcGlobal, TOC and ISOBMFF boxes are assembled
 // on the host from the device histograms and section sizes (all O(1)/O(groups)/
 // O(alphabet)); the body is gathered into one device buffer and copied out with
-// a single bulk D2H. Returns false on a CUDA error, if a coded section exceeds
-// its worst-case buffer, or if the frame has a single AC group.
+// a single bulk D2H. The file size is known before the first write to
+// `out_file`, so BUFFER_TOO_SMALL leaves the buffer untouched. FAILED on a CUDA
+// error, if a coded section exceeds its capacity, or if the frame has a single
+// AC group.
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
 // timings; passing null (the default) emits no records.
-bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
-                  const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                  std::size_t width, std::size_t height, const bitstream::QuantParams& qp,
-                  const std::int32_t* quant_field, std::vector<std::uint8_t>& out_file,
-                  std::vector<StageTiming>* stats = nullptr);
+[[nodiscard]] EncodeResult encode_frame(
+    const std::int16_t* ac_device, const std::int32_t* dc_device, const std::int8_t* acs,
+    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t width, std::size_t height,
+    const bitstream::QuantParams& qp, const std::int32_t* quant_field, std::uint8_t* out_file,
+    std::size_t out_capacity, std::vector<StageTiming>* stats = nullptr);
 
 // Maps a Butteraugli `distance` to the serialized Quantizer state written into
 // the codestream. Placeholder linear mapping, not yet calibrated against cjxl's
@@ -58,21 +82,25 @@ bitstream::QuantParams quant_params_for_distance(float distance);
 
 // Full device encode path for the C ABI: selects `device_ordinal`, runs the
 // transform selection, chroma-from-luma estimate, residual+quantize and
-// mixed-block entropy + assembly over a device-resident NV12 image, returning the
-// `.jxl` file bytes in `out_file`.
+// mixed-block entropy + assembly over a device-resident NV12 image, writing the
+// `.jxl` file into the host buffer `out_file` of `out_capacity` bytes.
 //
 // `luma`/`chroma` are device addresses (see nv12_to_xyb). The chroma texture
 // requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
 // plane is copied into an internally allocated aligned buffer. `distance` drives
 // quantization; `qp` is the quantizer state written into the codestream. width
-// and height must be multiples of 8 and span more than one AC group. Returns
-// false on a CUDA error or an unsupported single-AC-group frame.
+// and height must be multiples of 8 and span more than one AC group. FAILED on
+// a CUDA error or an unsupported single-AC-group frame; BUFFER_TOO_SMALL as in
+// encode_frame.
 // When `stats` is non-null it receives the "frontend", "entropy" and "assembly"
 // stage timings.
-bool encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                 std::size_t chroma_pitch, std::size_t width, std::size_t height,
-                 std::int32_t device_ordinal, float distance, const bitstream::QuantParams& qp,
-                 std::vector<std::uint8_t>& out_file, std::vector<StageTiming>* stats = nullptr);
+[[nodiscard]] EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
+                                       const std::uint8_t* chroma, std::size_t chroma_pitch,
+                                       std::size_t width, std::size_t height,
+                                       std::int32_t device_ordinal, float distance,
+                                       const bitstream::QuantParams& qp, std::uint8_t* out_file,
+                                       std::size_t out_capacity,
+                                       std::vector<StageTiming>* stats = nullptr);
 
 }  // namespace cujpegxl
 

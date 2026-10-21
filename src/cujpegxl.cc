@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <new>
-#include <vector>
 
 #include "cujpegxl/capability.h"
 #include "frame_encoder.h"
@@ -45,17 +44,6 @@ cujpegxl_status validate_config(const cujpegxl_config& config) {
         return CUJPEGXL_UNSUPPORTED_RESOLUTION;
     }
     return CUJPEGXL_OK;
-}
-
-std::size_t worst_case_output(std::uint32_t width, std::uint32_t height) {
-    const std::size_t bw{width / 8u};
-    const std::size_t bh{height / 8u};
-    const std::size_t num_ac{cujpegxl::bitstream::ac_group_count(width, height)};
-    const std::size_t num_dc{cujpegxl::bitstream::dc_group_count(width, height)};
-    // AC bodies (<=64 tokens * 6 bytes per block-channel, 3 channels) + DC/
-    // AcMetadata bodies + per-group TOC entries and DcGroup header blobs +
-    // container/headers/histogram-description slack.
-    return 3 * bw * bh * 384 + 48 * bw * bh + (num_ac + num_dc) * 2048 + 16384;
 }
 
 }  // namespace
@@ -118,7 +106,7 @@ cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* 
     if (status != CUJPEGXL_OK) {
         return status;
     }
-    *out_bytes = worst_case_output(config->width, config->height);
+    *out_bytes = cujpegxl::max_encoded_size(config->width, config->height);
     return CUJPEGXL_OK;
 }
 
@@ -169,24 +157,23 @@ cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegx
         return status;
     }
 
-    std::vector<std::uint8_t> bytes{};
-    const bool ok{cujpegxl::encode_nv12(
+    const cujpegxl::EncodeResult result{cujpegxl::encode_nv12(
         reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
         reinterpret_cast<const std::uint8_t*>(input->chroma), input->chroma_pitch, config.width,
         config.height, config.device_ordinal, config.distance,
-        cujpegxl::quant_params_for_distance(config.distance), bytes, nullptr)};
-    if (!ok) {
-        return CUJPEGXL_INTERNAL_ERROR;
+        cujpegxl::quant_params_for_distance(config.distance), output->data, output->capacity,
+        nullptr)};
+    switch (result.status) {
+        case cujpegxl::EncodeStatus::OK:
+            output->size = result.file_size;
+            return CUJPEGXL_OK;
+        case cujpegxl::EncodeStatus::BUFFER_TOO_SMALL:
+            output->size = result.file_size;
+            return CUJPEGXL_BUFFER_TOO_SMALL;
+        case cujpegxl::EncodeStatus::FAILED:
+            return CUJPEGXL_INTERNAL_ERROR;
     }
-    if (bytes.size() > output->capacity) {
-        output->size = bytes.size();
-        return CUJPEGXL_BUFFER_TOO_SMALL;
-    }
-    for (std::size_t i{0}; i < bytes.size(); ++i) {
-        output->data[i] = bytes[i];
-    }
-    output->size = bytes.size();
-    return CUJPEGXL_OK;
+    return CUJPEGXL_INTERNAL_ERROR;
 }
 
 void cujpegxl_encoder_destroy(cujpegxl_encoder* encoder) {

@@ -142,6 +142,7 @@ TEST(CujpegxlEncodeGpu, TooSmallBufferReports) {
                                     nv12.chroma_pitch};
 
     EXPECT_EQ(cujpegxl_encoder_encode(encoder, &input, &output), CUJPEGXL_BUFFER_TOO_SMALL);
+    EXPECT_GT(output.size, buffer.size());
 
     cujpegxl_encoder_destroy(encoder);
 }

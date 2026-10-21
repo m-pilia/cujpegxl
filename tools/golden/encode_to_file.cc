@@ -102,17 +102,17 @@ int main(int argc, char** argv) {
     check_cuda(cudaMemcpy(d_chroma, host.data() + luma_bytes, chroma_bytes, cudaMemcpyHostToDevice),
                "H2D chroma");
 
-    std::vector<std::uint8_t> out_file;
-    const bool ok{cujpegxl::encode_nv12(d_luma, width, d_chroma, width, width, height, device,
-                                        distance, cujpegxl::quant_params_for_distance(distance),
-                                        out_file)};
-    if (!ok) {
+    std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
+    const cujpegxl::EncodeResult result{cujpegxl::encode_nv12(
+        d_luma, width, d_chroma, width, width, height, device, distance,
+        cujpegxl::quant_params_for_distance(distance), out_file.data(), out_file.size())};
+    if (result.status != cujpegxl::EncodeStatus::OK) {
         die("encode_nv12 failed");
     }
 
     std::ofstream out{output, std::ios::binary | std::ios::trunc};
     out.write(reinterpret_cast<const char*>(out_file.data()),
-              static_cast<std::streamsize>(out_file.size()));
+              static_cast<std::streamsize>(result.file_size));
     if (!out) {
         die("failed writing " + output);
     }
