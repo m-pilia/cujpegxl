@@ -386,19 +386,19 @@ EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
         chroma_src_pitch = aligned_pitch;
     }
 
+    const ChromaTexture chroma_texture{chroma_src, chroma_src_pitch, width, height};
     const Clock::time_point frontend_start{Clock::now()};
-    if (!encode_frontend(luma, luma_pitch, chroma_src, chroma_src_pitch, width, height, distance,
-                         d_coeffs, d_acs, d_qf) ||
+    if (!encode_frontend(luma, luma_pitch, chroma_texture, width, height, distance, d_coeffs,
+                         d_acs, d_qf) ||
         !estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb) ||
         !quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, distance, d_ac16,
                            d_dc32, d_nz_exact, d_nz_grid)) {
         return ENCODE_FAILED;
     }
     if (stats != nullptr) {
-        // The frontend now runs sync-free past the fused kernel (cfl/quantize only
-        // enqueue), so bracket the stage with an instrumentation-only sync to keep
-        // the per-stage wall-clock attribution valid. Production (stats == nullptr)
-        // stays fully pipelined.
+        // The frontend runs sync-free (its kernels only enqueue), so bracket the
+        // stage with an instrumentation-only sync to keep the per-stage wall-clock
+        // attribution valid. Production (stats == nullptr) stays fully pipelined.
         cudaDeviceSynchronize();
         stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
     }

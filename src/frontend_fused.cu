@@ -782,8 +782,35 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
 
 }  // namespace
 
-bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
-                     std::size_t chroma_pitch, std::size_t width, std::size_t height,
+ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitch,
+                             std::size_t width, std::size_t height) {
+    cudaResourceDesc resource{};
+    resource.resType = cudaResourceTypePitch2D;
+    resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
+    resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
+    resource.res.pitch2D.width = width / 2;
+    resource.res.pitch2D.height = height / 2;
+    resource.res.pitch2D.pitchInBytes = chroma_pitch;
+
+    cudaTextureDesc texture{};
+    texture.addressMode[0] = cudaAddressModeClamp;
+    texture.addressMode[1] = cudaAddressModeClamp;
+    texture.filterMode = cudaFilterModeLinear;
+    texture.readMode = cudaReadModeNormalizedFloat;
+    texture.normalizedCoords = 0;
+
+    valid_ = cudaCreateTextureObject(&texture_, &resource, &texture, nullptr) == cudaSuccess;
+}
+
+ChromaTexture::~ChromaTexture() {
+    if (valid_) {
+        cudaStreamSynchronize(0);
+        cudaDestroyTextureObject(texture_);
+    }
+}
+
+bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch,
+                     const ChromaTexture& chroma, std::size_t width, std::size_t height,
                      float distance, __half* coeffs, std::int8_t* acs, std::int32_t* quant_field) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -816,23 +843,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
     km2 *= norm;
     km3 *= norm;
 
-    cudaResourceDesc resource{};
-    resource.resType = cudaResourceTypePitch2D;
-    resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
-    resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
-    resource.res.pitch2D.width = width / 2;
-    resource.res.pitch2D.height = height / 2;
-    resource.res.pitch2D.pitchInBytes = chroma_pitch;
-
-    cudaTextureDesc texture{};
-    texture.addressMode[0] = cudaAddressModeClamp;
-    texture.addressMode[1] = cudaAddressModeClamp;
-    texture.filterMode = cudaFilterModeLinear;
-    texture.readMode = cudaReadModeNormalizedFloat;
-    texture.normalizedCoords = 0;
-
-    cudaTextureObject_t chroma_tex{};
-    if (cudaCreateTextureObject(&chroma_tex, &resource, &texture, nullptr) != cudaSuccess) {
+    if (!chroma.valid()) {
         return false;
     }
 
@@ -841,13 +852,9 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const std
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
     frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES>>>(
-        luma, luma_pitch, chroma_tex, width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
+        luma, luma_pitch, chroma.get(), width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
         cal.inv_global_scale, qgsf, coeffs, acs, quant_field);
-
-    const cudaError_t launch{cudaGetLastError()};
-    const cudaError_t sync{cudaDeviceSynchronize()};
-    cudaDestroyTextureObject(chroma_tex);
-    return launch == cudaSuccess && sync == cudaSuccess;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace cujpegxl

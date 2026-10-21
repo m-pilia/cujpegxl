@@ -246,8 +246,9 @@ int main(int argc, char** argv) {
 
         // Front-end sub-stages, in encode_nv12 order.
         timed(s_fe, record, [&] {
-            encode_frontend(d_luma, width, d_chroma, width, width, height, args.distance, d_coeffs,
-                            d_acs, d_qf);
+            const ChromaTexture chroma{d_chroma, width, width, height};
+            encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
+                            d_qf);
         });
         timed(s_cfl, record,
               [&] { estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb); });
