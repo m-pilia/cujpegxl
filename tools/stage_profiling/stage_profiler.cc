@@ -223,7 +223,6 @@ int main(int argc, char** argv) {
     std::vector<std::uint8_t> file(max_encoded_size(width, height));
 
     Stage s_fe{"frontend_fused"};
-    Stage s_cfl{"estimate_cfl_covered"};
     Stage s_qz{"quantize_residual"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
@@ -250,10 +249,8 @@ int main(int argc, char** argv) {
             encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
                             d_qf);
         });
-        timed(s_cfl, record,
-              [&] { estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb); });
         timed(s_qz, record, [&] {
-            quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, args.distance,
+            quantize_residual(d_coeffs, d_acs, d_qf, width, height, args.distance, d_mx, d_mb,
                               d_ac16, d_dc32, d_nz_exact, d_nz_grid);
         });
 
@@ -329,8 +326,8 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc,
-                          &s_acg, &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc, &s_acg,
+                          &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {

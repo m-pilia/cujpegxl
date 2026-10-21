@@ -96,11 +96,11 @@ Frame make_frame() {
 
 constexpr std::size_t CMW = (BW + 7) / 8;
 constexpr std::size_t CMH = (BH + 7) / 8;
-constexpr std::int8_t YTOX_MAP = -20;
-constexpr std::int8_t YTOB_MAP = 10;
 constexpr std::int32_t QUANT_FIELD = 40;
 
 struct Quantized {
+    std::vector<std::int8_t> ytox_map;
+    std::vector<std::int8_t> ytob_map;
     std::vector<std::int16_t> ac;
     std::vector<std::int32_t> dc;
     std::vector<std::int32_t> nz_exact;
@@ -122,25 +122,28 @@ std::vector<T> download(const T* device, std::size_t count) {
     return host;
 }
 
-// Runs quantize_residual on `f` at distance 1 with uniform CfL maps and quant
-// field.
+// Runs quantize_residual on `f` at distance 1 with a uniform quant field.
 [[nodiscard]] bool quantize(const Frame& f, Quantized& out) {
     __half* d_coeffs{upload(f.coeffs)};
     std::int8_t* d_acs{upload(f.acs)};
-    std::int8_t* d_mx{upload(std::vector<std::int8_t>(CMW * CMH, YTOX_MAP))};
-    std::int8_t* d_mb{upload(std::vector<std::int8_t>(CMW * CMH, YTOB_MAP))};
     std::int32_t* d_qf{upload(std::vector<std::int32_t>(NBLK, QUANT_FIELD))};
+    std::int8_t* d_mx{nullptr};
+    std::int8_t* d_mb{nullptr};
     std::int16_t* d_ac{nullptr};
     std::int32_t* d_dc{nullptr};
     std::int32_t* d_nz_exact{nullptr};
     std::int32_t* d_nz_grid{nullptr};
+    cudaMalloc(&d_mx, CMW * CMH * sizeof(std::int8_t));
+    cudaMalloc(&d_mb, CMW * CMH * sizeof(std::int8_t));
     cudaMalloc(&d_ac, 3 * CPLANE * sizeof(std::int16_t));
     cudaMalloc(&d_dc, 3 * NBLK * sizeof(std::int32_t));
     cudaMalloc(&d_nz_exact, 3 * NBLK * sizeof(std::int32_t));
     cudaMalloc(&d_nz_grid, 3 * NBLK * sizeof(std::int32_t));
 
-    const bool ok{quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, WIDTH, HEIGHT, 1.0f, d_ac,
+    const bool ok{quantize_residual(d_coeffs, d_acs, d_qf, WIDTH, HEIGHT, 1.0f, d_mx, d_mb, d_ac,
                                     d_dc, d_nz_exact, d_nz_grid)};
+    out.ytox_map = download(d_mx, CMW * CMH);
+    out.ytob_map = download(d_mb, CMW * CMH);
     out.ac = download(d_ac, 3 * CPLANE);
     out.dc = download(d_dc, 3 * NBLK);
     out.nz_exact = download(d_nz_exact, 3 * NBLK);
@@ -177,8 +180,9 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
             if (side == ACS_COVERED) {
                 continue;
             }
-            const float ytox{cfl_ytox_ratio(YTOX_MAP)};
-            const float ytob{cfl_ytob_ratio(YTOB_MAP)};
+            const std::size_t tile{(by / 8) * CMW + bx / 8};
+            const float ytox{cfl_ytox_ratio(q.ytox_map[tile])};
+            const float ytob{cfl_ytob_ratio(q.ytob_map[tile])};
             const float qgsf{static_cast<float>(QUANT_FIELD) * gsf};
             for (int raw{0}; raw < side * side; ++raw) {
                 if (is_llf(raw, side)) {
@@ -229,6 +233,48 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
                 }
             }
         }
+    }
+}
+
+// The per-tile CfL maps match a double-precision host regression over each
+// tile's first-block AC coefficients, up to the rounding of the FP32 device sums,
+// including the partial tiles at the right and bottom edges.
+TEST(FrontendQuantize, QuantizeResidualEstimatesCflMaps) {
+    const Frame f{make_frame()};
+    Quantized q{};
+    ASSERT_TRUE(quantize(f, q));
+
+    std::vector<double> sxy(CMW * CMH, 0.0);
+    std::vector<double> syy(CMW * CMH, 0.0);
+    std::vector<double> sby(CMW * CMH, 0.0);
+    for (std::size_t by{0}; by < BH; ++by) {
+        for (std::size_t bx{0}; bx < BW; ++bx) {
+            const int side{f.acs[by * BW + bx]};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            const std::size_t tile{(by / 8) * CMW + bx / 8};
+            for (int raw{0}; raw < side * side; ++raw) {
+                if (is_llf(raw, side)) {
+                    continue;
+                }
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
+                const double xv{__half2float(f.coeffs[slot])};
+                const double yv{__half2float(f.coeffs[CPLANE + slot])};
+                const double bv{__half2float(f.coeffs[2 * CPLANE + slot])};
+                sxy[tile] += xv * yv;
+                syy[tile] += yv * yv;
+                sby[tile] += (bv - CFL_BASE_B * yv) * yv;
+            }
+        }
+    }
+    for (std::size_t tile{0}; tile < CMW * CMH; ++tile) {
+        int want_x{0};
+        int want_b{0};
+        cfl_maps_from_sums(sxy[tile], syy[tile], sby[tile], &want_x, &want_b);
+        EXPECT_NEAR(q.ytox_map[tile], want_x, 1) << "tile " << tile;
+        EXPECT_NEAR(q.ytob_map[tile], want_b, 1) << "tile " << tile;
     }
 }
 

@@ -11,28 +11,26 @@
 
 namespace cujpegxl {
 
-// CfL estimation: estimates one signed-int8 Y-to-X and Y-to-B factor per
-// 64x64 color tile from the FP16 covered-block coefficients. Each first-block's
-// AC coefficients (the block's covered-block slots, excluding its low-frequency
-// corner) contribute to the regression of its top-left color tile. `coeffs` are
-// three channel-major FP16 covered-block planes (see encode_frontend); `acs`
-// the per-8x8 transform signal. `ytox_map`/`ytob_map` (ceil(width/64) *
-// ceil(height/64) int8) receive the maps. Deterministic. Returns false on a CUDA
-// error.
-bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::size_t width,
-                          std::size_t height, std::int8_t* ytox_map, std::int8_t* ytob_map);
-
-// Residual + quantize + DC-via-LLF: quantizes the FP16 covered-block
-// coefficients into int16 AC (covered-block layout) and int32 DC (per 8x8 block,
-// LLF-derived), applying per-tile chroma-from-luma to the AC and the base
-// correlation to the DC, using the baked per-size dequant matrices.
+// Chroma-from-luma estimation + residual + quantize + DC-via-LLF, one pass per
+// 64x64 color tile: estimates one signed-int8 Y-to-X and Y-to-B factor per tile
+// and quantizes the FP16 covered-block coefficients into int16 AC
+// (covered-block layout) and int32 DC (per 8x8 block, LLF-derived), applying the
+// tile's chroma-from-luma to the AC and the base correlation to the DC, using
+// the baked per-size dequant matrices.
+//
+// CfL: each first-block's AC coefficients (the block's covered-block slots,
+// excluding its low-frequency corner) contribute to the regression of its
+// top-left color tile; `ytox_map`/`ytob_map` (ceil(width/64) * ceil(height/64)
+// int8) receive the maps.
 //
 // Per first-block of side N: Y AC quantized (roundtrip drives the residuals); X
 // AC residual = X - ytox_ratio(map)*Yroundtrip; B AC residual = B -
-// ytob_ratio(map)*Yroundtrip; the LLF corner of each channel feeds dc_from_llf,
-// quantized with the DC quantizer (X/Y direct, B minus base*Y_dc_roundtrip). The
-// per-block quantizer strength is quant_field[block] * global_scale. `coeffs`,
-// `acs`, `ytox_map`, `ytob_map`, `quant_field` are device inputs; `ac`
+// ytob_ratio(map)*Yroundtrip; the LLF corner of each channel feeds dc_from_llf
+// (evaluated in FP32), quantized with the DC quantizer (X/Y direct, B minus
+// base*Y_dc_roundtrip). The
+// per-block quantizer strength is quant_field[block] * global_scale. `coeffs`
+// (three channel-major FP16 covered-block planes, see encode_frontend), `acs`
+// (the per-8x8 transform signal) and `quant_field` are device inputs; `ac`
 // (three int16 covered-block planes) and `dc` (three int32 planes, one per 8x8
 // block) the outputs.
 //
@@ -43,10 +41,11 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
 // normalized per covered 8x8 block, (nz + covered - 1) >> log2(covered), at
 // every position the transform covers (the neighbor-prediction input).
 // Deterministic. Returns false on a CUDA error.
-bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::int8_t* ytox_map,
-                       const std::int8_t* ytob_map, const std::int32_t* quant_field,
-                       std::size_t width, std::size_t height, float distance, std::int16_t* ac,
-                       std::int32_t* dc, std::int32_t* nz_exact, std::int32_t* nz_grid);
+bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
+                       const std::int32_t* quant_field, std::size_t width, std::size_t height,
+                       float distance, std::int8_t* ytox_map, std::int8_t* ytob_map,
+                       std::int16_t* ac, std::int32_t* dc, std::int32_t* nz_exact,
+                       std::int32_t* nz_grid);
 
 }  // namespace cujpegxl
 
