@@ -61,58 +61,30 @@ __device__ inline float compute_mask(float out_val) {
     return kBase + kMul4 * v4 + kMul2 * v2 + kMul3 * v3;
 }
 
-__device__ inline void sort4(float& a, float& b, float& c, float& d) {
-    float t{};
-    if (a > b) {
-        t = a;
-        a = b;
-        b = t;
-    }
-    if (a > c) {
-        t = a;
-        a = c;
-        c = t;
-    }
-    if (a > d) {
-        t = a;
-        a = d;
-        d = t;
-    }
-    if (b > c) {
-        t = b;
-        b = c;
-        c = t;
-    }
-    if (b > d) {
-        t = b;
-        b = d;
-        d = t;
-    }
-    if (c > d) {
-        t = c;
-        c = d;
-        d = t;
-    }
+__device__ inline void compare_swap(float& lo, float& hi) {
+    const float t{fminf(lo, hi)};
+    hi = fmaxf(lo, hi);
+    lo = t;
 }
 
-__device__ inline void store_min4(float v, float& m0, float& m1, float& m2, float& m3) {
-    if (v < m3) {
-        if (v < m0) {
-            m3 = m2;
-            m2 = m1;
-            m1 = m0;
-            m0 = v;
-        } else if (v < m1) {
-            m3 = m2;
-            m2 = m1;
-            m1 = v;
-        } else if (v < m2) {
-            m3 = m2;
-            m2 = v;
-        } else {
-            m3 = v;
-        }
-    }
+// Replaces the ascending m0..m3 with the four smallest values, ascending, of
+// them and the ascending m0..m3 of lane (lane ^ lane_mask). Both lanes end with
+// the same values.
+__device__ inline void merge_min4_xor(float& m0, float& m1, float& m2, float& m3, int lane_mask) {
+    const float p0{__shfl_xor_sync(0xffffffffu, m0, lane_mask)};
+    const float p1{__shfl_xor_sync(0xffffffffu, m1, lane_mask)};
+    const float p2{__shfl_xor_sync(0xffffffffu, m2, lane_mask)};
+    const float p3{__shfl_xor_sync(0xffffffffu, m3, lane_mask)};
+    // Pairing ascending with descending keeps the four smallest as a bitonic
+    // sequence, which two compare-swap stages sort.
+    m0 = fminf(m0, p3);
+    m1 = fminf(m1, p2);
+    m2 = fminf(m2, p1);
+    m3 = fminf(m3, p0);
+    compare_swap(m0, m2);
+    compare_swap(m1, m3);
+    compare_swap(m0, m1);
+    compare_swap(m2, m3);
 }
 
 }  // namespace cujpegxl

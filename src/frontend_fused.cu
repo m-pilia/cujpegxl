@@ -38,6 +38,8 @@ constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
 // The pre-erosion takes one cell row per warp and one tile column per lane.
 static_assert(FRONTEND_THREADS == 32 * CELLS && TILE_PX == 32);
+// The erosion takes four lanes per cell.
+static_assert(FRONTEND_THREADS == 4 * CELLS * CELLS);
 // The raw X and B planes stay resident from the load to the X/B gaborish at
 // RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
@@ -125,25 +127,37 @@ __device__ float warp_tree_sum_256(const float* __restrict__ v, int lane) {
     return warp_reduce_sum(__fadd_rn(__fadd_rn(w0, w2), __fadd_rn(w1, w3)));
 }
 
-// FuzzyErosion at pre-erosion cell (cx, cy): weighted sum of the four smallest
-// values in its 3x3 neighbourhood, clamped to the tile (the seam approximation).
-__device__ float erosion_cell(const float* __restrict__ pre, int cx, int cy, float km0, float km1,
-                              float km2, float km3) {
-    const int xm1{cx > 0 ? cx - 1 : cx};
-    const int xp1{cx + 1 < CELLS ? cx + 1 : cx};
-    const int ym1{cy > 0 ? cy - 1 : cy};
-    const int yp1{cy + 1 < CELLS ? cy + 1 : cy};
-    float m0{pre[cy * CELLS + cx]};
-    float m1{pre[cy * CELLS + xm1]};
-    float m2{pre[cy * CELLS + xp1]};
-    float m3{pre[ym1 * CELLS + xm1]};
-    sort4(m0, m1, m2, m3);
-    store_min4(pre[ym1 * CELLS + cx], m0, m1, m2, m3);
-    store_min4(pre[ym1 * CELLS + xp1], m0, m1, m2, m3);
-    store_min4(pre[yp1 * CELLS + xm1], m0, m1, m2, m3);
-    store_min4(pre[yp1 * CELLS + cx], m0, m1, m2, m3);
-    store_min4(pre[yp1 * CELLS + xp1], m0, m1, m2, m3);
-    return km0 * m0 + km1 * m1 + km2 * m2 + km3 * m3;
+// Neighbour k (row-major in the 3x3 neighbourhood) of pre-erosion cell (cx, cy),
+// clamped to the tile (the seam approximation).
+__device__ inline float erosion_neighbour(const float* __restrict__ pre, int cx, int cy, int k) {
+    const int x{min(max(cx + k % 3 - 1, 0), CELLS - 1)};
+    const int y{min(max(cy + k / 3 - 1, 0), CELLS - 1)};
+    return pre[y * CELLS + x];
+}
+
+// FuzzyErosion of all pre-erosion cells: the weighted sum of the four smallest
+// values in each cell's 3x3 neighbourhood. Four lanes share a cell, each sorting
+// up to three of the nine neighbours, and two butterfly merges give all four
+// lanes the cell's four smallest values. These do not depend on how the
+// neighbours are split, and the weighted sum keeps its order.
+__device__ void erode_cells(const float* __restrict__ pre, float* __restrict__ eroded, int tid,
+                            float km0, float km1, float km2, float km3) {
+    const int cell{tid / 4};
+    const int part{tid % 4};
+    const int cx{cell % CELLS};
+    const int cy{cell / CELLS};
+    float m0{erosion_neighbour(pre, cx, cy, part)};
+    float m1{erosion_neighbour(pre, cx, cy, part + 4)};
+    float m2{part == 0 ? erosion_neighbour(pre, cx, cy, 8) : INFINITY};
+    float m3{INFINITY};
+    compare_swap(m0, m1);
+    compare_swap(m1, m2);
+    compare_swap(m0, m1);
+    merge_min4_xor(m0, m1, m2, m3, 1);
+    merge_min4_xor(m0, m1, m2, m3, 2);
+    if (part == 0) {
+        eroded[cell] = km0 * m0 + km1 * m1 + km2 * m2 + km3 * m3;
+    }
 }
 
 __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ out, int tid) {
@@ -652,9 +666,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
 
     // The AQ loop below does not read the eroded cells, so the barrier after it
     // also covers this step.
-    if (tid < CELLS * CELLS) {
-        sh_eroded[tid] = erosion_cell(sh_pre, tid % CELLS, tid / CELLS, km0, km1, km2, km3);
-    }
+    erode_cells(sh_pre, sh_eroded, tid, km0, km1, km2, km3);
 
     // Adaptive quant integer. Every pixel modulation term is an additive
     // reduction over the block's 64 pixels, reduced as two half-blocks of four
