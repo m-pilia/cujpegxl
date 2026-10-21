@@ -514,84 +514,115 @@ __device__ std::uint8_t runtime_ac_cluster(const std::uint8_t* context_map, std:
                                   : context_map[context];
 }
 
+// The DC and AcMetadata histograms are launched over (strip, DcGroup column),
+// with a strip of a few block rows and one thread per row position, so every
+// thread block counts into a single group's shared histogram and flushes it with
+// one global atomic per non-zero bin. An AcMetadata strip is one 64x64
+// color-tile row, so the CfL tiles of a strip are those of its thread block.
+constexpr unsigned int GROUP_HIST_THREADS = static_cast<unsigned int>(DC_GROUP_BLOCKS);
+constexpr std::size_t DC_HIST_ROWS = 4;
+constexpr std::size_t ACMETA_HIST_ROWS = 8;
+constexpr std::size_t COLOR_TILES_PER_DC_GROUP = DC_GROUP_BLOCKS / ACMETA_HIST_ROWS;
+static_assert(DC_GROUP_BLOCKS % DC_HIST_ROWS == 0 && DC_GROUP_BLOCKS % ACMETA_HIST_ROWS == 0);
+
+struct GroupHistStrip {
+    std::size_t g;
+    std::size_t bx;
+    std::size_t bx0;
+    std::size_t by0;
+    std::size_t row_lo;
+    std::size_t row_hi;
+};
+
+__device__ GroupHistStrip group_hist_strip(std::size_t rows, std::size_t bw, std::size_t bh,
+                                           std::size_t xdg) {
+    GroupHistStrip s{};
+    s.row_lo = blockIdx.x * rows;
+    s.row_hi = min(s.row_lo + rows, bh);
+    s.by0 = (s.row_lo / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS;
+    s.bx0 = blockIdx.y * DC_GROUP_BLOCKS;
+    s.bx = s.bx0 + threadIdx.x;
+    s.g = (s.row_lo / DC_GROUP_BLOCKS) * xdg + blockIdx.y;
+    return s;
+}
+
+__device__ void clear_group_histogram(unsigned int* sh) {
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        sh[i] = 0;
+    }
+    __syncthreads();
+}
+
+__device__ void flush_group_histogram(const unsigned int* sh, std::uint32_t* histogram) {
+    __syncthreads();
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        if (sh[i] != 0) {
+            atomicAdd(&histogram[i], sh[i]);
+        }
+    }
+}
+
+__device__ void count_signed_token(std::int32_t value, unsigned int* sh) {
+    std::uint32_t symbol{}, nbits{}, bits{};
+    hybrid_encode(pack_signed(value), symbol, nbits, bits);
+    atomicAdd(&sh[symbol], 1u);
+}
+
 __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, std::size_t bh,
                                     std::size_t nblocks, std::size_t xdg,
                                     std::uint32_t* histograms) {
-    const std::size_t idx{blockIdx.x * blockDim.x + threadIdx.x};
-    const std::size_t total{3 * bw * bh};
-    if (idx >= total) {
-        return;
+    __shared__ unsigned int sh[AC_HISTOGRAM_SIZE];
+    clear_group_histogram(sh);
+    const GroupHistStrip s{group_hist_strip(DC_HIST_ROWS, bw, bh, xdg)};
+    if (s.bx < bw) {
+        for (std::size_t by{s.row_lo}; by < s.row_hi; ++by) {
+            for (int c{0}; c < 3; ++c) {
+                const std::int32_t dc{
+                    dc_buf[static_cast<std::size_t>(c) * nblocks + by * bw + s.bx]};
+                count_signed_token(
+                    dc - dc_group_gradient(dc_buf, c, nblocks, bw, s.bx, by, s.bx0, s.by0), sh);
+            }
+        }
     }
-    const std::size_t block{idx / 3};
-    const int p{static_cast<int>(idx % 3)};
-    const int c{CHANNEL_ORDER[p]};
-    const std::size_t bx{block % bw};
-    const std::size_t by{block / bw};
-    const std::size_t bx0{(bx / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS};
-    const std::size_t by0{(by / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS};
-    const std::size_t g{(by / DC_GROUP_BLOCKS) * xdg + (bx / DC_GROUP_BLOCKS)};
-    const std::int32_t dc{dc_buf[static_cast<std::size_t>(c) * nblocks + block]};
-    const std::int32_t pred{dc_group_gradient(dc_buf, c, nblocks, bw, bx, by, bx0, by0)};
-    std::uint32_t symbol{};
-    std::uint32_t nbits{};
-    std::uint32_t bits{};
-    hybrid_encode(pack_signed(dc - pred), symbol, nbits, bits);
-    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
+    flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
 }
 
-// Accumulates each first-block's ACS strategy token (row 0) and quant-field token
-// (row 1) into its DcGroup's AcMetadata histogram.
-__global__ void acmeta_acsqf_histogram_kernel(const std::int32_t* quant_field,
-                                              const std::int8_t* acs, std::size_t bw,
-                                              std::size_t bh, std::size_t xdg,
-                                              std::uint32_t* histograms) {
-    const std::size_t block{blockIdx.x * blockDim.x + threadIdx.x};
-    if (block >= bw * bh) {
-        return;
+// Counts the strip's AcMetadata samples: each first-block's ACS strategy token
+// (row 0) and quant-field token (row 1), each color tile's YtoX and YtoB tokens
+// (null maps are the base correlation, symbol 0), and one EPF structural zero
+// per block.
+__global__ void acmeta_histogram_kernel(const std::int32_t* quant_field, const std::int8_t* acs,
+                                        const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                                        std::size_t bw, std::size_t bh, std::size_t cmw,
+                                        std::size_t xdg, std::uint32_t* histograms) {
+    __shared__ unsigned int sh[AC_HISTOGRAM_SIZE];
+    clear_group_histogram(sh);
+    const GroupHistStrip s{group_hist_strip(ACMETA_HIST_ROWS, bw, bh, xdg)};
+    if (s.bx < bw) {
+        for (std::size_t by{s.row_lo}; by < s.row_hi; ++by) {
+            const std::size_t block{by * bw + s.bx};
+            const int side{acs == nullptr ? 8 : acs[block]};
+            if (side != ACS_COVERED) {
+                count_signed_token(raw_strategy_dev(side), sh);
+                count_signed_token(quant_field[block] - 1, sh);
+            }
+        }
     }
-    const int side{acs == nullptr ? 8 : acs[block]};
-    if (side == ACS_COVERED) {
-        return;
+    const std::size_t ctx{blockIdx.y * COLOR_TILES_PER_DC_GROUP + threadIdx.x};
+    if (threadIdx.x < COLOR_TILES_PER_DC_GROUP && ctx < cmw) {
+        const std::size_t tile{blockIdx.x * cmw + ctx};
+        count_signed_token(ytox_map == nullptr ? 0 : ytox_map[tile], sh);
+        count_signed_token(ytob_map == nullptr ? 0 : ytob_map[tile], sh);
     }
-    const std::size_t bx{block % bw};
-    const std::size_t by{block / bw};
-    const std::size_t g{(by / DC_GROUP_BLOCKS) * xdg + (bx / DC_GROUP_BLOCKS)};
-    std::uint32_t symbol{}, nbits{}, bits{};
-    hybrid_encode(pack_signed(raw_strategy_dev(side)), symbol, nbits, bits);
-    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
-    hybrid_encode(pack_signed(quant_field[block] - 1), symbol, nbits, bits);
-    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
+    if (threadIdx.x == 0) {
+        const std::size_t strip_width{min(bw - s.bx0, DC_GROUP_BLOCKS)};
+        atomicAdd(&sh[0], static_cast<unsigned int>(strip_width * (s.row_hi - s.row_lo)));
+    }
+    flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
 }
 
-// Accumulates each 64x64 color tile's YtoX and YtoB CfL tokens into its DcGroup's
-// AcMetadata histogram (null maps are the base correlation, symbol 0).
-__global__ void acmeta_cfl_histogram_kernel(const std::int8_t* ytox_map,
-                                            const std::int8_t* ytob_map, std::size_t cmw,
-                                            std::size_t cmh, std::size_t xdg,
-                                            std::uint32_t* histograms) {
-    const std::size_t tile{blockIdx.x * blockDim.x + threadIdx.x};
-    if (tile >= cmw * cmh) {
-        return;
-    }
-    const std::size_t ctx{tile % cmw};
-    const std::size_t cty{tile / cmw};
-    const std::size_t g{(cty / 32) * xdg + (ctx / 32)};  // 32 color tiles per DC group
-    std::uint32_t symbol{}, nbits{}, bits{};
-    hybrid_encode(pack_signed(ytox_map == nullptr ? 0 : ytox_map[tile]), symbol, nbits, bits);
-    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
-    hybrid_encode(pack_signed(ytob_map == nullptr ? 0 : ytob_map[tile]), symbol, nbits, bits);
-    atomicAdd(&histograms[g * AC_HISTOGRAM_SIZE + symbol], 1u);
-}
-
-// Adds each DcGroup's EPF structural zeros (n samples) to symbol 0.
-__global__ void acmeta_epf_zeros_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
-                                        std::size_t num_groups, std::uint32_t* histograms) {
-    const std::size_t g{blockIdx.x * blockDim.x + threadIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
-    histograms[g * AC_HISTOGRAM_SIZE] += static_cast<std::uint32_t>(e.gbw * e.gbh);
+dim3 group_hist_grid(std::size_t rows, std::size_t bh, std::size_t xdg) {
+    return dim3{static_cast<unsigned int>((bh + rows - 1) / rows), static_cast<unsigned int>(xdg)};
 }
 
 // Item range [k_lo, k_hi) of group `c` owned by chunk `cb`.
@@ -1376,10 +1407,8 @@ bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t 
         cudaSuccess) {
         return false;
     }
-    const std::size_t total{3 * bw * bh};
-    const unsigned int threads{256};
-    const unsigned int blocks{static_cast<unsigned int>((total + threads - 1) / threads)};
-    dc_histogram_kernel<<<blocks, threads>>>(dc, bw, bh, nblocks, xdg, histograms);
+    dc_histogram_kernel<<<group_hist_grid(DC_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS>>>(
+        dc, bw, bh, nblocks, xdg, histograms);
     return cudaGetLastError() == cudaSuccess;
 }
 
@@ -1391,20 +1420,13 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t cmw{(bw + 7) / 8};
-    const std::size_t cmh{(bh + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
     if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t), 0) !=
         cudaSuccess) {
         return false;
     }
-    const unsigned int threads{256};
-    const unsigned int blocks{static_cast<unsigned int>((bw * bh + threads - 1) / threads)};
-    acmeta_acsqf_histogram_kernel<<<blocks, threads>>>(quant_field, acs, bw, bh, xdg, histograms);
-    const unsigned int cfl_blocks{static_cast<unsigned int>((cmw * cmh + threads - 1) / threads)};
-    acmeta_cfl_histogram_kernel<<<cfl_blocks, threads>>>(ytox_map, ytob_map, cmw, cmh, xdg,
-                                                         histograms);
-    const unsigned int zero_blocks{static_cast<unsigned int>((num_groups + threads - 1) / threads)};
-    acmeta_epf_zeros_kernel<<<zero_blocks, threads>>>(bw, bh, xdg, num_groups, histograms);
+    acmeta_histogram_kernel<<<group_hist_grid(ACMETA_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS>>>(
+        quant_field, acs, ytox_map, ytob_map, bw, bh, cmw, xdg, histograms);
     return cudaGetLastError() == cudaSuccess;
 }
 
