@@ -92,10 +92,7 @@ __device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token, std::ui
         bits = 0;
         return;
     }
-    std::uint32_t n{31u};
-    while ((value & (1u << n)) == 0) {
-        --n;
-    }
+    const std::uint32_t n{31u - static_cast<std::uint32_t>(__clz(value))};
     const std::uint32_t m{value - (1u << n)};
     token = split + ((n - SPLIT_EXPONENT) << (MSB_IN_TOKEN + LSB_IN_TOKEN)) +
             ((m >> (n - MSB_IN_TOKEN)) << LSB_IN_TOKEN) + (m & ((1u << LSB_IN_TOKEN) - 1));
