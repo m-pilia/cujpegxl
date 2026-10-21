@@ -36,7 +36,7 @@ constexpr float CHROMA_CENTER{128.0f / 255.0f};
 
 __device__ inline float srgb_to_linear(float encoded) {
     return encoded <= 0.04045f ? encoded * (1.0f / 12.92f)
-                               : powf((encoded + 0.055f) * (1.0f / 1.055f), 2.4f);
+                               : __powf((encoded + 0.055f) * (1.0f / 1.055f), 2.4f);
 }
 
 __device__ inline float clamp01(float v) {
