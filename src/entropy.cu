@@ -811,7 +811,8 @@ __device__ void ac_count_token(int side, int c, std::uint32_t predicted, std::ui
 // so they come from a ballot of the chunk's non-zero flags instead of a serial
 // walk. Every lane calls emit(active, symbol, nbits, bits, context) in lockstep
 // (so `emit` may use warp collectives); `active` marks the lanes holding a token,
-// in scan order by lane.
+// in scan order by lane. The next chunk's coefficients are loaded before the
+// current chunk is emitted, so their latency overlaps the emit.
 template <typename Emit>
 __device__ void warp_for_each_coeff_token(const std::int16_t* plane, std::size_t bx, std::size_t by,
                                           int side, std::size_t bw, int c, std::uint32_t nzeros,
@@ -824,26 +825,30 @@ __device__ void warp_for_each_coeff_token(const std::int16_t* plane, std::size_t
     const std::uint32_t histo_off{
         ac_zero_density_offset(ac_block_context(c, ac_strategy_order(side)))};
     const unsigned int lanes_below{(1u << lane) - 1u};
+    const auto load = [&](std::uint32_t k) -> std::int32_t {
+        return k < size ? plane[covered_plane_slot(side, bx, by, bw, __ldg(&order[k]))] : 0;
+    };
     std::uint32_t remaining_before{nzeros};
     std::uint32_t prev_before{nzeros > size / 16 ? 0u : 1u};
+    std::int32_t v{load(covered + lane)};
     for (std::uint32_t k0{covered}; k0 < size && remaining_before > 0; k0 += 32) {
         const std::uint32_t k{k0 + lane};
         const bool in_block{k < size};
-        const std::int32_t v{
-            in_block ? plane[covered_plane_slot(side, bx, by, bw, __ldg(&order[k]))] : 0};
         const unsigned int nz_mask{__ballot_sync(~0u, v != 0)};
         const std::uint32_t remaining{remaining_before -
                                       static_cast<std::uint32_t>(__popc(nz_mask & lanes_below))};
         const std::uint32_t prev{lane == 0 ? prev_before : (nz_mask >> (lane - 1)) & 1u};
         const bool active{in_block && remaining > 0};
+        remaining_before -= static_cast<std::uint32_t>(__popc(nz_mask));
+        prev_before = nz_mask >> 31;
+        const std::int32_t v_next{remaining_before > 0 ? load(k + 32) : 0};
         std::uint32_t symbol{0}, nbits{0}, bits{0}, ctx{0};
         if (active) {
             ctx = histo_off + ac_zero_density_context(remaining, k, covered, l2, prev);
             hybrid_encode(pack_signed(v), symbol, nbits, bits);
         }
         emit(active, symbol, nbits, bits, ctx);
-        remaining_before -= static_cast<std::uint32_t>(__popc(nz_mask));
-        prev_before = nz_mask >> 31;
+        v = v_next;
     }
 }
 
