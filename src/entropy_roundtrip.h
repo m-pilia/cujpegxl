@@ -11,9 +11,10 @@
 namespace cujpegxl {
 
 // Test-only host-vector wrapper around the device AC entropy kernels: uploads
-// the quantized coefficients and shared prefix code, runs ac_nonzero_grids,
-// ac_build_histogram and ac_encode_groups, and downloads the results. Used by the GPU conformance
-// test to diff against the host bitstream reference.
+// the quantized coefficients, their non-zero counts (computed on the host) and
+// the shared prefix code, runs ac_build_histogram and ac_encode_groups, and
+// downloads the results. Used by the GPU conformance test to diff against the
+// host bitstream reference.
 struct AcDeviceResult {
     std::vector<std::uint32_t> histogram{};
     std::vector<std::uint32_t> group_sizes{};

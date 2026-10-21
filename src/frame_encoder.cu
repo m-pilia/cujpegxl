@@ -115,13 +115,12 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height) {
 }
 
 EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
+                          const std::int32_t* nz_grid, const std::int32_t* nz_exact,
                           const std::int8_t* acs, const std::int8_t* ytox_map,
                           const std::int8_t* ytob_map, std::size_t width, std::size_t height,
                           const bitstream::QuantParams& qp, const std::int32_t* quant_field,
                           std::uint8_t* out_file, std::size_t out_capacity,
                           std::vector<StageTiming>* stats) {
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
     if (num_ac <= 1) {
@@ -142,14 +141,10 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::size_t* d_fb_pos{scope.alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
-    std::int32_t* d_nz_grid{scope.alloc<std::int32_t>(3 * bw * bh)};
-    std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * bw * bh)};
-    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc || !d_nz_grid ||
-        !d_nz_exact) {
+    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc) {
         return ENCODE_FAILED;
     }
-    if (!ac_nonzero_grids(ac_device, acs, width, height, d_nz_grid, d_nz_exact) ||
-        !ac_build_histogram(ac_device, acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist) ||
+    if (!ac_build_histogram(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_hist) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist) ||
         !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc)) {
@@ -212,7 +207,7 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
 
     std::size_t ac_total{0};
     std::size_t dc_total{0};
-    const bool ac_encoded{ac_encode_groups(ac_device, acs, d_nz_grid, d_nz_exact, width, height,
+    const bool ac_encoded{ac_encode_groups(ac_device, acs, nz_grid, nz_exact, width, height,
                                            d_ac_depth, d_ac_bits, d_ac_body, caps.ac_groups,
                                            d_ac_sizes, d_ac_offsets, &ac_total)};
     if (!ac_encoded) {
@@ -309,7 +304,10 @@ EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
     std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
     std::int16_t* d_ac16{scope.alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
     std::int32_t* d_dc32{scope.alloc<std::int32_t>(3 * blocks)};
-    if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32) {
+    std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * blocks)};
+    std::int32_t* d_nz_grid{scope.alloc<std::int32_t>(3 * blocks)};
+    if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32 || !d_nz_exact ||
+        !d_nz_grid) {
         return ENCODE_FAILED;
     }
 
@@ -332,7 +330,7 @@ EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
                          d_coeffs, d_acs, d_qf) ||
         !estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb) ||
         !quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, distance, d_ac16,
-                           d_dc32)) {
+                           d_dc32, d_nz_exact, d_nz_grid)) {
         return ENCODE_FAILED;
     }
     if (stats != nullptr) {
@@ -343,8 +341,8 @@ EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
         cudaDeviceSynchronize();
         stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
     }
-    return encode_frame(d_ac16, d_dc32, d_acs, d_mx, d_mb, width, height, qp, d_qf, out_file,
-                        out_capacity, stats);
+    return encode_frame(d_ac16, d_dc32, d_nz_grid, d_nz_exact, d_acs, d_mx, d_mb, width, height, qp,
+                        d_qf, out_file, out_capacity, stats);
 }
 
 }  // namespace cujpegxl

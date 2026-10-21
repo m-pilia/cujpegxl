@@ -52,12 +52,13 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height);
 // `ac_device` holds three channel-major int16 planes of (width/8 * height/8) * 64
 // slots (covered-block layout; a first-block of side N owns its coefficients,
 // covered blocks own none); `dc_device` three channel-major int32 planes, one DC
-// per 8x8 block. `acs` is the per-8x8 transform signal, `ytox_map`/`ytob_map` the
-// per-64x64-tile chroma-from-luma maps, and `quant_field` the per-block quant
-// integer buffer (device; width/8 * height/8, block raster order) written as the
-// AcMetadata quant field. width/height are multiples of 8 and must span more than
-// one AC group (single 256x256 frames use the combined-section layout and are not
-// handled here).
+// per 8x8 block. `nz_grid`/`nz_exact` are the AC non-zero counts produced
+// alongside `ac_device` by quantize_residual. `acs` is the per-8x8 transform
+// signal, `ytox_map`/`ytob_map` the per-64x64-tile chroma-from-luma maps, and
+// `quant_field` the per-block quant integer buffer (device; width/8 * height/8,
+// block raster order) written as the AcMetadata quant field. width/height are
+// multiples of 8 and must span more than one AC group (single 256x256 frames use
+// the combined-section layout and are not handled here).
 //
 // The AC groups and DcGroups are entropy-coded on the device; the codestream
 // headers, FrameHeader, DcGlobal, AcGlobal, TOC and ISOBMFF boxes are assembled
@@ -70,8 +71,9 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height);
 // When `stats` is non-null it receives the "entropy" and "assembly" stage
 // timings; passing null (the default) emits no records.
 [[nodiscard]] EncodeResult encode_frame(
-    const std::int16_t* ac_device, const std::int32_t* dc_device, const std::int8_t* acs,
-    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t width, std::size_t height,
+    const std::int16_t* ac_device, const std::int32_t* dc_device, const std::int32_t* nz_grid,
+    const std::int32_t* nz_exact, const std::int8_t* acs, const std::int8_t* ytox_map,
+    const std::int8_t* ytob_map, std::size_t width, std::size_t height,
     const bitstream::QuantParams& qp, const std::int32_t* quant_field, std::uint8_t* out_file,
     std::size_t out_capacity, std::vector<StageTiming>* stats = nullptr);
 

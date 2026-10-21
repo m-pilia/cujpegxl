@@ -24,23 +24,19 @@ constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
 // including partial edge groups. width/height must be multiples of 8.
 std::size_t ac_num_groups(std::size_t width, std::size_t height);
 
-// Per-block AC nonzero counts shared by ac_build_histogram and ac_encode_groups.
-// `ac` is the covered-block coefficient buffer (device; three channel-major
-// planes X, Y, B of (width/8 * height/8) * COEFFS_PER_BLOCK int16) and `acs` the
-// per-8x8 transform signal (nullptr = all 8x8 blocks). `nz_exact` receives each
-// first-block's nonzero count over order[covered..size), and `nz_grid` that count
-// normalized per covered 8x8 and broadcast to every covered position (the
-// neighbor-prediction input). Both are device buffers of 3 * (width/8 *
-// height/8) int32 in the planes' channel order. Returns false on a CUDA error.
-bool ac_nonzero_grids(const std::int16_t* ac, const std::int8_t* acs, std::size_t width,
-                      std::size_t height, std::int32_t* nz_grid, std::int32_t* nz_exact);
-
 // Phase 1 of the device entropy coder: accumulate the pooled AC symbol histogram
-// over every group. `ac`/`acs` are as in ac_nonzero_grids, and `nz_grid`/
-// `nz_exact` its output. Each first-block tokenizes order[covered..size) of its
-// size gathered via covered_plane_slot; covered blocks contribute nothing.
-// `histogram` is a device buffer of AC_HISTOGRAM_SIZE uint32 (zeroed by the
-// call). Deterministic (integer atomics). Returns false on a CUDA error.
+// over every group. `ac` is the covered-block coefficient buffer (device; three
+// channel-major planes X, Y, B of (width/8 * height/8) * COEFFS_PER_BLOCK int16)
+// and `acs` the per-8x8 transform signal (nullptr = all 8x8 blocks). Each
+// first-block tokenizes order[covered..size) of its size gathered via
+// covered_plane_slot; covered blocks contribute nothing. `nz_exact` holds each
+// first-block's non-zero count over order[covered..size), and `nz_grid` that
+// count normalized per covered 8x8 and broadcast to every covered position (the
+// neighbor-prediction input); both are device buffers of 3 * (width/8 *
+// height/8) int32 in the planes' channel order, as produced by
+// quantize_residual. `histogram` is a device buffer of AC_HISTOGRAM_SIZE uint32
+// (zeroed by the call). Deterministic (integer atomics). Returns false on a CUDA
+// error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, std::size_t width, std::size_t height,
                         std::uint32_t* histogram);

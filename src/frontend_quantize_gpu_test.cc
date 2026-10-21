@@ -94,13 +94,68 @@ Frame make_frame() {
     return f;
 }
 
-std::vector<__half> upload_coeffs(const Frame& f, __half** d_coeffs, std::int8_t** d_acs) {
-    cudaMalloc(d_coeffs, f.coeffs.size() * sizeof(__half));
-    cudaMalloc(d_acs, f.acs.size());
-    cudaMemcpy(*d_coeffs, f.coeffs.data(), f.coeffs.size() * sizeof(__half),
-               cudaMemcpyHostToDevice);
-    cudaMemcpy(*d_acs, f.acs.data(), f.acs.size(), cudaMemcpyHostToDevice);
-    return f.coeffs;
+constexpr std::size_t CMW = (BW + 7) / 8;
+constexpr std::size_t CMH = (BH + 7) / 8;
+constexpr std::int8_t YTOX_MAP = -20;
+constexpr std::int8_t YTOB_MAP = 10;
+constexpr std::int32_t QUANT_FIELD = 40;
+
+struct Quantized {
+    std::vector<std::int16_t> ac;
+    std::vector<std::int32_t> dc;
+    std::vector<std::int32_t> nz_exact;
+    std::vector<std::int32_t> nz_grid;
+};
+
+template <typename T>
+T* upload(const std::vector<T>& host) {
+    T* device{nullptr};
+    cudaMalloc(&device, host.size() * sizeof(T));
+    cudaMemcpy(device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice);
+    return device;
+}
+
+template <typename T>
+std::vector<T> download(const T* device, std::size_t count) {
+    std::vector<T> host(count);
+    cudaMemcpy(host.data(), device, count * sizeof(T), cudaMemcpyDeviceToHost);
+    return host;
+}
+
+// Runs quantize_residual on `f` at distance 1 with uniform CfL maps and quant
+// field.
+[[nodiscard]] bool quantize(const Frame& f, Quantized& out) {
+    __half* d_coeffs{upload(f.coeffs)};
+    std::int8_t* d_acs{upload(f.acs)};
+    std::int8_t* d_mx{upload(std::vector<std::int8_t>(CMW * CMH, YTOX_MAP))};
+    std::int8_t* d_mb{upload(std::vector<std::int8_t>(CMW * CMH, YTOB_MAP))};
+    std::int32_t* d_qf{upload(std::vector<std::int32_t>(NBLK, QUANT_FIELD))};
+    std::int16_t* d_ac{nullptr};
+    std::int32_t* d_dc{nullptr};
+    std::int32_t* d_nz_exact{nullptr};
+    std::int32_t* d_nz_grid{nullptr};
+    cudaMalloc(&d_ac, 3 * CPLANE * sizeof(std::int16_t));
+    cudaMalloc(&d_dc, 3 * NBLK * sizeof(std::int32_t));
+    cudaMalloc(&d_nz_exact, 3 * NBLK * sizeof(std::int32_t));
+    cudaMalloc(&d_nz_grid, 3 * NBLK * sizeof(std::int32_t));
+
+    const bool ok{quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, WIDTH, HEIGHT, 1.0f, d_ac,
+                                    d_dc, d_nz_exact, d_nz_grid)};
+    out.ac = download(d_ac, 3 * CPLANE);
+    out.dc = download(d_dc, 3 * NBLK);
+    out.nz_exact = download(d_nz_exact, 3 * NBLK);
+    out.nz_grid = download(d_nz_grid, 3 * NBLK);
+
+    cudaFree(d_coeffs);
+    cudaFree(d_acs);
+    cudaFree(d_mx);
+    cudaFree(d_mb);
+    cudaFree(d_qf);
+    cudaFree(d_ac);
+    cudaFree(d_dc);
+    cudaFree(d_nz_exact);
+    cudaFree(d_nz_grid);
+    return ok && cudaDeviceSynchronize() == cudaSuccess;
 }
 
 // The residual+quantize kernel round-trips each AC chroma coefficient to within
@@ -108,35 +163,10 @@ std::vector<__half> upload_coeffs(const Frame& f, __half** d_coeffs, std::int8_t
 // within half a DC step, across the mixed tiling.
 TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
     const Frame f{make_frame()};
-    const std::size_t cmw{(BW + 7) / 8};
-    const std::size_t cmh{(BH + 7) / 8};
-    __half* d_coeffs{nullptr};
-    std::int8_t* d_acs{nullptr};
-    upload_coeffs(f, &d_coeffs, &d_acs);
-
-    std::vector<std::int8_t> mx(cmw * cmh, -20);
-    std::vector<std::int8_t> mb(cmw * cmh, 10);
-    std::vector<std::int32_t> qf(BW * BH, 40);
-    std::int8_t* d_mx{nullptr};
-    std::int8_t* d_mb{nullptr};
-    std::int32_t* d_qf{nullptr};
-    std::int16_t* d_ac{nullptr};
-    std::int32_t* d_dc{nullptr};
-    cudaMalloc(&d_mx, mx.size());
-    cudaMalloc(&d_mb, mb.size());
-    cudaMalloc(&d_qf, qf.size() * sizeof(std::int32_t));
-    cudaMalloc(&d_ac, 3 * CPLANE * sizeof(std::int16_t));
-    cudaMalloc(&d_dc, 3 * NBLK * sizeof(std::int32_t));
-    cudaMemcpy(d_mx, mx.data(), mx.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mb, mb.data(), mb.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_qf, qf.data(), qf.size() * sizeof(std::int32_t), cudaMemcpyHostToDevice);
-
-    ASSERT_TRUE(
-        quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, WIDTH, HEIGHT, 1.0f, d_ac, d_dc));
-    std::vector<std::int16_t> ac(3 * CPLANE);
-    std::vector<std::int32_t> dc(3 * NBLK);
-    cudaMemcpy(ac.data(), d_ac, ac.size() * sizeof(std::int16_t), cudaMemcpyDeviceToHost);
-    cudaMemcpy(dc.data(), d_dc, dc.size() * sizeof(std::int32_t), cudaMemcpyDeviceToHost);
+    Quantized q{};
+    ASSERT_TRUE(quantize(f, q));
+    const std::vector<std::int16_t>& ac{q.ac};
+    const std::vector<std::int32_t>& dc{q.dc};
 
     const QuantCalibration cal{calibrate_quant(1.0f)};
     const float gsf{cal.global_scale_float};
@@ -147,10 +177,9 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
             if (side == ACS_COVERED) {
                 continue;
             }
-            const std::size_t tile{(by / 8) * cmw + (bx / 8)};
-            const float ytox{cfl_ytox_ratio(mx[tile])};
-            const float ytob{cfl_ytob_ratio(mb[tile])};
-            const float qgsf{static_cast<float>(qf[by * BW + bx]) * gsf};
+            const float ytox{cfl_ytox_ratio(YTOX_MAP)};
+            const float ytob{cfl_ytob_ratio(YTOB_MAP)};
+            const float qgsf{static_cast<float>(QUANT_FIELD) * gsf};
             for (int raw{0}; raw < side * side; ++raw) {
                 if (is_llf(raw, side)) {
                     continue;
@@ -201,14 +230,44 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
             }
         }
     }
+}
 
-    cudaFree(d_coeffs);
-    cudaFree(d_acs);
-    cudaFree(d_mx);
-    cudaFree(d_mb);
-    cudaFree(d_qf);
-    cudaFree(d_ac);
-    cudaFree(d_dc);
+// Each first-block's non-zero count covers its quantized AC (the zeroed LLF
+// corner included), and the grid holds the per-covered-block normalized count
+// at every position the transform covers.
+TEST(FrontendQuantize, QuantizeResidualCountsNonzeros) {
+    const Frame f{make_frame()};
+    Quantized q{};
+    ASSERT_TRUE(quantize(f, q));
+
+    std::size_t nonzero_blocks{0};
+    for (std::size_t by{0}; by < BH; ++by) {
+        for (std::size_t bx{0}; bx < BW; ++bx) {
+            const int side{f.acs[by * BW + bx]};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            const int cx{side / 8};
+            const std::int32_t covered{cx * cx};
+            for (std::size_t c{0}; c < 3; ++c) {
+                std::int32_t count{0};
+                for (int raw{0}; raw < side * side; ++raw) {
+                    const std::size_t slot{
+                        covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
+                    count += q.ac[c * CPLANE + slot] != 0 ? 1 : 0;
+                }
+                nonzero_blocks += count != 0 ? 1 : 0;
+                EXPECT_EQ(q.nz_exact[c * NBLK + by * BW + bx], count)
+                    << "channel " << c << " block " << bx << "," << by;
+                for (int p{0}; p < covered; ++p) {
+                    const std::size_t at{(by + p / cx) * BW + (bx + p % cx)};
+                    EXPECT_EQ(q.nz_grid[c * NBLK + at], (count + covered - 1) / covered)
+                        << "channel " << c << " position " << at;
+                }
+            }
+        }
+    }
+    EXPECT_GT(nonzero_blocks, 0u);
 }
 
 }  // namespace

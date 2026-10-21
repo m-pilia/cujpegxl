@@ -34,11 +34,19 @@ bool estimate_cfl_covered(const __half* coeffs, const std::int8_t* acs, std::siz
 // per-block quantizer strength is quant_field[block] * global_scale. `coeffs`,
 // `acs`, `ytox_map`, `ytob_map`, `quant_field` are device inputs; `ac`
 // (three int16 covered-block planes) and `dc` (three int32 planes, one per 8x8
-// block) the outputs. Deterministic. Returns false on a CUDA error.
+// block) the outputs.
+//
+// Also produces the AC non-zero counts consumed by the AC entropy coder, as
+// three int32 planes of one entry per 8x8 block in the channel order of `ac`:
+// `nz_exact` holds each first-block's number of non-zero quantized AC
+// coefficients (covered positions are zero), and `nz_grid` that count
+// normalized per covered 8x8 block, (nz + covered - 1) >> log2(covered), at
+// every position the transform covers (the neighbor-prediction input).
+// Deterministic. Returns false on a CUDA error.
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::int8_t* ytox_map,
                        const std::int8_t* ytob_map, const std::int32_t* quant_field,
                        std::size_t width, std::size_t height, float distance, std::int16_t* ac,
-                       std::int32_t* dc);
+                       std::int32_t* dc, std::int32_t* nz_exact, std::int32_t* nz_grid);
 
 }  // namespace cujpegxl
 

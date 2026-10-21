@@ -223,7 +223,6 @@ int main(int argc, char** argv) {
     Stage s_fe{"frontend_fused"};
     Stage s_cfl{"estimate_cfl_covered"};
     Stage s_qz{"quantize_residual"};
-    Stage s_nz{"ac_nonzero_grids"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
@@ -252,12 +251,10 @@ int main(int argc, char** argv) {
               [&] { estimate_cfl_covered(d_coeffs, d_acs, width, height, d_mx, d_mb); });
         timed(s_qz, record, [&] {
             quantize_residual(d_coeffs, d_acs, d_mx, d_mb, d_qf, width, height, args.distance,
-                              d_ac16, d_dc32);
+                              d_ac16, d_dc32, d_nz_exact, d_nz_grid);
         });
 
         // Entropy sub-stages, in encode_frame order.
-        timed(s_nz, record,
-              [&] { ac_nonzero_grids(d_ac16, d_acs, width, height, d_nz_grid, d_nz_exact); });
         timed(s_ach, record, [&] {
             ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist);
         });
@@ -322,7 +319,7 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_nz,  &s_ach, &s_dch, &s_amh, &s_fbc,
+    const Stage* stages[]{&s_fe,  &s_cfl, &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc,
                           &s_acg, &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};

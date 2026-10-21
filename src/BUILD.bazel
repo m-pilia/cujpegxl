@@ -266,6 +266,7 @@ cuda_library(
     deps = [
         ":ac_context",
         ":entropy",
+        ":vardct_layout",
     ],
 )
 

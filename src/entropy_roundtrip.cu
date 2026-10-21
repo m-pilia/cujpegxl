@@ -7,6 +7,7 @@
 
 #include "ac_context.h"
 #include "entropy.h"
+#include "vardct_layout.h"
 
 namespace cujpegxl {
 namespace {
@@ -23,13 +24,56 @@ bool upload(const std::vector<T>& host, T** device) {
            cudaSuccess;
 }
 
+struct NonzeroCounts {
+    std::vector<std::int32_t> exact{};
+    std::vector<std::int32_t> grid{};
+};
+
+// Host counterpart of the counts quantize_residual produces. The LLF corner is
+// skipped explicitly: the test patterns may hold values there, which the coder
+// never tokenizes, while quantize_residual always zeroes it.
+NonzeroCounts nonzero_counts(const std::vector<std::int16_t>& ac,
+                             const std::vector<std::int8_t>& acs, std::size_t bw, std::size_t bh) {
+    const std::size_t blocks{bw * bh};
+    const std::size_t plane{blocks * COEFFS_PER_BLOCK};
+    NonzeroCounts nz{.exact = std::vector<std::int32_t>(3 * blocks, 0),
+                     .grid = std::vector<std::int32_t>(3 * blocks, 0)};
+    for (std::size_t by{0}; by < bh; ++by) {
+        for (std::size_t bx{0}; bx < bw; ++bx) {
+            const std::size_t block{by * bw + bx};
+            const int side{acs.empty() ? 8 : acs[block]};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            const int cx{side / 8};
+            const std::int32_t covered{cx * cx};
+            for (std::size_t c{0}; c < 3; ++c) {
+                std::int32_t count{0};
+                for (int raw{0}; raw < side * side; ++raw) {
+                    if (raw / side < cx && raw % side < cx) {
+                        continue;
+                    }
+                    const std::size_t slot{
+                        covered_plane_slot(side, bx, by, bw, static_cast<std::size_t>(raw))};
+                    count += ac[c * plane + slot] != 0 ? 1 : 0;
+                }
+                nz.exact[c * blocks + block] = count;
+                for (int q{0}; q < covered; ++q) {
+                    const std::size_t at{(by + q / cx) * bw + (bx + q % cx)};
+                    nz.grid[c * blocks + at] = (count + covered - 1) / covered;
+                }
+            }
+        }
+    }
+    return nz;
+}
+
 }  // namespace
 
 bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
                       std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
                       const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
-    const std::size_t blocks{(width / 8) * (height / 8)};
     const std::size_t capacity{q.size() * 8 + 4096};
 
     // The covered-block layout is consumed directly (int32 -> int16, three planes
@@ -38,6 +82,8 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     for (std::size_t i{0}; i < q.size(); ++i) {
         ac[i] = static_cast<std::int16_t>(q[i]);
     }
+
+    const NonzeroCounts nz{nonzero_counts(ac, acs, width / 8, height / 8)};
 
     std::int16_t* d_ac{nullptr};
     std::int8_t* d_acs{nullptr};
@@ -53,14 +99,12 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
     bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) && upload(depth, &d_depth) &&
             upload(bits, &d_bits) &&
             cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_nz_grid, 3 * blocks * sizeof(std::int32_t)) == cudaSuccess &&
-            cudaMalloc(&d_nz_exact, 3 * blocks * sizeof(std::int32_t)) == cudaSuccess &&
+            upload(nz.grid, &d_nz_grid) && upload(nz.exact, &d_nz_exact) &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_out, capacity) == cudaSuccess};
 
     std::size_t total_bytes{0};
-    ok = ok && ac_nonzero_grids(d_ac, d_acs, width, height, d_nz_grid, d_nz_exact);
     ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist);
     ok = ok && ac_encode_groups(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_depth, d_bits,
                                 d_out, capacity, d_sizes, d_offsets, &total_bytes);
