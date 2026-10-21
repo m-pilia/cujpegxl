@@ -255,7 +255,9 @@ constexpr int DC_EMIT_THREADS = 512;
 // most of the device idle (a 4K frame has only 4 DcGroups). Each group is instead
 // split into DC_CHUNKS contiguous item ranges emitted by separate thread blocks;
 // a per-group scan of the chunk bit counts gives each chunk its bit offset within
-// the group so the concatenation still reproduces the reference bitstream.
+// the group so the concatenation still reproduces the reference bitstream. The
+// size pass also stores each thread's run offset within its chunk, so the emit
+// pass tokenizes every item only once.
 constexpr int DC_CHUNKS = 128;
 
 // A DcGroup is emitted cooperatively by one thread block: its section is an
@@ -618,7 +620,8 @@ __global__ void dc_chunk_size_kernel(
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
-    const std::uint32_t* blob_mid_bits, unsigned long long* chunk_bits) {
+    const std::uint32_t* blob_mid_bits, std::uint32_t* run_offsets,
+    unsigned long long* chunk_bits) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
@@ -640,9 +643,11 @@ __global__ void dc_chunk_size_kernel(
 
     __shared__ unsigned long long sh[DC_EMIT_THREADS];
     unsigned long long total{0};
-    block_scan_exclusive(run_bits, sh, total);
+    const unsigned long long run_off{block_scan_exclusive(run_bits, sh, total)};
+    const std::size_t chunk{g * DC_CHUNKS + blockIdx.y};
+    run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x] = static_cast<std::uint32_t>(run_off);
     if (threadIdx.x == 0) {
-        chunk_bits[g * DC_CHUNKS + blockIdx.y] = total;
+        chunk_bits[chunk] = total;
     }
 }
 
@@ -677,8 +682,8 @@ __global__ void dc_chunk_emit_kernel(
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
-    const std::uint32_t* blob_mid_bits, const unsigned long long* chunk_base, std::uint8_t* out,
-    const std::uint32_t* group_offsets) {
+    const std::uint32_t* blob_mid_bits, const std::uint32_t* run_offsets,
+    const unsigned long long* chunk_base, std::uint8_t* out, const std::uint32_t* group_offsets) {
     const std::size_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
@@ -693,18 +698,11 @@ __global__ void dc_chunk_emit_kernel(
     std::size_t a0{0};
     std::size_t a1{0};
     dc_thread_range(k_lo, k_hi, a0, a1);
-    unsigned long long run_bits{0};
-    for (std::size_t k{a0}; k < a1; ++k) {
-        run_bits += dc_item_bits(c, k);
-    }
-
-    __shared__ unsigned long long sh[DC_EMIT_THREADS];
-    unsigned long long total{0};
-    const unsigned long long run_off{block_scan_exclusive(run_bits, sh, total)};
-
-    const unsigned long long base{(static_cast<unsigned long long>(group_offsets[g]) << 3) +
-                                  chunk_base[g * DC_CHUNKS + blockIdx.y]};
-    RunBitWriter w{reinterpret_cast<unsigned int*>(out), base + run_off};
+    const std::size_t chunk{g * DC_CHUNKS + blockIdx.y};
+    const unsigned long long start{(static_cast<unsigned long long>(group_offsets[g]) << 3) +
+                                   chunk_base[chunk] +
+                                   run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x]};
+    RunBitWriter w{reinterpret_cast<unsigned int*>(out), start};
     for (std::size_t k{a0}; k < a1; ++k) {
         dc_item_emit(c, k, w);
     }
@@ -1429,24 +1427,31 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
 
+    std::uint32_t* run_offsets{nullptr};
     unsigned long long* chunk_bits{nullptr};
     unsigned long long* chunk_base{nullptr};
-    if (cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
-            cudaSuccess ||
-        cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
-            cudaSuccess) {
-        return false;
-    }
     const auto free_chunks = [&] {
+        cudaFreeAsync(run_offsets, 0);
         cudaFreeAsync(chunk_bits, 0);
         cudaFreeAsync(chunk_base, 0);
     };
+    if (cudaMallocAsync(&run_offsets,
+                        num_groups * DC_CHUNKS * DC_EMIT_THREADS * sizeof(std::uint32_t),
+                        0) != cudaSuccess ||
+        cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
+            cudaSuccess ||
+        cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
+            cudaSuccess) {
+        free_chunks();
+        return false;
+    }
 
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
-        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, run_offsets,
+        chunk_bits);
     group_chunk_scan_kernel<DC_CHUNKS><<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
         num_groups, chunk_bits, chunk_base, group_sizes);
     if (cudaGetLastError() != cudaSuccess) {
@@ -1498,8 +1503,8 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
-        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out,
-        group_offsets);
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, run_offsets, chunk_base,
+        out, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess};
     free_chunks();
     return ok;
