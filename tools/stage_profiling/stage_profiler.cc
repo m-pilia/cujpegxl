@@ -184,6 +184,7 @@ int main(int argc, char** argv) {
     const QuantCalibration cal{calibrate_quant(args.distance)};
     const bitstream::QuantParams qp{cal.global_scale, cal.quant_dc};
 
+    std::size_t* d_fb_pos{device_alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
 
     constexpr std::size_t AC_SECTION_CAP{1u << 16};
@@ -224,7 +225,7 @@ int main(int argc, char** argv) {
     Stage s_ach{"ac_build_histogram"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
-    Stage s_fbc{"dc_first_block_counts"};
+    Stage s_fbc{"dc_first_blocks"};
     Stage s_acg{"build_ac_global_device"};
     Stage s_dcb{"build_dc_group_blobs_device"};
     Stage s_dcg{"build_dc_global (CPU)"};
@@ -261,7 +262,7 @@ int main(int argc, char** argv) {
         timed(s_dch, record, [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist); });
         timed(s_amh, record,
               [&] { acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist); });
-        timed(s_fbc, record, [&] { dc_first_block_counts(d_acs, width, height, d_fbc); });
+        timed(s_fbc, record, [&] { dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc); });
         timed(s_acg, record, [&] {
             build_ac_global_device(d_ac_hist, num_ac, d_ctxmap, ctxmap.nbits, d_ac_depth, d_ac_bits,
                                    d_ac_section, AC_SECTION_CAP, d_ac_section_len);
@@ -282,10 +283,10 @@ int main(int argc, char** argv) {
                              &ac_total);
         });
         timed(s_dce, record, [&] {
-            dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_dc_depth, d_dc_bits,
-                             d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits, d_mid, d_mid_off,
-                             d_mid_bits, d_dc_body, dc_capacity, d_dc_sizes, d_dc_offsets,
-                             &dc_total);
+            dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
+                             d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+                             d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
+                             d_dc_sizes, d_dc_offsets, &dc_total);
         });
 
         std::vector<std::uint32_t> ac_sizes(num_ac);

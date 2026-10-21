@@ -176,81 +176,76 @@ __device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_
     return e;
 }
 
-__device__ unsigned long long block_scan_exclusive(unsigned long long val, unsigned long long* sh,
-                                                   unsigned long long& total);
+// The first-block lists are compacted one block row at a time: a thread block
+// per (block row, DcGroup column) with one thread per row position. A first
+// pass stores each row's count. The second pass places a position at the counts
+// of its group's earlier rows, plus the counts of the earlier warps in its row,
+// plus its ballot rank, which reproduces the group raster order.
+constexpr unsigned int FIRST_BLOCK_THREADS = static_cast<unsigned int>(DC_GROUP_BLOCKS);
+constexpr unsigned int FIRST_BLOCK_WARPS = FIRST_BLOCK_THREADS / 32;
 
-constexpr int FIRST_BLOCK_THREADS = 512;
+struct FirstBlockSlot {
+    std::size_t g;
+    std::size_t row;
+    std::size_t block;
+    bool flag;
+};
 
-// Fills, per DcGroup, the global block indices of its first-blocks in group
-// raster order (fb_pos[g*stride + i]) and their count (fb_count[g]); a null acs
-// means every block is a DCT8 first-block. The AcMetadata emitter reads these to
-// map an ACS/QF channel column (a first-block ordinal) back to its block.
-//
-// One thread block per group compacts the group's positions cooperatively: each
-// tile of blockDim positions is scanned so every first-block lands at its raster
-// ordinal (running base carried across tiles), reproducing the serial order
-// without the single-thread scan of the whole (up to 256x256) group.
-__global__ void build_first_blocks_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
-                                          std::size_t xdg, std::size_t num_groups,
-                                          std::size_t stride, std::size_t* fb_pos,
-                                          std::size_t* fb_count) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
-        return;
-    }
-    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
-    const std::size_t n{e.gbw * e.gbh};
-    __shared__ unsigned long long sh[FIRST_BLOCK_THREADS];
-    std::size_t base{0};
-    for (std::size_t tile{0}; tile < n; tile += blockDim.x) {
-        const std::size_t li{tile + threadIdx.x};
-        std::size_t block{0};
-        unsigned long long flag{0};
-        if (li < n) {
-            block = (e.by0 + li / e.gbw) * bw + (e.bx0 + li % e.gbw);
-            flag = (acs == nullptr || acs[block] != ACS_COVERED) ? 1ull : 0ull;
-        }
-        unsigned long long total{0};
-        const unsigned long long excl{block_scan_exclusive(flag, sh, total)};
-        if (li < n && flag != 0) {
-            fb_pos[g * stride + base + static_cast<std::size_t>(excl)] = block;
-        }
-        base += static_cast<std::size_t>(total);
-    }
+__device__ FirstBlockSlot first_block_slot(const std::int8_t* acs, std::size_t bw,
+                                           std::size_t xdg) {
+    const std::size_t by{blockIdx.x};
+    const std::size_t gx{blockIdx.y};
+    const std::size_t bx{gx * DC_GROUP_BLOCKS + threadIdx.x};
+    FirstBlockSlot s{};
+    s.g = (by / DC_GROUP_BLOCKS) * xdg + gx;
+    s.row = by % DC_GROUP_BLOCKS;
+    s.block = by * bw + bx;
+    s.flag = bx < bw && (acs == nullptr || acs[s.block] != ACS_COVERED);
+    return s;
+}
+
+__global__ void first_block_row_count_kernel(const std::int8_t* acs, std::size_t bw,
+                                             std::size_t xdg, std::uint32_t* row_counts) {
+    const FirstBlockSlot s{first_block_slot(acs, bw, xdg)};
+    const int count{__syncthreads_count(s.flag)};
     if (threadIdx.x == 0) {
-        fb_count[g] = base;
+        row_counts[s.g * DC_GROUP_BLOCKS + s.row] = static_cast<std::uint32_t>(count);
     }
 }
 
-// One thread block per DcGroup reduces its first-block count (blocks whose
-// transform is not ACS_COVERED) into counts[g].
-__global__ void dc_first_block_count_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
-                                            std::size_t xdg, std::size_t num_groups,
-                                            std::size_t* counts) {
-    const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
-        return;
+__global__ void first_block_scatter_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
+                                           std::size_t xdg, const std::uint32_t* row_counts,
+                                           std::size_t* positions, std::size_t* counts) {
+    const FirstBlockSlot s{first_block_slot(acs, bw, xdg)};
+    const unsigned int lane{threadIdx.x % 32};
+    const unsigned int warp{threadIdx.x / 32};
+    const std::uint32_t earlier_row{
+        threadIdx.x < s.row ? row_counts[s.g * DC_GROUP_BLOCKS + threadIdx.x] : 0u};
+    const std::uint32_t earlier_rows{warp_inclusive_sum(earlier_row, lane)};
+    const unsigned int flags{__ballot_sync(~0u, s.flag)};
+    __shared__ std::uint32_t warp_earlier_rows[FIRST_BLOCK_WARPS];
+    __shared__ std::uint32_t warp_flags[FIRST_BLOCK_WARPS];
+    if (lane == 31) {
+        warp_earlier_rows[warp] = earlier_rows;
+        warp_flags[warp] = static_cast<std::uint32_t>(__popc(flags));
     }
-    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
-    const std::size_t n{e.gbw * e.gbh};
-    unsigned long long local{0};
-    for (std::size_t li{threadIdx.x}; li < n; li += blockDim.x) {
-        const std::size_t block{(e.by0 + li / e.gbw) * bw + (e.bx0 + li % e.gbw)};
-        if (acs == nullptr || acs[block] != ACS_COVERED) {
-            ++local;
-        }
-    }
-    __shared__ unsigned long long sh[FIRST_BLOCK_THREADS];
-    sh[threadIdx.x] = local;
     __syncthreads();
-    for (unsigned int s{blockDim.x / 2}; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            sh[threadIdx.x] += sh[threadIdx.x + s];
-        }
-        __syncthreads();
+    std::uint32_t row_base{0};
+    std::uint32_t warp_base{0};
+    std::uint32_t row_count{0};
+    for (unsigned int w{0}; w < FIRST_BLOCK_WARPS; ++w) {
+        row_base += warp_earlier_rows[w];
+        warp_base += w < warp ? warp_flags[w] : 0u;
+        row_count += warp_flags[w];
     }
-    if (threadIdx.x == 0) {
-        counts[g] = static_cast<std::size_t>(sh[0]);
+    if (s.flag) {
+        const std::uint32_t rank{static_cast<std::uint32_t>(__popc(flags & ((1u << lane) - 1u)))};
+        positions[s.g * DC_FIRST_BLOCK_STRIDE + row_base + warp_base + rank] = s.block;
+    }
+    const std::size_t by{blockIdx.x};
+    const bool last_row{by + 1 == bh || s.row + 1 == DC_GROUP_BLOCKS};
+    if (threadIdx.x == 0 && last_row) {
+        counts[s.g] = static_cast<std::size_t>(row_base) + row_count;
     }
 }
 
@@ -328,11 +323,11 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t
                               const std::int8_t* acs, const std::int8_t* ytox_map,
                               const std::int8_t* ytob_map, std::size_t cmw,
                               const std::size_t* fb_pos, const std::size_t* fb_count,
-                              std::size_t fb_stride, const std::uint8_t* dc_depth,
-                              const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
-                              const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
-                              const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
-                              const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
+                              const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
+                              const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
+                              const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
+                              const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
+                              const std::uint32_t* blob_mid_off,
                               const std::uint32_t* blob_mid_bits) {
     const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
     DcCtx c{};
@@ -356,7 +351,7 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t
     c.ytox_map = ytox_map;
     c.ytob_map = ytob_map;
     c.cmw = cmw;
-    c.fb_pos = fb_pos + g * fb_stride;
+    c.fb_pos = fb_pos + g * DC_FIRST_BLOCK_STRIDE;
     c.n = e.gbw * e.gbh;
     c.cw = (e.gbw + 7) / 8;
     c.ch = (e.gbh + 7) / 8;
@@ -618,8 +613,8 @@ __global__ void dc_chunk_size_kernel(
     const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
     std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
     const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
-    const std::size_t* fb_pos, const std::size_t* fb_count, std::size_t fb_stride,
-    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
+    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -629,9 +624,9 @@ __global__ void dc_chunk_size_kernel(
         return;
     }
     const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, acs, ytox_map, ytob_map,
-                               cmw, fb_pos, fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth,
-                               acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid,
-                               blob_mid_off, blob_mid_bits)};
+                               cmw, fb_pos, fb_count, dc_depth, dc_bits, acmeta_depth, acmeta_bits,
+                               blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off,
+                               blob_mid_bits)};
     std::size_t k_lo{0};
     std::size_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
@@ -677,8 +672,8 @@ __global__ void dc_chunk_emit_kernel(
     const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
     std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
     const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
-    const std::size_t* fb_pos, const std::size_t* fb_count, std::size_t fb_stride,
-    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
+    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -689,9 +684,9 @@ __global__ void dc_chunk_emit_kernel(
         return;
     }
     const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, acs, ytox_map, ytob_map,
-                               cmw, fb_pos, fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth,
-                               acmeta_bits, blob_pre, blob_pre_off, blob_pre_bits, blob_mid,
-                               blob_mid_off, blob_mid_bits)};
+                               cmw, fb_pos, fb_count, dc_depth, dc_bits, acmeta_depth, acmeta_bits,
+                               blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off,
+                               blob_mid_bits)};
     std::size_t k_lo{0};
     std::size_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
@@ -1351,15 +1346,24 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height) {
     return xdg * ydg;
 }
 
-bool dc_first_block_counts(const std::int8_t* acs, std::size_t width, std::size_t height,
-                           std::size_t* counts) {
+bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
+                     std::size_t* positions, std::size_t* counts) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
     const std::size_t num_groups{dc_num_groups(width, height)};
-    dc_first_block_count_kernel<<<static_cast<unsigned int>(num_groups), FIRST_BLOCK_THREADS>>>(
-        acs, bw, bh, xdg, num_groups, counts);
-    return cudaGetLastError() == cudaSuccess;
+    std::uint32_t* row_counts{nullptr};
+    if (cudaMallocAsync(&row_counts, num_groups * DC_GROUP_BLOCKS * sizeof(std::uint32_t), 0) !=
+        cudaSuccess) {
+        return false;
+    }
+    const dim3 grid{static_cast<unsigned int>(bh), static_cast<unsigned int>(xdg)};
+    first_block_row_count_kernel<<<grid, FIRST_BLOCK_THREADS>>>(acs, bw, xdg, row_counts);
+    first_block_scatter_kernel<<<grid, FIRST_BLOCK_THREADS>>>(acs, bw, bh, xdg, row_counts,
+                                                              positions, counts);
+    const bool ok{cudaGetLastError() == cudaSuccess};
+    cudaFreeAsync(row_counts, 0);
+    return ok;
 }
 
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
@@ -1409,6 +1413,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
                       const std::int32_t* quant_field, const std::int8_t* acs,
                       const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                      const std::size_t* first_block_pos, const std::size_t* first_block_counts,
                       const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
                       const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
                       const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
@@ -1424,35 +1429,24 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     const std::size_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
 
-    // Per-group first-block position lists for the AcMetadata ACS/QF columns.
-    const std::size_t fb_stride{DC_GROUP_BLOCKS * DC_GROUP_BLOCKS};
-    std::size_t* fb_pos{nullptr};
-    std::size_t* fb_count{nullptr};
     unsigned long long* chunk_bits{nullptr};
     unsigned long long* chunk_base{nullptr};
-    if (cudaMallocAsync(&fb_pos, num_groups * fb_stride * sizeof(std::size_t), 0) != cudaSuccess ||
-        cudaMallocAsync(&fb_count, num_groups * sizeof(std::size_t), 0) != cudaSuccess ||
-        cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
+    if (cudaMallocAsync(&chunk_bits, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
             cudaSuccess ||
         cudaMallocAsync(&chunk_base, num_groups * DC_CHUNKS * sizeof(unsigned long long), 0) !=
             cudaSuccess) {
         return false;
     }
     const auto free_chunks = [&] {
-        cudaFreeAsync(fb_pos, 0);
-        cudaFreeAsync(fb_count, 0);
         cudaFreeAsync(chunk_bits, 0);
         cudaFreeAsync(chunk_base, 0);
     };
 
-    build_first_blocks_kernel<<<static_cast<unsigned int>(num_groups), FIRST_BLOCK_THREADS>>>(
-        acs, bw, bh, xdg, num_groups, fb_stride, fb_pos, fb_count);
-
     const dim3 chunk_grid{static_cast<unsigned int>(num_groups), DC_CHUNKS};
     dc_chunk_size_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
-        fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
-        blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
+        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
+        first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_bits);
     group_chunk_scan_kernel<DC_CHUNKS><<<static_cast<unsigned int>(num_groups), DC_CHUNKS>>>(
         num_groups, chunk_bits, chunk_base, group_sizes);
     if (cudaGetLastError() != cudaSuccess) {
@@ -1502,9 +1496,10 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
     }
 
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS>>>(
-        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw, fb_pos,
-        fb_count, fb_stride, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre, blob_pre_off,
-        blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out, group_offsets);
+        dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
+        first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
+        blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, chunk_base, out,
+        group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess};
     free_chunks();
     return ok;

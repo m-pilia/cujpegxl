@@ -115,19 +115,19 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-    // Per-DcGroup first-block counts (drive the AcMetadata `count` field) reduced
-    // on-device, replacing the host count loop and the full acs D2H copy.
+    std::size_t* d_fb_pos{scope.alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
     std::int32_t* d_nz_grid{scope.alloc<std::int32_t>(3 * bw * bh)};
     std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * bw * bh)};
-    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fbc || !d_nz_grid || !d_nz_exact) {
+    if (!d_ac_hist || !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc || !d_nz_grid ||
+        !d_nz_exact) {
         return false;
     }
     if (!ac_nonzero_grids(ac_device, acs, width, height, d_nz_grid, d_nz_exact) ||
         !ac_build_histogram(ac_device, acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist) ||
         !dc_build_histograms(dc_device, width, height, d_dc_hist) ||
         !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist) ||
-        !dc_first_block_counts(acs, width, height, d_fbc)) {
+        !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc)) {
         return false;
     }
 
@@ -192,8 +192,8 @@ bool encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
     if (!ac_encoded) {
         return false;
     }
-    if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map,
-                          d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
+    if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
+                          d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_body, dc_capacity,
                           d_dc_sizes, d_dc_offsets, &dc_total)) {
         return false;

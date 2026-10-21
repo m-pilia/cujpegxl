@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "ac_context.h"
+#include "vardct_layout.h"
 
 namespace cujpegxl {
 
@@ -62,13 +63,19 @@ bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, const std:
 // image, including partial edge groups. width/height must be multiples of 8.
 std::size_t dc_num_groups(std::size_t width, std::size_t height);
 
-// Per-DcGroup count of first-blocks (blocks whose transform is not ACS_COVERED),
-// which drives the AcMetadata `count` field. `acs` is the per-8x8 transform signal
-// (nullptr = all 8x8, so every block counts). `counts` is a device buffer of
-// dc_num_groups std::size_t. Replaces the host-side count loop and its full acs
-// device-to-host copy. Deterministic. Returns false on a CUDA error.
-bool dc_first_block_counts(const std::int8_t* acs, std::size_t width, std::size_t height,
-                           std::size_t* counts);
+// Per-group slot stride of the dc_first_blocks position lists.
+constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
+
+// Per-DcGroup first-blocks (blocks whose transform is not ACS_COVERED). `acs` is
+// the per-8x8 transform signal (nullptr = all 8x8, so every block is one).
+// `positions` (device, dc_num_groups * DC_FIRST_BLOCK_STRIDE std::size_t)
+// receives group g's first-block indices in group raster order from
+// g * DC_FIRST_BLOCK_STRIDE, and `counts` (device, dc_num_groups std::size_t)
+// their number, which is the AcMetadata `count` field. dc_encode_groups maps an
+// ACS/QF column (a first-block ordinal) back to its block through these lists.
+// Deterministic. Returns false on a CUDA error.
+bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
+                     std::size_t* positions, std::size_t* counts);
 
 // Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
 // Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer
@@ -104,7 +111,8 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block
 // raster order); its value at each block is written as the block's ACS+QF row-1
-// sample. Flattened per-group inputs (num_groups == dc_num_groups): `dc_depth` /
+// sample. `first_block_pos` / `first_block_counts` are the dc_first_blocks
+// output for `acs`. Flattened per-group inputs (num_groups == dc_num_groups): `dc_depth` /
 // `acmeta_depth` are num_groups * AC_HISTOGRAM_SIZE uint8, `dc_bits` /
 // `acmeta_bits` likewise uint16. `blob_pre` / `blob_mid` are concatenated bytes
 // indexed by `blob_pre_off` / `blob_mid_off` (byte offsets) with bit lengths
@@ -112,6 +120,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t height,
                       const std::int32_t* quant_field, const std::int8_t* acs,
                       const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                      const std::size_t* first_block_pos, const std::size_t* first_block_counts,
                       const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
                       const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
                       const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
