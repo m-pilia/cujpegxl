@@ -38,7 +38,8 @@ constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
 // The raw X and B planes stay resident from the load to the X/B gaborish at
 // RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
-constexpr std::size_t LOAD_AQ_LOCAL_PEAK = TILE_FLOATS + PAD_SAMPLES + CELLS * CELLS + 8 * TB * TB;
+constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
+    TILE_FLOATS + PAD_SAMPLES + 2 * CELLS * CELLS + 6 * TB * TB;
 // From the selection to the X/B DCT, the 8-, 16- and 32-point bases stay
 // resident above two tile planes. The selection and the Y pass read sharp Y
 // from the first and keep their horizontal-pass rows in the second, followed by
@@ -590,7 +591,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     float* sharp_y{workspace};
     float* sh_y{sharp_y + TILE_FLOATS};
     float* sh_pre{sh_y + PAD_SAMPLES};
-    float* sh_red{sh_pre + CELLS * CELLS};
+    float* sh_eroded{sh_pre + CELLS * CELLS};
+    float* sh_red{sh_eroded + CELLS * CELLS};
     float* raw_x{workspace + RESIDENT_X_B_OFFSET};
     float* raw_b{raw_x + PAD_SAMPLES};
 
@@ -642,10 +644,17 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     }
     __syncthreads();
 
-    // Adaptive quant integer. Every modulation term is an additive reduction
-    // over the block's 64 pixels, reduced as two half-blocks of four pixel rows
-    // with one warp each; the eight warps take the 32 half-blocks of the tile in
-    // turn. Thread lb then combines block lb's half-block sums.
+    // The AQ loop below does not read the eroded cells, so the barrier after it
+    // also covers this step.
+    if (tid < CELLS * CELLS) {
+        sh_eroded[tid] = erosion_cell(sh_pre, tid % CELLS, tid / CELLS, km0, km1, km2, km3);
+    }
+
+    // Adaptive quant integer. Every pixel modulation term is an additive
+    // reduction over the block's 64 pixels, reduced as two half-blocks of four
+    // pixel rows with one warp each; the eight warps take the 32 half-blocks of
+    // the tile in turn. Thread lb then combines block lb's half-block sums and
+    // its four eroded cells.
     const int lane{tid % 32};
     for (int hb{tid / 32}; hb < 2 * TB * TB; hb += FRONTEND_THREADS / 32) {
         const int lb{hb / 2};
@@ -680,34 +689,29 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
         const float pye{yv + kOffset + fabsf(xv)};
         const float blue_part{bv > pye ? fminf(bv - pye, kLimit) : 0.0f};
 
-        float er_part{0.0f};
-        if (half == 0 && lane < 4) {
-            er_part = erosion_cell(sh_pre, 2 * lbx + (lane & 1), 2 * lby + (lane >> 1), km0, km1,
-                                   km2, km3);
-        }
-
         const float hf_red{warp_reduce_sum(hf_part)};
         const float gamma_red{warp_reduce_sum(gamma_part)};
         const float blue_red{warp_reduce_sum(blue_part)};
-        const float er_red{warp_reduce_sum(er_part)};
         if (lane == 0) {
-            float* red{sh_red + hb * 4};
+            float* red{sh_red + hb * 3};
             red[0] = hf_red;
             red[1] = gamma_red;
             red[2] = blue_red;
-            red[3] = er_red;
         }
     }
     __syncthreads();
     if (tid < TB * TB) {
-        const std::size_t gbx{tbx0 + static_cast<std::size_t>(tid % TB)};
-        const std::size_t gby{tby0 + static_cast<std::size_t>(tid / TB)};
+        const int lbx{tid % TB};
+        const int lby{tid / TB};
+        const std::size_t gbx{tbx0 + static_cast<std::size_t>(lbx)};
+        const std::size_t gby{tby0 + static_cast<std::size_t>(lby)};
         if (gbx < bw && gby < bh) {
-            const float* red{sh_red + tid * 8};
-            const float hf_sum{red[0] + red[4]};
-            const float gamma_overall{(red[1] + red[5]) * (0.5f / 64.0f)};
-            float blue_sum{red[2] + red[6]};
-            const float aq{red[3] + red[7]};
+            const float* red{sh_red + tid * 6};
+            const float hf_sum{red[0] + red[3]};
+            const float gamma_overall{(red[1] + red[4]) * (0.5f / 64.0f)};
+            float blue_sum{red[2] + red[5]};
+            const float* eroded{sh_eroded + 2 * lby * CELLS + 2 * lbx};
+            const float aq{(eroded[0] + eroded[CELLS]) + (eroded[1] + eroded[CELLS + 1])};
 
             constexpr float kLimit{0.027121074570634722f};
             if (blue_sum >= 32.0f * kLimit) {
