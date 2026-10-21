@@ -184,46 +184,97 @@ __global__ void quantize_ac_kernel(const __half* __restrict__ coeffs,
     ac[2 * cplane + slot] = static_cast<std::int16_t>(lrintf((br - ytob * y_round) * qgsf / wb));
 }
 
-// One thread per 8x8 block: derives that block's DC from its transform's
-// compacted cx*cx low-frequency corner and quantizes it, with the base
-// correlation removed from B.
+// llf_dc_weights of every covered block of a DCT16 (entries 0-3) and a DCT32
+// (entries 4-19), row-major in (out_y, out_x).
+constexpr std::uint32_t LLF_DC_WEIGHT_ENTRIES = 20;
+
+__host__ __device__ constexpr std::uint32_t llf_dc_weight_entry(std::uint32_t m,
+                                                                std::uint32_t out_x,
+                                                                std::uint32_t out_y) {
+    return (m == 2 ? 0 : 4) + out_y * m + out_x;
+}
+
+__global__ void build_llf_dc_weights_kernel(LlfDcWeights* __restrict__ table) {
+    const std::uint32_t entry{threadIdx.x};
+    const std::uint32_t m{entry < 4 ? 2u : 4u};
+    const std::uint32_t local{entry < 4 ? entry : entry - 4};
+    table[entry] = llf_dc_weights(m, local % m, local / m);
+}
+
+// Built by a device kernel so that the weights carry the device math library's
+// FP64 cos/sqrt, which may round differently from the host's. Lazily
+// initialized on the device active at first use (the single target device).
+const LlfDcWeights* llf_dc_weights_device() {
+    static const LlfDcWeights* const table{[]() -> const LlfDcWeights* {
+        LlfDcWeights* t{nullptr};
+        if (cudaMalloc(&t, LLF_DC_WEIGHT_ENTRIES * sizeof(LlfDcWeights)) != cudaSuccess) {
+            return nullptr;
+        }
+        build_llf_dc_weights_kernel<<<1, LLF_DC_WEIGHT_ENTRIES>>>(t);
+        if (cudaGetLastError() != cudaSuccess) {
+            cudaFree(t);
+            return nullptr;
+        }
+        return t;
+    }()};
+    return table;
+}
+
+// 8x8 block positions per side of a quantize_dc_kernel strip. The height and
+// the width are multiples of the DCT32 alignment, so a transform never straddles
+// two strips.
+constexpr std::uint32_t DC_STRIP_WIDTH = 32;
+constexpr std::uint32_t DC_STRIP_HEIGHT = 4;
+
+// One CUDA block per strip of 8x8 positions, one thread per position. The m*m
+// low-frequency corner of a transform and its m*m covered blocks correspond one
+// to one, so each thread first stages one corner coefficient per channel in
+// shared memory, at its own position: the corner then lies in the strip's
+// shared plane with the strip width as row pitch. Each thread then derives its
+// block's DC from the staged corner and quantizes it, with the base correlation
+// removed from B.
 __global__ void quantize_dc_kernel(const __half* __restrict__ coeffs,
-                                   const std::int8_t* __restrict__ acs, std::uint32_t bw,
+                                   const std::int8_t* __restrict__ acs,
+                                   const LlfDcWeights* __restrict__ weights, std::uint32_t bw,
                                    std::uint32_t bh, float dc_scale,
                                    std::int32_t* __restrict__ dc) {
+    __shared__ float llf[3][DC_STRIP_HEIGHT * DC_STRIP_WIDTH];
     const std::uint32_t nblk{bw * bh};
-    const std::uint32_t blk{blockIdx.x * blockDim.x + threadIdx.x};
-    if (blk >= nblk) {
+    const std::uint32_t strip_bx{blockIdx.x * DC_STRIP_WIDTH};
+    const std::uint32_t strip_by{blockIdx.y * DC_STRIP_HEIGHT};
+    const std::uint32_t bx{strip_bx + threadIdx.x};
+    const std::uint32_t by{strip_by + threadIdx.y};
+    const bool in_frame{bx < bw && by < bh};
+    const std::uint32_t local{threadIdx.y * DC_STRIP_WIDTH + threadIdx.x};
+
+    OwningTransform t{};
+    if (in_frame) {
+        t = owning_transform(acs, bw, bx, by);
+        const std::size_t cplane{static_cast<std::size_t>(nblk) * COEFFS_PER_BLOCK};
+        const std::size_t raw{(by - t.by) * static_cast<std::size_t>(t.side) + (bx - t.bx)};
+        const std::size_t slot{covered_plane_slot(t.side, t.bx, t.by, bw, raw)};
+        llf[0][local] = __half2float(coeffs[slot]);
+        llf[1][local] = __half2float(coeffs[cplane + slot]);
+        llf[2][local] = __half2float(coeffs[2 * cplane + slot]);
+    }
+    __syncthreads();
+    if (!in_frame) {
         return;
     }
-    const std::uint32_t bx{blk % bw};
-    const std::uint32_t by{blk / bw};
-    const OwningTransform t{owning_transform(acs, bw, bx, by)};
-    const int n{t.side};
-    const int cx{n / 8};
-    const std::size_t cplane{static_cast<std::size_t>(nblk) * COEFFS_PER_BLOCK};
 
-    float llf_x[16];
-    float llf_y[16];
-    float llf_b[16];
-    for (int fx{0}; fx < cx; ++fx) {
-        for (int fy{0}; fy < cx; ++fy) {
-            const std::size_t slot{
-                covered_plane_slot(n, t.bx, t.by, bw, static_cast<std::size_t>(fx * n + fy))};
-            const int lp{fx * cx + fy};
-            llf_x[lp] = __half2float(coeffs[slot]);
-            llf_y[lp] = __half2float(coeffs[cplane + slot]);
-            llf_b[lp] = __half2float(coeffs[2 * cplane + slot]);
-        }
+    const std::uint32_t m{static_cast<std::uint32_t>(t.side) / 8};
+    float dc_x{llf[0][local]};
+    float dc_y{llf[1][local]};
+    float dc_b{llf[2][local]};
+    if (m > 1) {
+        const LlfDcWeights& w{weights[llf_dc_weight_entry(m, bx - t.bx, by - t.by)]};
+        const std::uint32_t corner{(t.by - strip_by) * DC_STRIP_WIDTH + (t.bx - strip_bx)};
+        dc_x = dc_from_llf_at(m, &llf[0][corner], DC_STRIP_WIDTH, w);
+        dc_y = dc_from_llf_at(m, &llf[1][corner], DC_STRIP_WIDTH, w);
+        dc_b = dc_from_llf_at(m, &llf[2][corner], DC_STRIP_WIDTH, w);
     }
-    const std::size_t out_x{bx - t.bx};
-    const std::size_t out_y{by - t.by};
-    const std::size_t m{static_cast<std::size_t>(cx)};
-    const LlfDcWeights w{llf_dc_weights(m, out_x, out_y)};
-    const float dc_x{dc_from_llf_at(m, llf_x, m, w)};
-    const float dc_y{dc_from_llf_at(m, llf_y, m, w)};
-    const float dc_b{dc_from_llf_at(m, llf_b, m, w)};
 
+    const std::uint32_t blk{by * bw + bx};
     const float dcq_x{DC_INV_QUANT[0] * dc_scale};
     const float dcq_y{DC_INV_QUANT[1] * dc_scale};
     const float dcq_b{DC_INV_QUANT[2] * dc_scale};
@@ -260,6 +311,10 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::
     const QuantCalibration cal{calibrate_quant(distance)};
     const float gsf{cal.global_scale_float};
     const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
+    const LlfDcWeights* dc_weights{llf_dc_weights_device()};
+    if (dc_weights == nullptr) {
+        return false;
+    }
     const std::uint32_t bw32{static_cast<std::uint32_t>(bw)};
     const std::uint32_t bh32{static_cast<std::uint32_t>(bh)};
 
@@ -269,9 +324,11 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs, const std::
     quantize_ac_kernel<<<ac_blocks, ac_threads>>>(coeffs, acs, ytox_map, ytob_map, quant_field,
                                                   bw32, bh32, static_cast<std::uint32_t>(cmw), gsf,
                                                   ac);
-    const unsigned int dc_threads{128};
-    const unsigned int dc_blocks{static_cast<unsigned int>(ceil_div(bw * bh, dc_threads))};
-    quantize_dc_kernel<<<dc_blocks, dc_threads>>>(coeffs, acs, bw32, bh32, dc_scale, dc);
+    const dim3 dc_threads{DC_STRIP_WIDTH, DC_STRIP_HEIGHT};
+    const dim3 dc_blocks{static_cast<unsigned int>(ceil_div(bw, DC_STRIP_WIDTH)),
+                         static_cast<unsigned int>(ceil_div(bh, DC_STRIP_HEIGHT))};
+    quantize_dc_kernel<<<dc_blocks, dc_threads>>>(coeffs, acs, dc_weights, bw32, bh32, dc_scale,
+                                                  dc);
     return cudaGetLastError() == cudaSuccess;
 }
 
