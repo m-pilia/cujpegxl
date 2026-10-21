@@ -36,9 +36,8 @@ constexpr int TILE_STRIDE = TILE_PX + 1;
 constexpr int TILE_FLOATS = TILE_PX * TILE_STRIDE;
 constexpr int PAD_SAMPLES = PAD * PAD;
 constexpr int FRONTEND_THREADS = 256;
-// The pre-erosion pixel terms: four per thread, held in the sharp Y plane.
-static_assert(FRONTEND_THREADS == 4 * CELLS * CELLS);
-static_assert(16 * CELLS * CELLS <= TILE_FLOATS);
+// The pre-erosion takes one cell row per warp and one tile column per lane.
+static_assert(FRONTEND_THREADS == 32 * CELLS && TILE_PX == 32);
 // The raw X and B planes stay resident from the load to the X/B gaborish at
 // RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
@@ -596,8 +595,6 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     float* sh_pre{sh_y + PAD_SAMPLES};
     float* sh_eroded{sh_pre + CELLS * CELLS};
     float* sh_red{sh_eroded + CELLS * CELLS};
-    // Sharp Y is first written by the Y gaborish, after the AQ.
-    float* pre_terms{sharp_y};
     float* raw_x{workspace + RESIDENT_X_B_OFFSET};
     float* raw_b{raw_x + PAD_SAMPLES};
 
@@ -628,33 +625,28 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     __syncthreads();
 
     // Pre-erosion cells: 0.25 * sum of the 4x4 pixel diffs (Laplacian of Y).
-    // Each thread computes the four pixel terms of one column of one cell; the
-    // column is rotated by the cell row so that a warp's sh_y reads fall in
-    // distinct banks. Term k = 4 * dy + dx of cell ci is at k * CELLS * CELLS + ci.
+    // Warp w takes cell row w, and lane x sums the four terms of tile column x;
+    // the four lanes of a cell then combine their column sums.
+    const int lane{tid % 32};
     {
-        const int ci{tid % (CELLS * CELLS)};
-        const int ccx{ci % CELLS};
-        const int ccy{ci / CELLS};
-        const int dx{(tid / (CELLS * CELLS) + ccy) % 4};
+        const int warp{tid / 32};
+        const int lx{lane + HALO};
+        float sum{0.0f};
         for (int dy{0}; dy < 4; ++dy) {
-            const int lx{ccx * 4 + dx + HALO};
-            const int ly{ccy * 4 + dy + HALO};
+            const int ly{4 * warp + dy + HALO};
             const float yv{sh_y[ly * PAD + lx]};
             const float base{0.25f * (sh_y[(ly + 1) * PAD + lx] + sh_y[(ly - 1) * PAD + lx] +
                                       sh_y[ly * PAD + lx - 1] + sh_y[ly * PAD + lx + 1])};
             float diff{ratio_cbrt_gamma<false>(yv + MATCH_GAMMA_OFFSET) * (yv - base)};
             diff *= diff;
             diff = fminf(diff, DIFF_LIMIT);
-            pre_terms[(4 * dy + dx) * CELLS * CELLS + ci] = masking_sqrt(diff);
+            sum += masking_sqrt(diff);
         }
-    }
-    __syncthreads();
-    if (tid < CELLS * CELLS) {
-        float sum{0.0f};
-        for (int k{0}; k < 16; ++k) {
-            sum += pre_terms[k * CELLS * CELLS + tid];
+        sum += __shfl_xor_sync(0xffffffffu, sum, 1);
+        sum += __shfl_xor_sync(0xffffffffu, sum, 2);
+        if (lane % 4 == 0) {
+            sh_pre[warp * CELLS + lane / 4] = 0.25f * sum;
         }
-        sh_pre[tid] = 0.25f * sum;
     }
     __syncthreads();
 
@@ -669,7 +661,6 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     // pixel rows with one warp each; the eight warps take the 32 half-blocks of
     // the tile in turn. Thread lb then combines block lb's half-block sums and
     // its four eroded cells.
-    const int lane{tid % 32};
     for (int hb{tid / 32}; hb < 2 * TB * TB; hb += FRONTEND_THREADS / 32) {
         const int lb{hb / 2};
         const int half{hb % 2};
