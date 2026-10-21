@@ -819,9 +819,9 @@ ChromaTexture::~ChromaTexture() {
     }
 }
 
-bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch,
-                     const ChromaTexture& chroma, std::size_t width, std::size_t height,
-                     float distance, __half* coeffs, std::int8_t* acs, std::int32_t* quant_field) {
+bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
+                     std::size_t width, std::size_t height, float distance, __half* coeffs,
+                     std::int8_t* acs, std::int32_t* quant_field) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
 

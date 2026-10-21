@@ -388,8 +388,8 @@ EncodeResult encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
 
     const ChromaTexture chroma_texture{chroma_src, chroma_src_pitch, width, height};
     const Clock::time_point frontend_start{Clock::now()};
-    if (!encode_frontend(luma, luma_pitch, chroma_texture, width, height, distance, d_coeffs,
-                         d_acs, d_qf) ||
+    if (!encode_frontend(luma, luma_pitch, chroma_texture, width, height, distance, d_coeffs, d_acs,
+                         d_qf) ||
         !quantize_residual(d_coeffs, d_acs, d_qf, width, height, distance, d_mx, d_mb, d_ac16,
                            d_dc32, d_nz_exact, d_nz_grid)) {
         return ENCODE_FAILED;

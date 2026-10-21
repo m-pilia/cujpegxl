@@ -44,9 +44,9 @@ private:
 // `quant_field` receives the per-block quant integers. width and height must be
 // multiples of 8. All pointers are device addresses. Deterministic. Enqueues on
 // the legacy default stream without waiting; returns false on a launch error.
-bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch,
-                     const ChromaTexture& chroma, std::size_t width, std::size_t height,
-                     float distance, __half* coeffs, std::int8_t* acs, std::int32_t* quant_field);
+bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
+                     std::size_t width, std::size_t height, float distance, __half* coeffs,
+                     std::int8_t* acs, std::int32_t* quant_field);
 
 }  // namespace cujpegxl
 
