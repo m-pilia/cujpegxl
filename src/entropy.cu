@@ -14,6 +14,7 @@
 #include "coeff_order.h"
 #include "dc_predict.h"
 #include "vardct_layout.h"
+#include "warp_scan.cuh"
 
 namespace cujpegxl {
 namespace {
@@ -993,16 +994,6 @@ __device__ void warp_item_coeff_tokens(const AcGroupCtx& c, const AcLaneItem& it
                               __shfl_sync(~0u, it.bx, src), __shfl_sync(~0u, it.by, src),
                               __shfl_sync(~0u, it.side, src), c.bw, ch,
                               __shfl_sync(~0u, it.nzeros, src), lane, emit);
-}
-
-__device__ std::uint32_t warp_inclusive_sum(std::uint32_t v, unsigned int lane) {
-    for (unsigned int d{1}; d < 32; d <<= 1) {
-        const std::uint32_t below{__shfl_up_sync(~0u, v, d)};
-        if (lane >= d) {
-            v += below;
-        }
-    }
-    return v;
 }
 
 // Warp-cooperative LSB-first bit packer for one contiguous run of bits, the warp

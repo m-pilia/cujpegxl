@@ -4,19 +4,18 @@
 #ifndef CUJPEGXL_SRC_BITSTREAM_SERIALIZE_IMPL_H_
 #define CUJPEGXL_SRC_BITSTREAM_SERIALIZE_IMPL_H_
 
-// Writer-templated, host+device implementation of the JXL prefix-code entropy
-// container serialization: length-limited Huffman construction, the histogram
+// Writer-templated implementation of the JXL prefix-code entropy container
+// serialization: length-limited Huffman construction, the histogram
 // description, the context map, and the VarDCT DC / AcMetadata modular headers.
-// It is the single source of truth shared by the host bitstream library (via the
+// The host bitstream library instantiates it with the vector BitWriter (via the
 // thin wrappers in prefix_code.cc / histogram_writer.cc / context_map.cc /
-// frame_assembly.cc, instantiated with the vector BitWriter) and the on-device
-// build kernels (instantiated with SpanBitWriter). All arithmetic is integer, so
-// the emitted bytes are bit-identical across the two instantiations.
+// frame_assembly.cc). The field-level writers are host+device: the on-device
+// prefix build (prefix_build.cu) emits its header fields through them, while
+// building the Huffman codes warp-cooperatively.
 //
-// Every dynamic container of the host originals is replaced by a bounded stack
-// buffer (alphabets are <= HISTOGRAM_STRIDE and context maps <= AC_NUM_CONTEXTS),
-// std::stable_sort by a stable insertion sort, and the recursive depth walk by an
-// explicit stack, so the code compiles and runs unchanged on the device.
+// Containers are bounded stack buffers (alphabets are <= HISTOGRAM_STRIDE and
+// context maps <= AC_NUM_CONTEXTS), std::stable_sort is a stable insertion sort,
+// and the recursive depth walk uses an explicit stack.
 
 #include <cassert>
 #include <cstddef>
@@ -76,8 +75,8 @@ struct HuffmanTree {
 };
 
 // Assign leaf depths by an explicit-stack DFS (iterative form of the recursive
-// libjxl SetDepth), so the walk stays within the device stack for the deep,
-// pre-limit trees the doubling loop discards.
+// libjxl SetDepth), which bounds the walk for the deep, pre-limit trees the
+// doubling loop discards.
 CUJPEGXL_BS_HD inline void set_depth(int root, const HuffmanTree* pool, std::uint8_t* depth) {
     struct Item {
         int node;
@@ -464,9 +463,8 @@ CUJPEGXL_BS_HD inline void scan_histogram(const std::uint32_t* histogram, std::s
     }
 }
 
-// Builds only the prefix code (depth/bits) for `histogram`, writing nothing. This
-// is the compute half of build_and_store_huffman_tree, split out so the device
-// can build all cluster codes in parallel before the serial bit-writing pass.
+// Builds only the prefix code (depth/bits) for `histogram`, writing nothing: the
+// compute half of build_and_store_huffman_tree.
 CUJPEGXL_BS_HD inline void build_huffman_code(const std::uint32_t* histogram, std::size_t length,
                                               std::uint8_t* depth, std::uint16_t* bits) {
     for (std::size_t i{0}; i < length; ++i) {
@@ -542,11 +540,10 @@ CUJPEGXL_BS_HD void store_var_len_uint16(W& w, std::size_t n) {
 
 constexpr std::size_t PREFIX_MAX_BITS = 15;
 
+// The fields of a single-histogram prefix description that precede its code.
 template <typename W>
-CUJPEGXL_BS_HD void write_prefix_histograms(W& w, const std::uint32_t* histogram,
-                                            std::size_t length, std::size_t num_contexts,
-                                            const HybridUintConfig& config, std::uint8_t* depth,
-                                            std::uint16_t* bits) {
+CUJPEGXL_BS_HD void write_prefix_histogram_head(W& w, std::size_t length, std::size_t num_contexts,
+                                                const HybridUintConfig& config) {
     w.write(1, 0);  // lz77.enabled = false
 
     if (num_contexts > 1) {
@@ -558,6 +555,14 @@ CUJPEGXL_BS_HD void write_prefix_histograms(W& w, const std::uint32_t* histogram
     encode_uint_config(w, config, PREFIX_MAX_BITS);
 
     store_var_len_uint16(w, length - 1);
+}
+
+template <typename W>
+CUJPEGXL_BS_HD void write_prefix_histograms(W& w, const std::uint32_t* histogram,
+                                            std::size_t length, std::size_t num_contexts,
+                                            const HybridUintConfig& config, std::uint8_t* depth,
+                                            std::uint16_t* bits) {
+    write_prefix_histogram_head(w, length, num_contexts, config);
 
     for (std::size_t i{0}; i < length; ++i) {
         depth[i] = 0;
@@ -691,9 +696,7 @@ CUJPEGXL_BS_HD ContextMapEncoding write_best_prefix_context_map(W& w,
     return encoding;
 }
 
-// Builds the per-cluster prefix codes (depth/bits) without writing. Independent
-// across clusters, so the device builds them in parallel (one thread per cluster)
-// before the serial serialize pass.
+// Builds cluster `cluster`'s prefix code (depth/bits) without writing.
 CUJPEGXL_BS_HD inline void build_cluster_code(const std::uint32_t* cluster_histograms,
                                               std::size_t stride, std::size_t cluster,
                                               std::uint8_t* depth, std::uint16_t* bits) {
@@ -710,69 +713,9 @@ CUJPEGXL_BS_HD inline void build_cluster_code(const std::uint32_t* cluster_histo
     }
 }
 
-// Appends `nbits` LSB-first bits taken from the byte buffer `blob` (as produced
-// by a byte writer) into `w`.
-template <typename W>
-CUJPEGXL_BS_HD void append_bits(W& w, const std::uint8_t* blob, std::size_t nbits) {
-    std::size_t byte{0};
-    while (nbits != 0) {
-        const std::size_t take{nbits < 8 ? nbits : 8};
-        w.write(take, blob[byte]);
-        nbits -= take;
-        ++byte;
-    }
-}
-
-// Builds cluster `cluster`'s prefix code (depth/bits) and, if its alphabet has
-// more than one symbol, serializes the code description into `blob` (bit length
-// into `nbits`). Runs in the parallel build kernel (one block per cluster) so the
-// per-cluster store — the dominant serial cost when done single-threaded — is
-// spread across blocks; the serialize pass then only concatenates the blobs.
-CUJPEGXL_BS_HD inline void build_cluster_code_and_blob(const std::uint32_t* cluster_histograms,
-                                                       std::size_t stride, std::size_t cluster,
-                                                       std::uint8_t* depth, std::uint16_t* bits,
-                                                       std::uint8_t* blob, std::size_t blob_cap,
-                                                       std::uint32_t* nbits) {
-    build_cluster_code(cluster_histograms, stride, cluster, depth, bits);
-    const std::uint32_t* h{cluster_histograms + cluster * stride};
-    const std::size_t a{alphabet_size(h, stride)};
-    if (a > 1) {
-        SpanBitWriter w{blob, blob_cap};
-        store_huffman_code(h, a, depth + cluster * stride, w);
-        *nbits = static_cast<std::uint32_t>(w.bits_written());
-    } else {
-        *nbits = 0;
-    }
-}
-
 // use_prefix_code flag, per-cluster uint configs, alphabet sizes, and the
-// per-cluster prefix-code descriptions from precomputed per-cluster blobs
-// (`cluster_blob` / `cluster_nbits`, one `blob_stride`-byte slot per cluster).
-template <typename W>
-CUJPEGXL_BS_HD void write_cluster_codes_tail_prebuilt(
-    W& w, std::size_t num_clusters, const std::uint32_t* cluster_histograms, std::size_t stride,
-    const HybridUintConfig& config, const std::uint8_t* cluster_blob, std::size_t blob_stride,
-    const std::uint32_t* cluster_nbits) {
-    w.write(1, 1);  // use_prefix_code
-    for (std::size_t c{0}; c < num_clusters; ++c) {
-        encode_uint_config(w, config, PREFIX_MAX_BITS);
-    }
-    std::size_t alpha[256]{};
-    for (std::size_t c{0}; c < num_clusters; ++c) {
-        alpha[c] = alphabet_size(cluster_histograms + c * stride, stride);
-        store_var_len_uint16(w, alpha[c] - 1);
-    }
-    for (std::size_t c{0}; c < num_clusters; ++c) {
-        if (alpha[c] > 1) {
-            append_bits(w, cluster_blob + c * blob_stride, cluster_nbits[c]);
-        }
-    }
-}
-
-// use_prefix_code flag, per-cluster uint configs, alphabet sizes, and the
-// per-cluster prefix-code descriptions (from the prebuilt `depth`). This is the
-// data-dependent tail of the clustered histogram description, shared by the host
-// serialize and the device serialize (which prepends a precomputed context map).
+// per-cluster prefix-code descriptions (from the prebuilt `depth`): the
+// data-dependent tail of the clustered histogram description.
 template <typename W>
 CUJPEGXL_BS_HD void write_cluster_codes_tail(W& w, std::size_t num_clusters,
                                              const std::uint32_t* cluster_histograms,
@@ -873,24 +816,6 @@ CUJPEGXL_BS_HD void serialize_ac_global_head(W& w, std::size_t num_ac_groups) {
     write_bool(w, true);                                 // DequantMatrices::Decode all_default
     write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);  // num_histograms - 1
     write_u32(w, order_enc, 0);                          // used_orders = 0 (natural)
-}
-
-// Serialize-only AcGlobal from precomputed context-map and per-cluster code blobs
-// (the per-cluster code descriptions built in parallel by build_cluster_code_and_blob).
-// The serialize pass therefore only concatenates blobs, with no per-cluster
-// Huffman work. Byte-identical to serializing the clustered histograms from
-// scratch with write_clustered_prefix_histograms.
-template <typename W>
-CUJPEGXL_BS_HD void serialize_ac_global_prebuilt_blobs(
-    W& w, const std::uint32_t* ac_histograms, const std::uint8_t* ctxmap_blob,
-    std::size_t ctxmap_nbits, std::size_t num_clusters, std::size_t num_ac_groups,
-    const std::uint8_t* cluster_blob, std::size_t blob_stride, const std::uint32_t* cluster_nbits) {
-    serialize_ac_global_head(w, num_ac_groups);
-    w.write(1, 0);  // lz77.enabled = false
-    append_bits(w, ctxmap_blob, ctxmap_nbits);
-    write_cluster_codes_tail_prebuilt(w, num_clusters, ac_histograms, HISTOGRAM_STRIDE,
-                                      HybridUintConfig{}, cluster_blob, blob_stride, cluster_nbits);
-    w.zero_pad_to_byte();
 }
 
 // DcGroup pre-blob: extra_precision + the VarDCTDC modular header (Gradient).

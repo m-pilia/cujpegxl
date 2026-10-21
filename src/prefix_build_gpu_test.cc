@@ -1,13 +1,11 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// De-risks the on-device prefix-code build (prefix_build.cu) by asserting it
-// reproduces the host bitstream reference (build_ac_global / build_dc_group_blobs)
+// Asserts the warp-cooperative on-device prefix-code build (prefix_build.cu)
+// reproduces the serial host reference (build_ac_global / build_dc_group_blobs)
 // byte-for-byte over histograms spanning every Huffman path: empty, single
-// symbol, the <=4-symbol simple form, the complex code-length-code form, and the
-// full 256-symbol alphabet. Both sides run the same serialize_impl.h core, so a
-// mismatch would flag a device-specific defect (bounded-buffer sizing, the stable
-// sort, the explicit-stack depth walk, or the strided blob layout).
+// symbol, the <=4-symbol simple form, the complex code-length-code form, the
+// full 256-symbol alphabet, and trees exceeding the depth limit.
 
 #include <algorithm>
 #include <cstdint>
@@ -44,7 +42,7 @@ void fill_histogram(std::uint32_t* h, int pattern, Lcg& rng) {
     for (std::size_t i{0}; i < HISTOGRAM_STRIDE; ++i) {
         h[i] = 0;
     }
-    switch (pattern % 6) {
+    switch (pattern % 7) {
         case 0:  // empty (alphabet 1, no code)
             break;
         case 1:  // single symbol
@@ -70,6 +68,11 @@ void fill_histogram(std::uint32_t* h, int pattern, Lcg& rng) {
         case 5:  // full alphabet, skewed counts
             for (std::size_t i{0}; i < HISTOGRAM_STRIDE; ++i) {
                 h[i] = 1 + rng.next() % (i + 2);
+            }
+            break;
+        case 6:  // geometric counts: the unlimited tree exceeds the 15-bit depth limit
+            for (std::size_t i{0}; i < 24; ++i) {
+                h[rng.next() % 8 + 10 * i] = 1u << i;
             }
             break;
     }

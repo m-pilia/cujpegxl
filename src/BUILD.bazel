@@ -50,6 +50,11 @@ cc_library(
 )
 
 cc_library(
+    name = "warp_scan",
+    hdrs = ["warp_scan.cuh"],
+)
+
+cc_library(
     name = "coeff_order",
     srcs = ["coeff_order.cc"],
     hdrs = ["coeff_order.h"],
@@ -249,6 +254,7 @@ cuda_library(
         ":coeff_order",
         ":dc_predict",
         ":vardct_layout",
+        ":warp_scan",
     ],
 )
 
@@ -282,7 +288,9 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_context",
+        ":dc_predict",
         ":vardct_layout",
+        ":warp_scan",
         "//src/bitstream",
     ],
 )
