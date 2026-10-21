@@ -3,6 +3,10 @@
 
 #include "entropy_roundtrip.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <numeric>
+
 #include <cuda_runtime.h>
 
 #include "ac_context.h"
@@ -72,9 +76,9 @@ NonzeroCounts nonzero_counts(const std::vector<std::int16_t>& ac,
 
 bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
                       std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
-                      const std::vector<std::uint16_t>& bits, AcDeviceResult& out) {
+                      const std::vector<std::uint16_t>& bits, std::size_t out_capacity,
+                      AcDeviceResult& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
-    const std::size_t capacity{q.size() * 8 + 4096};
 
     // The covered-block layout is consumed directly (int32 -> int16, three planes
     // of blocks*64 slots each).
@@ -102,26 +106,30 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
             upload(nz.grid, &d_nz_grid) && upload(nz.exact, &d_nz_exact) &&
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_out, capacity) == cudaSuccess};
+            cudaMalloc(&d_out, out_capacity) == cudaSuccess &&
+            cudaMemset(d_out, AC_OUT_SENTINEL, out_capacity) == cudaSuccess};
 
-    std::size_t total_bytes{0};
     ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist);
     ok = ok && ac_encode_groups(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_depth, d_bits,
-                                d_out, capacity, d_sizes, d_offsets, &total_bytes);
+                                d_out, out_capacity, d_sizes, d_offsets);
 
     if (ok) {
         out.histogram.assign(AC_HIST_SPAN, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
-        out.stream.assign(total_bytes, 0);
         ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HIST_SPAN * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_offsets.data(), d_offsets, num_groups * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess &&
-             cudaMemcpy(out.stream.data(), d_out, total_bytes, cudaMemcpyDeviceToHost) ==
-                 cudaSuccess;
+                        cudaMemcpyDeviceToHost) == cudaSuccess;
+    }
+    const std::size_t total_bytes{
+        std::accumulate(out.group_sizes.begin(), out.group_sizes.end(), std::size_t{0})};
+    if (ok) {
+        out.stream.assign(std::min(total_bytes, out_capacity), 0);
+        ok = cudaMemcpy(out.stream.data(), d_out, out.stream.size(), cudaMemcpyDeviceToHost) ==
+             cudaSuccess;
     }
 
     cudaFree(d_ac);

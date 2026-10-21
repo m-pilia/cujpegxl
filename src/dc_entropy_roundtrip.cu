@@ -3,6 +3,10 @@
 
 #include "dc_entropy_roundtrip.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <numeric>
+
 #include <cuda_runtime.h>
 
 #include "entropy.h"
@@ -38,11 +42,10 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
                       const std::vector<std::int8_t>& ytox_map,
                       const std::vector<std::int8_t>& ytob_map,
                       const std::vector<std::int32_t>& quant_field, std::size_t width,
-                      std::size_t height, const bitstream::DcReference& ref, DcDeviceResult& out) {
+                      std::size_t height, const bitstream::DcReference& ref,
+                      std::size_t out_capacity, DcDeviceResult& out) {
     const std::size_t num_groups{ref.groups.size()};
     const std::size_t code_span{num_groups * AC_HISTOGRAM_SIZE};
-    const std::size_t blocks{(width / 8) * (height / 8)};
-    const std::size_t capacity{16 * blocks + num_groups * 128 + 8192};
 
     std::vector<std::uint8_t> dc_depth(code_span, 0);
     std::vector<std::uint16_t> dc_bits(code_span, 0);
@@ -107,23 +110,22 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_scratch, dc_encode_scratch_bytes(width, height)) == cudaSuccess &&
-            cudaMalloc(&d_out, capacity) == cudaSuccess};
+            cudaMalloc(&d_out, out_capacity) == cudaSuccess &&
+            cudaMemset(d_out, DC_OUT_SENTINEL, out_capacity) == cudaSuccess};
 
-    std::size_t total_bytes{0};
     ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist, nullptr);
     ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
     ok = ok && dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc, nullptr);
     ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                                 d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                                 d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_scratch, d_out,
-                                capacity, d_sizes, d_offsets, &total_bytes, nullptr);
+                                out_capacity, d_sizes, d_offsets, nullptr);
 
     if (ok) {
         std::vector<std::uint32_t> flat_dc(code_span, 0);
         std::vector<std::uint32_t> flat_am(code_span, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
-        out.stream.assign(total_bytes, 0);
         ok = cudaMemcpy(flat_dc.data(), d_dc_hist, code_span * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(flat_am.data(), d_am_hist, code_span * sizeof(std::uint32_t),
@@ -131,9 +133,14 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_offsets.data(), d_offsets, num_groups * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess &&
-             cudaMemcpy(out.stream.data(), d_out, total_bytes, cudaMemcpyDeviceToHost) ==
+                        cudaMemcpyDeviceToHost) == cudaSuccess;
+        const std::size_t total_bytes{
+            std::accumulate(out.group_sizes.begin(), out.group_sizes.end(), std::size_t{0})};
+        if (ok) {
+            out.stream.assign(std::min(total_bytes, out_capacity), 0);
+            ok = cudaMemcpy(out.stream.data(), d_out, out.stream.size(), cudaMemcpyDeviceToHost) ==
                  cudaSuccess;
+        }
         if (ok) {
             out.histograms.assign(num_groups, {});
             out.acmeta_histograms.assign(num_groups, {});

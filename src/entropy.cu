@@ -484,6 +484,35 @@ __device__ void dc_item_emit(const DcCtx& c, std::size_t k, RunBitWriter& w) {
     }
 }
 
+// End of a section of byte-aligned groups laid out at `group_offsets`, read on
+// the device so that the host never waits for the section total.
+__device__ std::size_t section_end(const std::uint32_t* group_offsets,
+                                   const std::uint32_t* group_sizes, std::size_t num_groups) {
+    return static_cast<std::size_t>(group_offsets[num_groups - 1]) + group_sizes[num_groups - 1];
+}
+
+// The emit kernels compose bits with atomicOr (runs sharing a byte), so the
+// section must start zeroed, up to the 32-bit word the last bits land in (the
+// wrappers' capacities have slack for the padding). A section over `capacity`
+// is neither zeroed nor emitted; the caller detects it from the group sizes.
+constexpr unsigned int ZERO_FILL_THREADS = 256;
+constexpr unsigned int ZERO_FILL_BLOCKS = 256;
+
+__global__ void zero_section_kernel(unsigned int* words, const std::uint32_t* group_offsets,
+                                    const std::uint32_t* group_sizes, std::size_t num_groups,
+                                    std::size_t capacity) {
+    const std::size_t end{section_end(group_offsets, group_sizes, num_groups)};
+    if (end > capacity) {
+        return;
+    }
+    const std::size_t num_words{(end + 3) / 4};
+    const std::size_t stride{static_cast<std::size_t>(gridDim.x) * blockDim.x};
+    for (std::size_t i{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x};
+         i < num_words; i += stride) {
+        words[i] = 0;
+    }
+}
+
 // Block-wide exclusive scan of `val` over `sh` (blockDim entries); returns this
 // thread's exclusive prefix and writes the inclusive total.
 __device__ unsigned long long block_scan_exclusive(unsigned long long val, unsigned long long* sh,
@@ -702,11 +731,11 @@ __global__ void group_chunk_scan_kernel(std::size_t num_groups,
 }
 
 // group_chunk_scan_kernel for the few DcGroups (4 at 4K): one block walks the
-// groups in order, so the group byte offsets and the section total come out of
-// the same launch instead of a separate device-wide scan.
+// groups in order, so the group byte offsets come out of the same launch instead
+// of a separate device-wide scan.
 __global__ void dc_chunk_scan_kernel(std::size_t num_groups, const unsigned long long* chunk_bits,
                                      unsigned long long* chunk_base, std::uint32_t* group_sizes,
-                                     std::uint32_t* group_offsets, std::uint32_t* total_bytes) {
+                                     std::uint32_t* group_offsets) {
     __shared__ unsigned long long sh[DC_CHUNKS];
     std::uint32_t offset{0};
     for (std::size_t g{0}; g < num_groups; ++g) {
@@ -720,9 +749,6 @@ __global__ void dc_chunk_scan_kernel(std::size_t num_groups, const unsigned long
         }
         offset += size;
     }
-    if (threadIdx.x == 0) {
-        *total_bytes = offset;
-    }
 }
 
 __global__ void dc_chunk_emit_kernel(
@@ -735,9 +761,10 @@ __global__ void dc_chunk_emit_kernel(
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
     const std::uint32_t* blob_mid_bits, const std::uint32_t* run_offsets,
-    const unsigned long long* chunk_base, std::uint8_t* out, const std::uint32_t* group_offsets) {
+    const unsigned long long* chunk_base, std::uint8_t* out, std::size_t out_capacity,
+    const std::uint32_t* group_sizes, const std::uint32_t* group_offsets) {
     const std::size_t g{blockIdx.x};
-    if (g >= num_groups) {
+    if (g >= num_groups || section_end(group_offsets, group_sizes, num_groups) > out_capacity) {
         return;
     }
     const DcCtx c{build_dc_ctx(g, dc, bw, bh, nblocks, xdg, quant_field, acs, ytox_map, ytob_map,
@@ -1125,9 +1152,11 @@ __global__ void ac_chunk_emit_kernel(const std::int16_t* ac, const std::int8_t* 
                                      const std::uint8_t* context_map,
                                      const std::uint32_t* item_bits,
                                      const unsigned long long* chunk_base, std::uint8_t* out,
+                                     std::size_t out_capacity, const std::uint32_t* group_sizes,
                                      const std::uint32_t* group_offsets) {
     const std::size_t q{(static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x) / 32};
-    if (q >= num_groups * AC_GROUP_CHUNKS) {
+    if (q >= num_groups * AC_GROUP_CHUNKS ||
+        section_end(group_offsets, group_sizes, num_groups) > out_capacity) {
         return;
     }
     const std::size_t g{q / AC_GROUP_CHUNKS};
@@ -1183,7 +1212,6 @@ struct DcEncodeScratch {
     unsigned long long* chunk_bits{nullptr};
     unsigned long long* chunk_base{nullptr};
     std::uint32_t* run_offsets{nullptr};
-    std::uint32_t* total_bytes{nullptr};
 };
 
 // Layout sized by dc_encode_scratch_bytes; the 64-bit arrays come first so every
@@ -1191,11 +1219,10 @@ struct DcEncodeScratch {
 DcEncodeScratch carve_dc_encode_scratch(std::uint8_t* scratch, std::size_t num_groups) {
     const std::size_t chunks{num_groups * DC_CHUNKS};
     auto* const chunk_bits{reinterpret_cast<unsigned long long*>(scratch)};
-    auto* const run_offsets{reinterpret_cast<std::uint32_t*>(chunk_bits + 2 * chunks)};
-    return DcEncodeScratch{.chunk_bits = chunk_bits,
-                           .chunk_base = chunk_bits + chunks,
-                           .run_offsets = run_offsets,
-                           .total_bytes = run_offsets + chunks * DC_EMIT_THREADS};
+    return DcEncodeScratch{
+        .chunk_bits = chunk_bits,
+        .chunk_base = chunk_bits + chunks,
+        .run_offsets = reinterpret_cast<std::uint32_t*>(chunk_bits + 2 * chunks)};
 }
 
 }  // namespace
@@ -1232,8 +1259,7 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
                                   const std::uint8_t* context_map, const std::uint8_t* depth,
                                   const std::uint16_t* bits, std::size_t num_clusters,
                                   std::uint8_t* out, std::size_t out_capacity,
-                                  std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                                  std::size_t* total_bytes) {
+                                  std::uint32_t* group_sizes, std::uint32_t* group_offsets) {
     ensure_constants();
     if (num_clusters == 0 || num_clusters > 256) {
         return false;
@@ -1292,30 +1318,11 @@ static bool ac_encode_groups_impl(const std::int16_t* ac, const std::int8_t* acs
         return false;
     }
 
-    std::uint32_t last_offset{0};
-    std::uint32_t last_size{0};
-    if (cudaMemcpy(&last_offset, group_offsets + (num_groups - 1), sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess ||
-        cudaMemcpy(&last_size, group_sizes + (num_groups - 1), sizeof(std::uint32_t),
-                   cudaMemcpyDeviceToHost) != cudaSuccess) {
-        free_run();
-        return false;
-    }
-    *total_bytes = static_cast<std::size_t>(last_offset) + last_size;
-    if (*total_bytes > out_capacity) {
-        free_run();
-        return false;
-    }
-
-    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemsetAsync(out, 0, zero_bytes, 0) != cudaSuccess) {
-        free_run();
-        return false;
-    }
-
+    zero_section_kernel<<<ZERO_FILL_BLOCKS, ZERO_FILL_THREADS>>>(
+        reinterpret_cast<unsigned int*>(out), group_offsets, group_sizes, num_groups, out_capacity);
     ac_chunk_emit_kernel<<<chunk_grid, AC_CHUNK_THREADS>>>(
         ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg, num_groups, depth, bits, context_map,
-        item_bits, chunk_base, out, group_offsets);
+        item_bits, chunk_base, out, out_capacity, group_sizes, group_offsets);
     const bool ok{cudaGetLastError() == cudaSuccess};
     free_run();
     return ok;
@@ -1325,10 +1332,9 @@ bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, const std:
                       const std::int32_t* nz_exact, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits, std::uint8_t* out,
                       std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes) {
+                      std::uint32_t* group_offsets) {
     return ac_encode_groups_impl(ac, acs, nz_grid, nz_exact, width, height, nullptr, depth, bits,
-                                 AC_NUM_CLUSTERS, out, out_capacity, group_sizes, group_offsets,
-                                 total_bytes);
+                                 AC_NUM_CLUSTERS, out, out_capacity, group_sizes, group_offsets);
 }
 
 std::size_t dc_num_groups(std::size_t width, std::size_t height) {
@@ -1342,7 +1348,7 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height) {
 std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height) {
     const std::size_t chunks{dc_num_groups(width, height) * DC_CHUNKS};
     return 2 * chunks * sizeof(unsigned long long) +
-           chunks * DC_EMIT_THREADS * sizeof(std::uint32_t) + sizeof(std::uint32_t);
+           chunks * DC_EMIT_THREADS * sizeof(std::uint32_t);
 }
 
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
@@ -1414,7 +1420,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
                       std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                      std::size_t* total_bytes, cudaStream_t stream) {
+                      cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1432,32 +1438,14 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
         blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,
         s.chunk_bits);
     dc_chunk_scan_kernel<<<1, DC_CHUNKS, 0, stream>>>(num_groups, s.chunk_bits, s.chunk_base,
-                                                      group_sizes, group_offsets, s.total_bytes);
-    std::uint32_t total{0};
-    if (cudaGetLastError() != cudaSuccess ||
-        cudaMemcpyAsync(&total, s.total_bytes, sizeof(std::uint32_t), cudaMemcpyDeviceToHost,
-                        stream) != cudaSuccess ||
-        cudaStreamSynchronize(stream) != cudaSuccess) {
-        return false;
-    }
-    *total_bytes = total;
-    if (*total_bytes > out_capacity) {
-        return false;
-    }
-
-    // The emit kernel composes bits with atomicOr (runs sharing a byte), so the
-    // section region must start zeroed. Round up to the 32-bit word the last bits
-    // land in; the wrapper's capacity has slack for the padding.
-    const std::size_t zero_bytes{(*total_bytes + 3) & ~std::size_t{3}};
-    if (cudaMemsetAsync(out, 0, zero_bytes, stream) != cudaSuccess) {
-        return false;
-    }
-
+                                                      group_sizes, group_offsets);
+    zero_section_kernel<<<ZERO_FILL_BLOCKS, ZERO_FILL_THREADS, 0, stream>>>(
+        reinterpret_cast<unsigned int*>(out), group_offsets, group_sizes, num_groups, out_capacity);
     dc_chunk_emit_kernel<<<chunk_grid, DC_EMIT_THREADS, 0, stream>>>(
         dc, bw, bh, nblocks, xdg, num_groups, quant_field, acs, ytox_map, ytob_map, cmw,
         first_block_pos, first_block_counts, dc_depth, dc_bits, acmeta_depth, acmeta_bits, blob_pre,
         blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off, blob_mid_bits, s.run_offsets,
-        s.chunk_base, out, group_offsets);
+        s.chunk_base, out, out_capacity, group_sizes, group_offsets);
     return cudaGetLastError() == cudaSuccess;
 }
 

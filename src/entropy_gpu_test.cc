@@ -5,6 +5,7 @@
 // the pooled symbol histogram, per-group byte-aligned token streams and their
 // scanned offsets must match byte-for-byte, and repeated runs must be identical.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -21,6 +22,8 @@ namespace {
 using bitstream::AcReference;
 using bitstream::FrameCoefficients;
 using bitstream::reference_ac_encode;
+
+constexpr std::size_t OUT_CAPACITY{std::size_t{1} << 22};
 
 // Flattens fc.ac into the device coefficient layout (plane-major over channels
 // X, Y, B; blocks in raster order; 64 coefficients each).
@@ -114,7 +117,8 @@ void check_matches_reference(const FrameCoefficients& fc) {
     const AcReference ref{reference_ac_encode(fc)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
     AcDeviceResult dev{};
-    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, dev));
+    ASSERT_TRUE(
+        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, dev));
 
     for (std::size_t s{0}; s < ref.histogram.size(); ++s) {
         EXPECT_EQ(dev.histogram[s], ref.histogram[s]) << "histogram symbol " << s;
@@ -155,12 +159,30 @@ TEST(EntropyGpu, Deterministic) {
 
     AcDeviceResult a{};
     AcDeviceResult b{};
-    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, a));
-    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, b));
+    ASSERT_TRUE(
+        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, a));
+    ASSERT_TRUE(
+        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, b));
     EXPECT_EQ(a.stream, b.stream);
     EXPECT_EQ(a.group_sizes, b.group_sizes);
     EXPECT_EQ(a.group_offsets, b.group_offsets);
     EXPECT_EQ(a.histogram, b.histogram);
+}
+
+TEST(EntropyGpu, OverCapacityLeavesOutputUntouched) {
+    FrameCoefficients fc{make_mixed_frame(512, 384)};
+    const AcReference ref{reference_ac_encode(fc)};
+    const std::vector<std::int32_t> q{flatten_ac(fc)};
+
+    AcDeviceResult fits{};
+    ASSERT_TRUE(
+        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, fits));
+    const std::size_t short_capacity{fits.stream.size() - 1};
+    AcDeviceResult over{};
+    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits,
+                                 short_capacity, over));
+    EXPECT_EQ(over.group_sizes, fits.group_sizes);
+    EXPECT_EQ(over.stream, std::vector<std::uint8_t>(short_capacity, AC_OUT_SENTINEL));
 }
 
 }  // namespace

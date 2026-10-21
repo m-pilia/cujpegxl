@@ -26,12 +26,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -277,18 +279,15 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> dc_global;
         timed(s_dcg, record, [&] { dc_global = bitstream::build_dc_global(qp); });
 
-        std::size_t ac_total{0};
-        std::size_t dc_total{0};
         timed(s_ace, record, [&] {
             ac_encode_groups(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_depth,
-                             d_ac_bits, d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets,
-                             &ac_total);
+                             d_ac_bits, d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets);
         });
         timed(s_dce, record, [&] {
             dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                              d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                              d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
-                             caps.dc_groups, d_dc_sizes, d_dc_offsets, &dc_total, nullptr);
+                             caps.dc_groups, d_dc_sizes, d_dc_offsets, nullptr);
         });
 
         std::vector<std::uint32_t> section_sizes(1 + num_dc + 1 + num_ac);
@@ -299,7 +298,14 @@ int main(int argc, char** argv) {
         });
 
         timed(s_asm, record, [&] {
+            const auto dc_sizes_begin{section_sizes.begin() + 1};
+            const auto ac_sizes_begin{dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc) + 1};
+            const std::size_t dc_total{std::accumulate(
+                dc_sizes_begin, dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc),
+                std::size_t{0})};
             const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
+            const std::size_t ac_total{
+                std::accumulate(ac_sizes_begin, section_sizes.end(), std::size_t{0})};
             const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
                 static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                 section_sizes)};

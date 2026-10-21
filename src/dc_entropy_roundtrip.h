@@ -26,15 +26,20 @@ struct DcDeviceResult {
     std::vector<std::uint8_t> stream{};  // concatenated byte-aligned DcGroup sections
 };
 
+constexpr std::uint8_t DC_OUT_SENTINEL = 0xA5;
+
 // `dc` is the compact per-block DC (3*blocks, channel-major X, Y, B),
 // `acs`/`ytox_map`/`ytob_map` the transform + CfL signals, `quant_field` the
 // per-block quant field. Runs dc_build_histograms, acmeta_build_histograms,
-// dc_first_blocks and dc_encode_groups.
+// dc_first_blocks and dc_encode_groups. The device output buffer of
+// `out_capacity` bytes starts filled with DC_OUT_SENTINEL; when the sections
+// exceed it, `stream` receives the whole buffer instead.
 bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std::int8_t>& acs,
                       const std::vector<std::int8_t>& ytox_map,
                       const std::vector<std::int8_t>& ytob_map,
                       const std::vector<std::int32_t>& quant_field, std::size_t width,
-                      std::size_t height, const bitstream::DcReference& ref, DcDeviceResult& out);
+                      std::size_t height, const bitstream::DcReference& ref,
+                      std::size_t out_capacity, DcDeviceResult& out);
 
 }  // namespace cujpegxl
 

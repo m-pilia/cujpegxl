@@ -6,6 +6,7 @@
 // the full byte-aligned section (extra_precision + VarDCTDC modular + AcMetadata
 // count + AcMetadata modular) byte-for-byte, and repeated runs must be identical.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -21,6 +22,8 @@ namespace {
 using bitstream::DcReference;
 using bitstream::FrameCoefficients;
 using bitstream::reference_dc_encode;
+
+constexpr std::size_t OUT_CAPACITY{std::size_t{1} << 22};
 
 FrameCoefficients make_frame(std::size_t w, std::size_t h, std::uint32_t raw_quant_field) {
     FrameCoefficients fc{};
@@ -101,7 +104,7 @@ void check_matches_reference(const FrameCoefficients& fc) {
                                                 static_cast<std::int32_t>(fc.raw_quant_field));
     DcDeviceResult dev{};
     ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
-                                 fc.width, fc.height, ref, dev));
+                                 fc.width, fc.height, ref, OUT_CAPACITY, dev));
     ASSERT_EQ(dev.group_sizes.size(), ref.groups.size());
 
     std::uint32_t offset{0};
@@ -158,12 +161,30 @@ TEST(DcEntropyGpu, Deterministic) {
     DcDeviceResult a{};
     DcDeviceResult b{};
     ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
-                                 fc.width, fc.height, ref, a));
+                                 fc.width, fc.height, ref, OUT_CAPACITY, a));
     ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
-                                 fc.width, fc.height, ref, b));
+                                 fc.width, fc.height, ref, OUT_CAPACITY, b));
     EXPECT_EQ(a.stream, b.stream);
     EXPECT_EQ(a.group_sizes, b.group_sizes);
     EXPECT_EQ(a.group_offsets, b.group_offsets);
+}
+
+TEST(DcEntropyGpu, OverCapacityLeavesOutputUntouched) {
+    const FrameCoefficients fc{make_mixed_dc_frame(2560, 256)};
+    const DcReference ref{reference_dc_encode(fc)};
+    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
+    const std::vector<std::int32_t> quant_field(blocks,
+                                                static_cast<std::int32_t>(fc.raw_quant_field));
+
+    DcDeviceResult fits{};
+    ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
+                                 fc.width, fc.height, ref, OUT_CAPACITY, fits));
+    const std::size_t short_capacity{fits.stream.size() - 1};
+    DcDeviceResult over{};
+    ASSERT_TRUE(dc_encode_device(compact_dc(fc), fc.acs, fc.ytox_map, fc.ytob_map, quant_field,
+                                 fc.width, fc.height, ref, short_capacity, over));
+    EXPECT_EQ(over.group_sizes, fits.group_sizes);
+    EXPECT_EQ(over.stream, std::vector<std::uint8_t>(short_capacity, DC_OUT_SENTINEL));
 }
 
 }  // namespace

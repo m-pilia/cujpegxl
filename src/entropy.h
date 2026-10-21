@@ -48,14 +48,16 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const st
 // writer byte-for-byte. `ac`/`acs`/`nz_grid`/`nz_exact` are as in
 // ac_build_histogram. `depth`/`bits` are the shared prefix code built from the
 // phase-1 histogram. A CUB exclusive scan of the per-group byte sizes fixes each
-// group's offset; `group_sizes`, `group_offsets` (num_groups entries, device) and
-// `total_bytes` (host) receive the layout. Fails if `out_capacity` is exceeded.
-// Deterministic. All device pointers except `total_bytes`.
+// group's offset; `group_sizes` and `group_offsets` (num_groups entries) receive
+// the layout. The section total stays on the device, so the call never blocks
+// the host: a section larger than `out_capacity` leaves `out` untouched, and the
+// caller detects it from the sum of `group_sizes`. Deterministic. All pointers
+// are device pointers.
 bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                       const std::int32_t* nz_exact, std::size_t width, std::size_t height,
                       const std::uint8_t* depth, const std::uint16_t* bits, std::uint8_t* out,
                       std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets, std::size_t* total_bytes);
+                      std::uint32_t* group_offsets);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.
@@ -108,11 +110,11 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 // host DcGroup reference byte-for-byte. Per group the host supplies the two
 // header bit blobs bracketing the token runs and the two shared prefix codes;
 // the device emits the DC tokens (from `dc`) and the AcMetadata tokens (from the
-// group geometry and the per-block `quant_field`). `group_offsets` receives each group's
-// byte offset in `out` and `total_bytes` the section total. Fails if
-// `out_capacity` is exceeded. Deterministic. All device pointers except
-// `total_bytes`. `scratch` holds dc_encode_scratch_bytes(width, height) bytes.
-// Synchronizes `stream` once, to read the section total before the emit pass.
+// group geometry and the per-block `quant_field`). `group_sizes` and
+// `group_offsets` receive each group's byte size and offset in `out`. As in
+// ac_encode_groups, the call never blocks the host, and a section larger than
+// `out_capacity` leaves `out` untouched. Deterministic. All pointers are device
+// pointers. `scratch` holds dc_encode_scratch_bytes(width, height) bytes.
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block
 // raster order); its value at each block is written as the block's ACS+QF row-1
@@ -133,7 +135,7 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       const std::uint32_t* blob_mid_off, const std::uint32_t* blob_mid_bits,
                       std::uint8_t* scratch, std::uint8_t* out, std::size_t out_capacity,
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
-                      std::size_t* total_bytes, cudaStream_t stream);
+                      cudaStream_t stream);
 
 std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height);
 

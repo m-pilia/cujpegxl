@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <numeric>
 
 #include <cuda_runtime.h>
 
@@ -259,14 +261,12 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
     entropy.cpu_us += us_since(entropy_cpu_start);
 
     const Clock::time_point entropy_encode_start{Clock::now()};
-    std::size_t ac_total{0};
-    std::size_t dc_total{0};
     if (!dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
                           d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                           d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
-                          caps.dc_groups, d_dc_sizes, d_dc_offsets, &dc_total, dc_stream) ||
+                          caps.dc_groups, d_dc_sizes, d_dc_offsets, dc_stream) ||
         !ac_encode_groups(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_depth, d_ac_bits,
-                          d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets, &ac_total) ||
+                          d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets) ||
         !dc_fork.join()) {
         return ENCODE_FAILED;
     }
@@ -278,7 +278,17 @@ EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
         return ENCODE_FAILED;
     }
+    const auto dc_sizes_begin{section_sizes.begin() + 1};
+    const auto ac_sizes_begin{dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc) + 1};
+    const std::size_t dc_total{std::accumulate(
+        dc_sizes_begin, dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc), std::size_t{0})};
     const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
+    const std::size_t ac_total{
+        std::accumulate(ac_sizes_begin, section_sizes.end(), std::size_t{0})};
+    // The encoders skip a section over its capacity without failing.
+    if (dc_total > caps.dc_groups || ac_total > caps.ac_groups) {
+        return ENCODE_FAILED;
+    }
     entropy.gpu_us += us_since(entropy_encode_start);
 
     const Clock::time_point assembly_head_start{Clock::now()};
