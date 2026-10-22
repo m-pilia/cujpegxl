@@ -26,6 +26,7 @@
 #include "frame_assembly.h"
 #include "hybrid_uint.h"
 #include "serialize_impl.h"
+#include "src/ac_clustering.h"
 #include "src/ac_context.h"
 #include "token_stream_reference.h"
 
@@ -53,16 +54,23 @@ struct Streams {
     std::vector<std::vector<std::uint16_t>> entries;
     std::vector<std::vector<std::uint64_t>> raw;
     std::vector<TokenStream> streams;
-    std::vector<std::uint32_t> histograms;
+    AcClustering clustering;
 };
 
-// Splits each token into its entry and raw bits, and accumulates the cluster
-// histograms.
+std::uint32_t test_cluster(std::uint32_t context) {
+    return context % AC_MAX_CLUSTERS;
+}
+
+// Splits each token into its entry and raw bits, and accumulates the
+// histograms of the test_cluster clustering.
 Streams prepare(std::vector<std::vector<Token>> tokens) {
     const HybridUintConfig config{};
     Streams s{};
     s.tokens = std::move(tokens);
-    s.histograms.assign(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE, 0);
+    s.clustering.num_clusters = AC_MAX_CLUSTERS;
+    for (std::uint32_t context{0}; context < AC_NUM_CONTEXTS; ++context) {
+        s.clustering.context_map[context] = static_cast<std::uint8_t>(test_cluster(context));
+    }
     for (const std::vector<Token>& stream : s.tokens) {
         std::vector<std::uint16_t> entries{};
         std::vector<std::uint64_t> raw(1, 0);
@@ -70,8 +78,8 @@ Streams prepare(std::vector<std::vector<Token>> tokens) {
         for (const Token& t : stream) {
             std::uint32_t symbol{}, nbits{}, bits{};
             config.encode(t.value, symbol, nbits, bits);
-            const auto cluster{static_cast<std::uint32_t>(ac_cluster(t.context))};
-            ++s.histograms[cluster * HISTOGRAM_STRIDE + symbol];
+            const std::uint32_t cluster{test_cluster(t.context)};
+            ++s.clustering.histograms[cluster * AC_CONTEXT_ALPHABET + symbol];
             entries.push_back(static_cast<std::uint16_t>(cluster << TOKEN_CLUSTER_SHIFT | symbol));
             for (std::uint32_t b{0}; b < nbits; ++b) {
                 if (raw_bits / 64 + 1 >= raw.size()) {
@@ -172,8 +180,9 @@ void decode_with_libjxl(const std::vector<std::uint8_t>& ac_global, const Stream
 void check_streams(std::vector<std::vector<Token>> tokens, bool expect_prefix) {
     const Streams s{prepare(std::move(tokens))};
     TokenCode code{};
-    AcGlobalBuilder builder{s.histograms.data(), s.streams.size(), code};
-    for (std::size_t c{AC_NUM_CLUSTERS}; c > 0; --c) {
+    AcGlobalBuilder builder{s.clustering, s.streams.size(), code};
+    builder.build_context_map();
+    for (std::size_t c{builder.num_clusters()}; c > 0; --c) {
         builder.build_cluster(c - 1);
     }
     const std::vector<std::uint8_t> ac_global{builder.finish()};
@@ -222,8 +231,7 @@ TEST(TokenStream, SingleSymbolClustersUsePrefixCodes) {
     for (std::size_t i{0}; i < tokens.size(); ++i) {
         for (std::uint32_t k{0}; k < 300; ++k) {
             const std::uint32_t context{(k * 37 + static_cast<std::uint32_t>(i)) % AC_NUM_CONTEXTS};
-            tokens[i].push_back(
-                Token{context, static_cast<std::uint32_t>(ac_cluster(context)) % 4});
+            tokens[i].push_back(Token{context, test_cluster(context) % 4});
         }
     }
     check_streams(std::move(tokens), true);

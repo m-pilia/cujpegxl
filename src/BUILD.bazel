@@ -120,13 +120,19 @@ cc_library(
     copts = RUNTIME_COPTS,
 )
 
-cc_test(
-    name = "ac_context_test",
-    srcs = ["ac_context_test.cc"],
-    deps = [
-        ":ac_context",
-        "@googletest//:gtest_main",
-    ],
+cc_library(
+    name = "ac_clustering",
+    hdrs = ["ac_clustering.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":ac_context"],
+)
+
+cc_library(
+    name = "ac_clustering_reference",
+    testonly = True,
+    srcs = ["ac_clustering_reference.cc"],
+    hdrs = ["ac_clustering_reference.h"],
+    deps = [":ac_clustering"],
 )
 
 cc_binary(
@@ -257,6 +263,7 @@ cuda_library(
     hdrs = ["entropy.h"],
     copts = RUNTIME_COPTS,
     deps = [
+        ":ac_clustering",
         ":ac_context",
         ":coeff_order",
         ":dc_predict",
@@ -272,7 +279,7 @@ cuda_library(
     srcs = ["entropy_roundtrip.cu"],
     hdrs = ["entropy_roundtrip.h"],
     deps = [
-        ":ac_context",
+        ":ac_clustering",
         ":entropy",
         ":vardct_layout",
     ],
@@ -283,6 +290,8 @@ cc_test(
     srcs = ["entropy_gpu_test.cc"],
     tags = ["gpu"],
     deps = [
+        ":ac_clustering_reference",
+        ":entropy",
         ":entropy_roundtrip",
         ":vardct_layout",
         "//tools/bitstream:vardct_frame",
@@ -334,7 +343,7 @@ cuda_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
-        ":ac_context",
+        ":ac_clustering",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

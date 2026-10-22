@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Validates the device AC token coder against the host bitstream reference: the
-// pooled cluster histograms and every group's token entries and raw bits must
-// match exactly, whatever the batching of the pack, and repeated runs must be
-// identical.
+// per-context histograms, the context clustering and every group's token
+// entries and raw bits must match exactly, whatever the batching of the pack,
+// and repeated runs must be identical.
 
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "ac_clustering_reference.h"
 #include "entropy.h"
 #include "entropy_roundtrip.h"
 #include "src/vardct_layout.h"
@@ -26,6 +28,16 @@ using bitstream::reference_ac_encode;
 
 // Flattens fc.ac into the device coefficient layout (plane-major over channels
 // X, Y, B; blocks in raster order; 64 coefficients each).
+void expect_same_clustering(const AcClustering& got, const AcClustering& expected) {
+    ASSERT_EQ(got.num_clusters, expected.num_clusters);
+    EXPECT_EQ(std::vector<std::uint32_t>(std::begin(got.histograms), std::end(got.histograms)),
+              std::vector<std::uint32_t>(std::begin(expected.histograms),
+                                         std::end(expected.histograms)));
+    EXPECT_EQ(std::vector<std::uint8_t>(std::begin(got.context_map), std::end(got.context_map)),
+              std::vector<std::uint8_t>(std::begin(expected.context_map),
+                                        std::end(expected.context_map)));
+}
+
 std::vector<std::int32_t> flatten_ac(const FrameCoefficients& fc) {
     std::vector<std::int32_t> q{};
     q.reserve(fc.ac[0].size() * 3);
@@ -117,7 +129,8 @@ void check_matches_reference(const FrameCoefficients& fc, std::size_t batches) {
     AcDeviceTokens dev{};
     ASSERT_TRUE(ac_tokens_device(flatten_ac(fc), fc.acs, fc.width, fc.height, batches, dev));
 
-    EXPECT_EQ(dev.histogram, ref.histogram);
+    EXPECT_EQ(dev.context_histograms, ref.context_histograms);
+    expect_same_clustering(dev.clustering, ref.clustering);
     const std::size_t num_groups{ref.group_entries.size()};
     ASSERT_EQ(dev.layout.size(), 3 * num_groups + 2);
     const std::uint32_t* const token_offset{dev.layout.data()};
@@ -184,10 +197,80 @@ TEST(EntropyGpu, Deterministic) {
     AcDeviceTokens b{};
     ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, a));
     ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, b));
-    EXPECT_EQ(a.histogram, b.histogram);
+    EXPECT_EQ(a.context_histograms, b.context_histograms);
+    expect_same_clustering(a.clustering, b.clustering);
     EXPECT_EQ(a.layout, b.layout);
     EXPECT_EQ(a.entries, b.entries);
     EXPECT_EQ(a.raw, b.raw);
+}
+
+// Per-context histograms with `num_contexts` contexts holding tokens, each drawn
+// from one of `families` distributions, so that the clustering has structure.
+std::vector<std::uint32_t> random_context_histograms(std::uint32_t seed, std::size_t num_contexts,
+                                                     std::size_t families) {
+    std::mt19937 rng{seed};
+    std::vector<std::vector<double>> weights(families, std::vector<double>(AC_CONTEXT_ALPHABET));
+    for (std::vector<double>& w : weights) {
+        const double decay{0.2 + 0.7 * static_cast<double>(rng() % 1000) / 1000.0};
+        double p{1.0};
+        for (double& x : w) {
+            x = rng() % 7 == 0 ? 0.0 : p;
+            p *= decay;
+        }
+    }
+    std::vector<std::uint32_t> hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
+    for (std::size_t i{0}; i < num_contexts; ++i) {
+        const std::size_t context{rng() % AC_NUM_CONTEXTS};
+        const std::vector<double>& w{weights[rng() % families]};
+        std::discrete_distribution<std::size_t> symbol{w.begin(), w.end()};
+        const std::uint32_t tokens{1 + static_cast<std::uint32_t>(rng() % 5000)};
+        for (std::uint32_t t{0}; t < tokens; ++t) {
+            ++hist[context * AC_CONTEXT_ALPHABET + symbol(rng)];
+        }
+    }
+    return hist;
+}
+
+void check_clustering_matches_reference(const std::vector<std::uint32_t>& hist) {
+    AcClustering dev{};
+    ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
+    expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
+}
+
+TEST(EntropyGpu, ClusteringMatchesReference) {
+    check_clustering_matches_reference(random_context_histograms(1, 1500, 48));
+    check_clustering_matches_reference(random_context_histograms(2, 300, 5));
+    check_clustering_matches_reference(random_context_histograms(3, 7425, 64));
+}
+
+TEST(EntropyGpu, ClusteringStopsAtMaxClusters) {
+    const std::vector<std::uint32_t> hist{random_context_histograms(4, 3000, 200)};
+    AcClustering dev{};
+    ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
+    EXPECT_EQ(dev.num_clusters, AC_MAX_CLUSTERS);
+    expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
+}
+
+TEST(EntropyGpu, IdenticalContextsShareOneCluster) {
+    std::vector<std::uint32_t> hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
+    for (std::size_t context : {5, 900, 7424}) {
+        hist[context * AC_CONTEXT_ALPHABET] = 300;
+        hist[context * AC_CONTEXT_ALPHABET + 3] = 100;
+    }
+    AcClustering dev{};
+    ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
+    EXPECT_EQ(dev.num_clusters, 1u);
+    EXPECT_EQ(dev.histograms[0], 900u);
+    EXPECT_EQ(dev.histograms[3], 300u);
+    expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
+}
+
+TEST(EntropyGpu, EmptyHistogramsGiveOneCluster) {
+    const std::vector<std::uint32_t> hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
+    AcClustering dev{};
+    ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
+    EXPECT_EQ(dev.num_clusters, 1u);
+    expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
 }
 
 }  // namespace

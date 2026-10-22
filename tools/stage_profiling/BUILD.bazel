@@ -11,6 +11,7 @@ cc_binary(
     tags = ["gpu"],
     testonly = True,
     deps = [
+        "//src:ac_clustering",
         "//src:ac_context",
         "//src:entropy",
         "//src:frame_encoder",

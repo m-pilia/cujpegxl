@@ -8,15 +8,18 @@
 #include <cstdint>
 #include <vector>
 
+#include "ac_clustering.h"
+
 namespace cujpegxl {
 
 // Test-only host-vector wrapper around the device AC token coder: uploads the
 // quantized coefficients and their non-zero counts (computed on the host), runs
-// ac_build_histogram, ac_token_layout and ac_pack_tokens (over the groups split
-// into `batches` batches), and downloads the results. Used by the GPU
-// conformance test to diff against the host bitstream reference.
+// ac_build_histogram, ac_token_layout, ac_cluster_contexts and ac_pack_tokens
+// (over the groups split into `batches` batches), and downloads the results.
+// Used by the GPU conformance test to diff against the host bitstream reference.
 struct AcDeviceTokens {
-    std::vector<std::uint32_t> histogram{};
+    std::vector<std::uint32_t> context_histograms{};
+    AcClustering clustering{};
     std::vector<std::uint32_t> layout{};
     std::vector<std::uint16_t> entries{};
     std::vector<std::uint64_t> raw{};
@@ -27,6 +30,11 @@ struct AcDeviceTokens {
 bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
                       std::size_t width, std::size_t height, std::size_t batches,
                       AcDeviceTokens& out);
+
+// Runs ac_cluster_contexts on `context_histograms` (AC_NUM_CONTEXTS *
+// AC_CONTEXT_ALPHABET counts).
+bool ac_cluster_contexts_device(const std::vector<std::uint32_t>& context_histograms,
+                                AcClustering& out);
 
 }  // namespace cujpegxl
 

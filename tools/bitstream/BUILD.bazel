@@ -32,6 +32,8 @@ cc_library(
     testonly = True,
     deps = [
         ":modular",
+        "//src:ac_clustering",
+        "//src:ac_clustering_reference",
         "//src:ac_context",
         "//src:coeff_order",
         "//src:vardct_layout",

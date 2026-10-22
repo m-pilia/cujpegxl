@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "src/ac_clustering.h"
+
 namespace cujpegxl::bitstream {
 
 // Quantized coefficients and quantizer parameters for a VarDCT frame with mixed
@@ -52,23 +54,25 @@ struct FrameCoefficients {
 
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
 // freshly allocated byte buffer. The output is decodable by libjxl/djxl. The AC
-// coefficients are coded with libjxl's real per-token contexts split across
-// AC_NUM_CLUSTERS histograms: in a multi-group frame with the production
+// coefficients are coded with libjxl's real per-token contexts, clustered by
+// cluster_ac_contexts_reference: in a multi-group frame with the production
 // AcGlobal code (rANS or prefix codes), in a single-group frame with prefix
 // codes.
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
 
-// The host reference for the device AC token coder, using the real per-token
-// contexts clustered into AC_NUM_CLUSTERS histograms (`histogram`, cluster * 256
-// + symbol). Per AC group (one AcGroup TOC section, raster order) it carries the
-// token stream the device must pack, entries cluster << TOKEN_CLUSTER_SHIFT |
-// symbol and their `group_raw_bits` raw bits packed LSB-first in `group_raw`
-// (with a zero word past the last), and the group section coded with the
-// production AcGlobal code (`ac_global`). This is exactly what
+// The host reference for the device AC token coder: the per-context histograms
+// of the real per-token contexts (`context_histograms`, context *
+// AC_CONTEXT_ALPHABET + symbol) and their `clustering` by
+// cluster_ac_contexts_reference. Per AC group (one AcGroup TOC section, raster
+// order) it carries the token stream the device must pack, entries cluster <<
+// TOKEN_CLUSTER_SHIFT | symbol and their `group_raw_bits` raw bits packed
+// LSB-first in `group_raw` (with a zero word past the last), and the group
+// section coded with the production AcGlobal code (`ac_global`). This is exactly what
 // write_vardct_codestream(fc) emits for the AcGlobal and AC groups of a
 // multi-group frame.
 struct AcReference {
-    std::vector<std::uint32_t> histogram{};
+    std::vector<std::uint32_t> context_histograms{};
+    AcClustering clustering{};
     std::vector<std::vector<std::uint16_t>> group_entries{};
     std::vector<std::vector<std::uint64_t>> group_raw{};
     std::vector<std::uint64_t> group_raw_bits{};

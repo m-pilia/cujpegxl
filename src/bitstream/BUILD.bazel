@@ -39,6 +39,7 @@ cc_library(
     ],
     copts = RUNTIME_COPTS,
     deps = [
+        "//src:ac_clustering",
         "//src:ac_context",
         "//src:dc_predict",
     ],
@@ -70,6 +71,7 @@ cc_test(
         ":bitstream",
         ":frame_assembly",
         ":token_stream_reference",
+        "//src:ac_clustering",
         "//src:ac_context",
         "@googletest//:gtest_main",
         "@libjxl//lib:jpegxl",
@@ -95,6 +97,7 @@ cc_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":bitstream",
+        "//src:ac_clustering",
         "//src:ac_context",
         "//src:dc_predict",
         "//src:vardct_layout",

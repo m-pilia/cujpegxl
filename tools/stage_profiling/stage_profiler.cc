@@ -41,6 +41,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include "src/ac_clustering.h"
 #include "src/ac_context.h"
 #include "src/bitstream/container.h"
 #include "src/bitstream/frame_assembly.h"
@@ -183,7 +184,10 @@ int main(int argc, char** argv) {
     std::int32_t* d_dc32{device_alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_nz_grid{device_alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_nz_exact{device_alloc<std::int32_t>(3 * blocks)};
-    std::uint32_t* d_ac_hist{device_alloc<std::uint32_t>(AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE)};
+    std::uint32_t* d_context_hist{
+        device_alloc<std::uint32_t>(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET)};
+    std::uint8_t* d_cluster_scratch{device_alloc<std::uint8_t>(ac_cluster_scratch_bytes())};
+    AcClustering* d_clustering{device_alloc<AcClustering>(1)};
     std::uint32_t* d_dc_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
 
@@ -196,7 +200,6 @@ int main(int argc, char** argv) {
     std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
 
     const SectionCapacities caps{section_capacities(width, height)};
-    constexpr std::size_t HIST_WORDS{AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE};
     const std::size_t layout_words{3 * num_ac + 2};
     std::uint64_t* d_item_sizes{device_alloc<std::uint64_t>(3 * blocks)};
     std::uint8_t* d_layout_scratch{
@@ -220,12 +223,13 @@ int main(int argc, char** argv) {
     std::uint32_t* d_dc_offsets{device_alloc<std::uint32_t>(num_dc)};
     std::uint8_t* d_dc_scratch{device_alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
 
-    std::uint32_t* h_ac_meta{pinned_alloc<std::uint32_t>(HIST_WORDS + layout_words)};
+    AcClustering* h_clustering{pinned_alloc<AcClustering>(1)};
+    std::uint32_t* h_layout{pinned_alloc<std::uint32_t>(layout_words)};
     std::uint16_t* h_entries{pinned_alloc<std::uint16_t>(ac_max_tokens(width, height))};
     std::uint64_t* h_raw{pinned_alloc<std::uint64_t>(ac_max_raw_words(width, height) + 1)};
     std::uint32_t* h_dc_sizes{pinned_alloc<std::uint32_t>(num_dc)};
     std::uint8_t* h_dc_body{pinned_alloc<std::uint8_t>(caps.dc_groups)};
-    const std::uint32_t* const token_offset{h_ac_meta + HIST_WORDS};
+    const std::uint32_t* const token_offset{h_layout};
     const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
     const std::uint32_t* const raw_bits{raw_offset + num_ac + 1};
 
@@ -236,6 +240,7 @@ int main(int argc, char** argv) {
     Stage s_qz{"quantize_residual"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_acl{"ac_token_layout"};
+    Stage s_acc_cluster{"ac_cluster_contexts"};
     Stage s_acp{"ac_pack_tokens"};
     Stage s_act{"AC tokens D2H"};
     Stage s_dch{"dc_build_histograms"};
@@ -276,21 +281,24 @@ int main(int argc, char** argv) {
 
         // Entropy sub-stages, serialized.
         timed(s_ach, record, [&] {
-            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist,
-                               d_item_sizes, nullptr);
+            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height,
+                               d_context_hist, d_item_sizes, nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
                             nullptr);
         });
+        timed(s_acc_cluster, record, [&] {
+            ac_cluster_contexts(d_context_hist, d_cluster_scratch, d_clustering, nullptr);
+        });
         timed(s_acp, record, [&] {
-            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_item_sizes,
-                           d_chunk_base, d_layout, 0, num_ac, d_entries, d_raw, nullptr);
+            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height,
+                           d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, 0,
+                           num_ac, d_entries, d_raw, nullptr);
         });
         timed(s_act, record, [&] {
-            cudaMemcpy(h_ac_meta, d_ac_hist, HIST_WORDS * sizeof(std::uint32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(h_ac_meta + HIST_WORDS, d_layout, layout_words * sizeof(std::uint32_t),
+            cudaMemcpy(h_clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_layout, d_layout, layout_words * sizeof(std::uint32_t),
                        cudaMemcpyDeviceToHost);
             cudaMemcpy(h_entries, d_entries, token_offset[num_ac] * sizeof(std::uint16_t),
                        cudaMemcpyDeviceToHost);
@@ -328,11 +336,16 @@ int main(int argc, char** argv) {
 
         std::vector<std::uint8_t> ac_global;
         timed(s_acg, record, [&] {
-            bitstream::AcGlobalBuilder tables{h_ac_meta, num_ac, code};
+            bitstream::AcGlobalBuilder tables{*h_clustering, num_ac, code};
             std::atomic<std::size_t> next{0};
             workers.run([&](std::size_t) {
-                for (std::size_t c{next.fetch_add(1)}; c < AC_NUM_CLUSTERS; c = next.fetch_add(1)) {
-                    tables.build_cluster(c);
+                for (std::size_t c{next.fetch_add(1)}; c <= tables.num_clusters();
+                     c = next.fetch_add(1)) {
+                    if (c < tables.num_clusters()) {
+                        tables.build_cluster(c);
+                    } else {
+                        tables.build_context_map();
+                    }
                 }
             });
             ac_global = tables.finish();
@@ -400,8 +413,8 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acp, &s_act, &s_dch, &s_amh,
-                          &s_fbc, &s_dcb, &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acc_cluster, &s_acp, &s_act, &s_dch,
+                          &s_amh, &s_fbc, &s_dcb, &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {

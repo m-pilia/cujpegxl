@@ -9,6 +9,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include "ac_clustering.h"
 #include "ac_context.h"
 #include "vardct_layout.h"
 
@@ -18,8 +19,8 @@ namespace cujpegxl {
 // for it, so that the DC path runs concurrently with the AC path and frames run
 // concurrently with each other.
 
-// Upper bound on the AC token alphabet: hybrid-uint tokens of 32-bit values stay
-// below this, so a fixed histogram of this size covers every symbol.
+// Width of the DC and AcMetadata histograms: hybrid-uint tokens of 32-bit values
+// stay below this, so a fixed histogram of this size covers every symbol.
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
 
 // AC coefficients stored per block (the 63 non-DC libjxl-raster slots). The DC
@@ -30,25 +31,34 @@ constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
 // including partial edge groups. width/height must be multiples of 8.
 std::size_t ac_num_groups(std::size_t width, std::size_t height);
 
-// Phase 1 of the AC token coder: accumulate the pooled AC symbol histogram
-// over every group. `ac` is the covered-block coefficient buffer (device; three
-// channel-major planes X, Y, B of (width/8 * height/8) * COEFFS_PER_BLOCK int16)
-// and `acs` the per-8x8 transform signal (nullptr = all 8x8 blocks). Each
-// first-block tokenizes order[covered..size) of its size gathered via
-// covered_plane_slot; covered blocks contribute nothing. `nz_exact` holds each
-// first-block's non-zero count over order[covered..size), and `nz_grid` that
-// count normalized per covered 8x8 and broadcast to every covered position (the
-// neighbor-prediction input); both are device buffers of 3 * (width/8 *
-// height/8) int32 in the planes' channel order, as produced by
-// quantize_residual. `histogram` is a device buffer of AC_NUM_CLUSTERS *
-// AC_HISTOGRAM_SIZE uint32 (cluster * AC_HISTOGRAM_SIZE + symbol; zeroed by the
-// call). `item_sizes` (device, 3 * width/8 * height/8) receives each
+// Phase 1 of the AC token coder: accumulate the per-context AC symbol
+// histograms over every group. `ac` is the covered-block coefficient buffer
+// (device; three channel-major planes X, Y, B of (width/8 * height/8) *
+// COEFFS_PER_BLOCK int16) and `acs` the per-8x8 transform signal (nullptr = all
+// 8x8 blocks). Each first-block tokenizes order[covered..size) of its size
+// gathered via covered_plane_slot; covered blocks contribute nothing. `nz_exact`
+// holds each first-block's non-zero count over order[covered..size), and
+// `nz_grid` that count normalized per covered 8x8 and broadcast to every covered
+// position (the neighbor-prediction input); both are device buffers of 3 *
+// (width/8 * height/8) int32 in the planes' channel order, as produced by
+// quantize_residual. `context_histograms` is a device buffer of AC_NUM_CONTEXTS *
+// AC_CONTEXT_ALPHABET uint32 (context * AC_CONTEXT_ALPHABET + symbol; zeroed by
+// the call). `item_sizes` (device, 3 * width/8 * height/8) receives each
 // block/channel item's token count (low 32 bits) and raw bit count (high 32
 // bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. Deterministic
 // (integer atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* histogram, std::uint64_t* item_sizes, cudaStream_t stream);
+                        std::uint32_t* context_histograms, std::uint64_t* item_sizes,
+                        cudaStream_t stream);
+
+std::size_t ac_cluster_scratch_bytes();
+
+// Phase 2: clusters the AC contexts from the phase-1 `context_histograms` (see
+// ac_clustering.h) into `clustering` (device). `scratch` (device) holds
+// ac_cluster_scratch_bytes() bytes. Deterministic.
+bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* scratch,
+                         AcClustering* clustering, cudaStream_t stream);
 
 // Upper bounds of a frame's AC tokens and of the 64-bit words of their raw bits
 // in the ac_token_layout.
@@ -60,7 +70,7 @@ std::size_t ac_token_chunks(std::size_t width, std::size_t height);
 
 std::size_t ac_token_layout_scratch_bytes(std::size_t width, std::size_t height);
 
-// Phase 2: the AC groups' token layout from the phase-1 `item_sizes`. Each AC
+// Phase 3: the AC groups' token layout from the phase-1 `item_sizes`. Each AC
 // group (one AcGroup section, raster order) is one token stream: its tokens in
 // decoder order, each an entry cluster << bitstream::TOKEN_CLUSTER_SHIFT |
 // symbol, and their raw bits packed LSB-first from a 64-bit word boundary.
@@ -74,15 +84,17 @@ bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::si
                      std::uint8_t* scratch, std::uint64_t* chunk_base, std::uint32_t* layout,
                      cudaStream_t stream);
 
-// Phase 3: writes the token streams of AC groups [group_begin, group_end) at
+// Phase 4: writes the token streams of AC groups [group_begin, group_end) at
 // their `layout` positions: entries into `entries` (device uint16) and raw bits
 // into `raw` (device 64-bit words; the groups' words are zeroed by the call).
-// The inputs are those of the two previous phases. Deterministic.
+// `context_map` (device, AC_NUM_CONTEXTS) is the AcClustering's. The other
+// inputs are those of phases 1 and 3. Deterministic.
 bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                     const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                    const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
-                    const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
-                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream);
+                    const std::uint8_t* context_map, const std::uint64_t* item_sizes,
+                    const std::uint64_t* chunk_base, const std::uint32_t* layout,
+                    std::size_t group_begin, std::size_t group_end, std::uint16_t* entries,
+                    std::uint64_t* raw, cudaStream_t stream);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.
