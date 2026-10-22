@@ -162,7 +162,8 @@ std::vector<T> download(const T* device, std::size_t count) {
 }
 
 // The residual+quantize kernel round-trips each AC chroma coefficient to within
-// half a quant step with CfL correctly inverted, and reconstructs the LLF DC
+// half a quant step (the dead zone threshold for zeroed coefficients) with CfL
+// correctly inverted, and reconstructs the LLF DC
 // within half a DC step, across the mixed tiling.
 TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
     const Frame f{make_frame()};
@@ -200,8 +201,12 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
                 const float x_rec{static_cast<float>(ac[slot]) * wx / qgsf + ytox * y_round};
                 const float b_rec{static_cast<float>(ac[2 * CPLANE + slot]) * wb / qgsf +
                                   ytob * y_round};
-                EXPECT_LE(std::fabs(x_rec - xv), 0.5f * wx / qgsf + 1e-4f);
-                EXPECT_LE(std::fabs(b_rec - bv), 0.5f * wb / qgsf + 1e-4f);
+                const float chroma_deadzone{
+                    ac_deadzone_threshold(side, 0, static_cast<std::uint32_t>(raw))};
+                const float x_steps{ac[slot] == 0 ? chroma_deadzone : 0.5f};
+                const float b_steps{ac[2 * CPLANE + slot] == 0 ? chroma_deadzone : 0.5f};
+                EXPECT_LE(std::fabs(x_rec - xv), x_steps * wx / qgsf + 1e-4f);
+                EXPECT_LE(std::fabs(b_rec - bv), b_steps * wb / qgsf + 1e-4f);
             }
             // DC: dequant + re-add base correlation reconstructs the LLF DC.
             const int cx{side / 8};
@@ -233,6 +238,76 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
                 }
             }
         }
+    }
+}
+
+// libjxl's per-quadrant thresholds: Y {0.56, 0.62}, X/B {0.58, 0.62} lowered by
+// 0.00744 per covered block from 4 covered blocks, floored at 0.5.
+TEST(FrontendQuantize, DeadzoneThresholdsMatchLibjxl) {
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 3 * 8 + 3), 0.56f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 3 * 8 + 4), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 4 * 8 + 3), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 1, 15 * 32 + 15), 0.56f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 1, 31 * 32 + 31), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 0, 1), 0.58f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 2, 7 * 8 + 7), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(16, 0, 7 * 16 + 7), 0.58f - 4 * 0.00744f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(16, 2, 8 * 16 + 7), 0.62f - 4 * 0.00744f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 0, 15 * 32 + 15), 0.5f);
+    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 2, 15 * 32 + 16), 0.62f - 16 * 0.00744f);
+}
+
+// Every AC coefficient quantizes to its nearest integer number of quant steps,
+// or to 0 when its magnitude is below the dead zone threshold, in all three
+// channels and transform sizes (X/B as the CfL residual of the Y roundtrip).
+// Coefficients within float tolerance of a decision boundary are skipped.
+TEST(FrontendQuantize, QuantizeResidualAppliesDeadzone) {
+    const Frame f{make_frame()};
+    Quantized q{};
+    ASSERT_TRUE(quantize(f, q));
+
+    const float qgsf{static_cast<float>(QUANT_FIELD) * calibrate_quant(1.0f).global_scale_float};
+    constexpr float TOLERANCE = 1e-3f;
+    std::size_t zeroed[3]{};
+    for (std::size_t by{0}; by < BH; ++by) {
+        for (std::size_t bx{0}; bx < BW; ++bx) {
+            const int side{f.acs[by * BW + bx]};
+            if (side == ACS_COVERED) {
+                continue;
+            }
+            const std::size_t tile{(by / 8) * CMW + bx / 8};
+            const float ratio[3]{cfl_ytox_ratio(q.ytox_map[tile]), 0.0f,
+                                 cfl_ytob_ratio(q.ytob_map[tile])};
+            for (int raw{0}; raw < side * side; ++raw) {
+                if (is_llf(raw, side)) {
+                    continue;
+                }
+                const std::size_t slot{
+                    covered_plane_slot(side, bx, by, BW, static_cast<std::size_t>(raw))};
+                const float y_round{static_cast<float>(q.ac[CPLANE + slot]) * weight(side, 1, raw) /
+                                    qgsf};
+                for (std::size_t c{0}; c < 3; ++c) {
+                    const float residual{__half2float(f.coeffs[c * CPLANE + slot]) -
+                                         ratio[c] * y_round};
+                    const float steps{residual * qgsf / weight(side, static_cast<int>(c), raw)};
+                    const float threshold{ac_deadzone_threshold(static_cast<std::uint32_t>(side),
+                                                                static_cast<std::uint32_t>(c),
+                                                                static_cast<std::uint32_t>(raw))};
+                    const float magnitude{std::fabs(steps)};
+                    if (std::fabs(magnitude - threshold) < TOLERANCE ||
+                        std::fabs(magnitude - std::floor(magnitude) - 0.5f) < TOLERANCE) {
+                        continue;
+                    }
+                    const bool in_deadzone{magnitude < threshold};
+                    zeroed[c] += in_deadzone && magnitude > 0.5f ? 1 : 0;
+                    EXPECT_EQ(q.ac[c * CPLANE + slot], in_deadzone ? 0 : std::lrint(steps))
+                        << "channel " << c << " side " << side << " raw " << raw;
+                }
+            }
+        }
+    }
+    for (std::size_t c{0}; c < 3; ++c) {
+        EXPECT_GT(zeroed[c], 0u) << "channel " << c;
     }
 }
 

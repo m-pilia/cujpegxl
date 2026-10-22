@@ -34,6 +34,10 @@ __device__ inline DequantWeightPair dequant_weight(int side, int channel, int ra
     return {w.x, w.y};
 }
 
+__device__ inline int quantize_deadzone(float steps, float threshold) {
+    return fabsf(steps) < threshold ? 0 : static_cast<int>(lrintf(steps));
+}
+
 // LlfDcTerms of every covered block of a DCT16 (entries 0-3) and a DCT32
 // (entries 4-19), row-major in (out_y, out_x).
 constexpr std::uint32_t LLF_DC_TERM_ENTRIES = 20;
@@ -328,11 +332,11 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             const std::uint32_t slot{2 * lane + j};
             y_round[k][j] = 0.0f;
             if (!((llf_mask >> slot) & 1)) {
-                const int raw{static_cast<int>(at_pos.covered_ordinal * BLOCK_SLOTS + slot)};
+                const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
                 const float yr{__half2float(tile_coeffs[1][p * BLOCK_SLOTS + slot])};
-                const DequantWeightPair wy{dequant_weight(at_pos.side, 1, raw)};
-                const int qy_int{
-                    static_cast<int>(lrintf(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight)))};
+                const DequantWeightPair wy{dequant_weight(at_pos.side, 1, static_cast<int>(raw))};
+                const int qy_int{quantize_deadzone(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight),
+                                                   ac_deadzone_threshold(at_pos.side, 1, raw))};
                 y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
                 qy[j] = static_cast<std::int16_t>(qy_int);
             }
@@ -386,15 +390,19 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         for (std::uint32_t j{0}; j < 2; ++j) {
             const std::uint32_t slot{2 * lane + j};
             if (!((llf_mask >> slot) & 1)) {
-                const int raw{static_cast<int>(at_pos.covered_ordinal * BLOCK_SLOTS + slot)};
+                const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
                 const float xr{__half2float(tile_coeffs[0][p * BLOCK_SLOTS + slot])};
                 const float br{__half2float(tile_coeffs[2][p * BLOCK_SLOTS + slot])};
-                const DequantWeightPair wx{dequant_weight(at_pos.side, 0, raw)};
-                qx[j] = static_cast<std::int16_t>(
-                    lrintf(div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight)));
-                const DequantWeightPair wb{dequant_weight(at_pos.side, 2, raw)};
-                qb[j] = static_cast<std::int16_t>(
-                    lrintf(div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight)));
+                // X and B share their dead zone.
+                const float threshold{ac_deadzone_threshold(at_pos.side, 0, raw)};
+                const DequantWeightPair wx{dequant_weight(at_pos.side, 0, static_cast<int>(raw))};
+                qx[j] = static_cast<std::int16_t>(quantize_deadzone(
+                    div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight),
+                    threshold));
+                const DequantWeightPair wb{dequant_weight(at_pos.side, 2, static_cast<int>(raw))};
+                qb[j] = static_cast<std::int16_t>(quantize_deadzone(
+                    div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight),
+                    threshold));
             }
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};

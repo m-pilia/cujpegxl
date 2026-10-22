@@ -33,6 +33,28 @@ inline constexpr int K_GLOBAL_SCALE_DENOM = 1 << 16;
 inline constexpr int K_GLOBAL_SCALE_NUMERATOR = 4096;
 inline constexpr int K_QUANT_MAX = 256;
 
+// libjxl's QuantizeBlockAC dead zone (lib/jxl/enc_group.cc) with the thresholds
+// of its speed tiers that skip AdjustQuantBlockAC: an AC coefficient whose
+// magnitude in quant steps is below the threshold quantizes to 0. `raw` is the
+// coefficient's index fx * side + fy in its transform; the threshold is lower
+// in the low-frequency quadrant (fx, fy < side / 2), and X and B lower it for
+// transforms covering 4+ blocks, down to plain rounding (0.5).
+constexpr float ac_deadzone_threshold(std::uint32_t side, std::uint32_t channel,
+                                      std::uint32_t raw) {
+    // The bits of raw that are set iff fx >= side / 2 or fy >= side / 2.
+    const bool low_quadrant{(raw & (side / 2 * (side + 1))) == 0};
+    if (channel == 1) {
+        return low_quadrant ? 0.56f : 0.62f;
+    }
+    const float base{low_quadrant ? 0.58f : 0.62f};
+    const std::uint32_t covered{side / 8 * (side / 8)};
+    if (covered < 4) {
+        return base;
+    }
+    const float lowered{base - 0.00744f * static_cast<float>(covered)};
+    return lowered < 0.5f ? 0.5f : lowered;
+}
+
 // Serialized quantizer state plus the derived float scales, computed from a
 // Butteraugli `distance` exactly as libjxl's encoder does for a uniform quant
 // field (no adaptive AQ): base AC field value kAcQuant/distance and DC value
