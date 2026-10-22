@@ -30,9 +30,9 @@ using bitstream::reference_ac_encode;
 // X, Y, B; blocks in raster order; 64 coefficients each).
 void expect_same_clustering(const AcClustering& got, const AcClustering& expected) {
     ASSERT_EQ(got.num_clusters, expected.num_clusters);
-    EXPECT_EQ(std::vector<std::uint32_t>(std::begin(got.histograms), std::end(got.histograms)),
-              std::vector<std::uint32_t>(std::begin(expected.histograms),
-                                         std::end(expected.histograms)));
+    EXPECT_EQ(
+        std::vector<std::uint32_t>(std::begin(got.histograms), std::end(got.histograms)),
+        std::vector<std::uint32_t>(std::begin(expected.histograms), std::end(expected.histograms)));
     EXPECT_EQ(std::vector<std::uint8_t>(std::begin(got.context_map), std::end(got.context_map)),
               std::vector<std::uint8_t>(std::begin(expected.context_map),
                                         std::end(expected.context_map)));

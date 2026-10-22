@@ -79,7 +79,8 @@ AcClustering cluster_ac_contexts_reference(const std::uint32_t* context_histogra
                 largest = a;
             }
         }
-        std::vector<std::int64_t> distances(active.size(), std::numeric_limits<std::int64_t>::max());
+        std::vector<std::int64_t> distances(active.size(),
+                                            std::numeric_limits<std::int64_t>::max());
         for (;;) {
             seeds.push_back(active[largest]);
             distances[largest] = 0;

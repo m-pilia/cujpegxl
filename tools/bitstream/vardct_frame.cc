@@ -289,7 +289,8 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
 // Emits a run of AC tokens with the per-cluster prefix codes.
 void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t begin,
                     std::size_t end, const AcClustering& clustering,
-                    const std::vector<std::uint8_t>& depth, const std::vector<std::uint16_t>& bits) {
+                    const std::vector<std::uint8_t>& depth,
+                    const std::vector<std::uint16_t>& bits) {
     for (std::size_t i{begin}; i < end; ++i) {
         const AcTok& t{toks[i]};
         const std::size_t idx{clustering.context_map[t.context] * AC_CONTEXT_ALPHABET + t.symbol};
@@ -326,10 +327,9 @@ void write_ac_histograms(BitWriter& w, const AcClustering& clustering,
                          std::vector<std::uint8_t>& depth, std::vector<std::uint16_t>& bits) {
     depth.assign(clustering.num_clusters * AC_CONTEXT_ALPHABET, 0);
     bits.assign(clustering.num_clusters * AC_CONTEXT_ALPHABET, 0);
-    write_clustered_prefix_histograms(w, clustering.context_map, AC_NUM_CONTEXTS,
-                                      clustering.num_clusters, clustering.histograms,
-                                      AC_CONTEXT_ALPHABET, HybridUintConfig{}, depth.data(),
-                                      bits.data());
+    write_clustered_prefix_histograms(
+        w, clustering.context_map, AC_NUM_CONTEXTS, clustering.num_clusters, clustering.histograms,
+        AC_CONTEXT_ALPHABET, HybridUintConfig{}, depth.data(), bits.data());
 }
 
 void write_dc_global(BitWriter& w, const FrameCoefficients& fc) {

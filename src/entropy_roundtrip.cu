@@ -132,15 +132,13 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     for (std::size_t b{0}; ok && b < batches; ++b) {
         const std::size_t begin{b * num_groups / batches};
         const std::size_t end{(b + 1) * num_groups / batches};
-        ok = begin == end ||
-             ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height,
-                            d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, begin,
-                            end, d_entries, d_raw, nullptr);
+        ok = begin == end || ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height,
+                                            d_clustering->context_map, d_item_sizes, d_chunk_base,
+                                            d_layout, begin, end, d_entries, d_raw, nullptr);
     }
-    ok = ok &&
-         download(d_hist, AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, out.context_histograms) &&
-         cudaMemcpy(&out.clustering, d_clustering, sizeof(AcClustering),
-                    cudaMemcpyDeviceToHost) == cudaSuccess &&
+    ok = ok && download(d_hist, AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, out.context_histograms) &&
+         cudaMemcpy(&out.clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost) ==
+             cudaSuccess &&
          download(d_layout, layout_words, out.layout) &&
          download(d_entries, out.layout[num_groups], out.entries) &&
          download(d_raw, out.layout[2 * num_groups + 1], out.raw);

@@ -68,9 +68,8 @@ CUJPEGXL_ACC_HD inline std::int32_t ac_fixed_log2(std::uint32_t x, const std::in
     const int e{ac_floor_log2(x)};
     const std::uint32_t frac{(x << (31 - e)) & 0x7FFFFFFFu};
     const std::uint32_t idx{frac >> (31 - AC_LOG2_TABLE_BITS)};
-    const std::int32_t rem{
-        static_cast<std::int32_t>((frac >> (31 - AC_LOG2_TABLE_BITS - REM_BITS)) &
-                                  ((1u << REM_BITS) - 1))};
+    const std::int32_t rem{static_cast<std::int32_t>(
+        (frac >> (31 - AC_LOG2_TABLE_BITS - REM_BITS)) & ((1u << REM_BITS) - 1))};
     const std::int32_t lo{table[idx]};
     return (e << AC_COST_FRAC_BITS) + lo + (((table[idx + 1] - lo) * rem) >> REM_BITS);
 }
@@ -105,8 +104,7 @@ CUJPEGXL_ACC_HD inline std::int64_t ac_merge_term(std::uint32_t a, std::uint32_t
 
 // libjxl HistogramDistance: the entropy-coded size of `a` and `b` merged minus
 // their sizes apart. Only the bins non-zero in both contribute beyond the totals.
-CUJPEGXL_ACC_HD inline std::int64_t ac_merge_cost(const AcHistogramRef& a,
-                                                  const AcHistogramRef& b,
+CUJPEGXL_ACC_HD inline std::int64_t ac_merge_cost(const AcHistogramRef& a, const AcHistogramRef& b,
                                                   const std::int32_t* table) {
     std::int64_t cost{ac_merge_term(a.total, b.total, a.total_xlog2x, b.total_xlog2x, table)};
     for (std::uint64_t m{a.mask & b.mask}; m != 0; m &= m - 1) {

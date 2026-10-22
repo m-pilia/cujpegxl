@@ -514,10 +514,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
         const std::size_t g0{batch_begin(num_ac, b)};
         const std::size_t g1{batch_begin(num_ac, b + 1)};
-        if ((g0 != g1 &&
-             !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height,
-                             d.clustering->context_map, d.item_sizes, d.chunk_base, d.layout, g0,
-                             g1, d.entries, d.raw, slot.stream)) ||
+        if ((g0 != g1 && !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height,
+                                         d.clustering->context_map, d.item_sizes, d.chunk_base,
+                                         d.layout, g0, g1, d.entries, d.raw, slot.stream)) ||
             cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
             return false;
         }
@@ -698,10 +697,9 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     const std::size_t num_threads{pool.size()};
 
     // All threads build the context map, the longest job, first and the
-    // clusters' ANS tables, then thread 0 completes the AcGlobal and releases the batches as their copies
-    // land, longest groups first, and fetches the DcGroups while the others
-    // code; once all are done it lays out the file, and every thread places a
-    // share of the AC groups.
+    // clusters' ANS tables, then thread 0 completes the AcGlobal and releases the batches as their
+    // copies land, longest groups first, and fetches the DcGroups while the others code; once all
+    // are done it lays out the file, and every thread places a share of the AC groups.
     pool.run([&](std::size_t t) {
         for (std::size_t c{next_table.fetch_add(1, std::memory_order_relaxed)};
              c <= tables.num_clusters(); c = next_table.fetch_add(1, std::memory_order_relaxed)) {

@@ -281,8 +281,8 @@ int main(int argc, char** argv) {
 
         // Entropy sub-stages, serialized.
         timed(s_ach, record, [&] {
-            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height,
-                               d_context_hist, d_item_sizes, nullptr);
+            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_context_hist,
+                               d_item_sizes, nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
@@ -413,8 +413,9 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acc_cluster, &s_acp, &s_act, &s_dch,
-                          &s_amh, &s_fbc, &s_dcb, &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acc_cluster, &s_acp,
+                          &s_act, &s_dch, &s_amh, &s_fbc, &s_dcb,         &s_dcg,
+                          &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {
