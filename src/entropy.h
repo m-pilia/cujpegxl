@@ -56,7 +56,9 @@ std::size_t ac_cluster_scratch_bytes();
 
 // Phase 2: clusters the AC contexts from the phase-1 `context_histograms` (see
 // ac_clustering.h) into `clustering` (device). `scratch` (device) holds
-// ac_cluster_scratch_bytes() bytes. Deterministic.
+// ac_cluster_scratch_bytes() bytes. Most of the work is one cooperative launch
+// of a thread block per multiprocessor, which the device must support.
+// Deterministic.
 bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* scratch,
                          AcClustering* clustering, cudaStream_t stream);
 

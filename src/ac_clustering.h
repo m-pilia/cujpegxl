@@ -63,7 +63,7 @@ CUJPEGXL_ACC_HD inline int ac_lowest_bit(std::uint64_t mask) {
 }
 
 // log2(x) for x >= 1.
-CUJPEGXL_ACC_HD inline std::int64_t ac_fixed_log2(std::uint32_t x, const std::int32_t* table) {
+CUJPEGXL_ACC_HD inline std::int32_t ac_fixed_log2(std::uint32_t x, const std::int32_t* table) {
     constexpr int REM_BITS{12};
     const int e{ac_floor_log2(x)};
     const std::uint32_t frac{(x << (31 - e)) & 0x7FFFFFFFu};
@@ -72,46 +72,60 @@ CUJPEGXL_ACC_HD inline std::int64_t ac_fixed_log2(std::uint32_t x, const std::in
         static_cast<std::int32_t>((frac >> (31 - AC_LOG2_TABLE_BITS - REM_BITS)) &
                                   ((1u << REM_BITS) - 1))};
     const std::int32_t lo{table[idx]};
-    return (static_cast<std::int64_t>(e) << AC_COST_FRAC_BITS) + lo +
-           (((table[idx + 1] - lo) * rem) >> REM_BITS);
+    return (e << AC_COST_FRAC_BITS) + lo + (((table[idx + 1] - lo) * rem) >> REM_BITS);
+}
+
+// x * log2(x), with a log2 >= 0: a 32 x 32 -> 64-bit product.
+CUJPEGXL_ACC_HD inline std::int64_t ac_times_log2(std::uint32_t x, std::int32_t log2) {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(x) *
+                                     static_cast<std::uint32_t>(log2));
 }
 
 CUJPEGXL_ACC_HD inline std::int64_t ac_xlog2x(std::uint32_t x, const std::int32_t* table) {
-    return x == 0 ? 0 : static_cast<std::int64_t>(x) * ac_fixed_log2(x, table);
+    return x == 0 ? 0 : ac_times_log2(x, ac_fixed_log2(x, table));
 }
 
-// A histogram of AC_CONTEXT_ALPHABET bins with its total and the mask of its
-// non-zero bins.
+// A histogram of AC_CONTEXT_ALPHABET bins with its total, the mask of its
+// non-zero bins and the ac_xlog2x of its bins and total.
 struct AcHistogramRef {
     const std::uint32_t* bins;
+    const std::int64_t* bin_xlog2x;
     std::uint32_t total;
+    std::int64_t total_xlog2x;
     std::uint64_t mask;
 };
+
+// The terms of ac_merge_cost: one for the totals, and one for each bin
+// non-zero in both histograms, subtracted.
+CUJPEGXL_ACC_HD inline std::int64_t ac_merge_term(std::uint32_t a, std::uint32_t b,
+                                                  std::int64_t a_xlog2x, std::int64_t b_xlog2x,
+                                                  const std::int32_t* table) {
+    return ac_xlog2x(a + b, table) - a_xlog2x - b_xlog2x;
+}
 
 // libjxl HistogramDistance: the entropy-coded size of `a` and `b` merged minus
 // their sizes apart. Only the bins non-zero in both contribute beyond the totals.
 CUJPEGXL_ACC_HD inline std::int64_t ac_merge_cost(const AcHistogramRef& a,
                                                   const AcHistogramRef& b,
                                                   const std::int32_t* table) {
-    std::int64_t shared{0};
+    std::int64_t cost{ac_merge_term(a.total, b.total, a.total_xlog2x, b.total_xlog2x, table)};
     for (std::uint64_t m{a.mask & b.mask}; m != 0; m &= m - 1) {
         const int s{ac_lowest_bit(m)};
-        shared += ac_xlog2x(a.bins[s] + b.bins[s], table) - ac_xlog2x(a.bins[s], table) -
-                  ac_xlog2x(b.bins[s], table);
+        cost -= ac_merge_term(a.bins[s], b.bins[s], a.bin_xlog2x[s], b.bin_xlog2x[s], table);
     }
-    return ac_xlog2x(a.total + b.total, table) - ac_xlog2x(a.total, table) -
-           ac_xlog2x(b.total, table) - shared;
+    return cost;
 }
 
-// The size of `a` entropy-coded with the distribution of `cluster`, which must
-// hold every symbol of `a`; up to a term of `a` alone.
+// The size of `a` entropy-coded with the distribution of a cluster, given the
+// log2 of the cluster's total and of its bins; the cluster must hold every
+// symbol of `a`. Up to a term of `a` alone.
 CUJPEGXL_ACC_HD inline std::int64_t ac_coding_cost(const AcHistogramRef& a,
-                                                   const AcHistogramRef& cluster,
-                                                   const std::int32_t* table) {
-    std::int64_t cost{static_cast<std::int64_t>(a.total) * ac_fixed_log2(cluster.total, table)};
+                                                   std::int32_t cluster_total_log2,
+                                                   const std::int32_t* cluster_bin_log2) {
+    std::int64_t cost{ac_times_log2(a.total, cluster_total_log2)};
     for (std::uint64_t m{a.mask}; m != 0; m &= m - 1) {
         const int s{ac_lowest_bit(m)};
-        cost -= static_cast<std::int64_t>(a.bins[s]) * ac_fixed_log2(cluster.bins[s], table);
+        cost -= ac_times_log2(a.bins[s], cluster_bin_log2[s]);
     }
     return cost;
 }
