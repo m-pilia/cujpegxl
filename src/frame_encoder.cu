@@ -697,18 +697,18 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     EncodeResult result{ENCODE_FAILED};
     const std::size_t num_threads{pool.size()};
 
-    // All threads build the clusters' ANS tables and the context map, then
-    // thread 0 completes the AcGlobal and releases the batches as their copies
+    // All threads build the context map, the longest job, first and the
+    // clusters' ANS tables, then thread 0 completes the AcGlobal and releases the batches as their copies
     // land, longest groups first, and fetches the DcGroups while the others
     // code; once all are done it lays out the file, and every thread places a
     // share of the AC groups.
     pool.run([&](std::size_t t) {
         for (std::size_t c{next_table.fetch_add(1, std::memory_order_relaxed)};
              c <= tables.num_clusters(); c = next_table.fetch_add(1, std::memory_order_relaxed)) {
-            if (c < tables.num_clusters()) {
-                tables.build_cluster(c);
-            } else {
+            if (c == 0) {
                 tables.build_context_map();
+            } else {
+                tables.build_cluster(c - 1);
             }
         }
         tables_done.fetch_add(1, std::memory_order_acq_rel);

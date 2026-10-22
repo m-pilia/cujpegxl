@@ -341,10 +341,10 @@ int main(int argc, char** argv) {
             workers.run([&](std::size_t) {
                 for (std::size_t c{next.fetch_add(1)}; c <= tables.num_clusters();
                      c = next.fetch_add(1)) {
-                    if (c < tables.num_clusters()) {
-                        tables.build_cluster(c);
-                    } else {
+                    if (c == 0) {
                         tables.build_context_map();
+                    } else {
+                        tables.build_cluster(c - 1);
                     }
                 }
             });

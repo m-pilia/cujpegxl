@@ -612,72 +612,138 @@ CUJPEGXL_BS_HD void write_simple_context_map(W& w, const std::uint8_t* context_m
     }
 }
 
+// Counts of the context-map values as written plainly and after the
+// move-to-front transform, from one pass over the map.
+CUJPEGXL_BS_HD inline void count_context_map_values(const std::uint8_t* context_map,
+                                                    std::size_t num_contexts,
+                                                    std::uint32_t* plain_counts,
+                                                    std::uint32_t* mtf_counts) {
+    for (std::size_t v{0}; v < 256; ++v) {
+        plain_counts[v] = 0;
+        mtf_counts[v] = 0;
+    }
+    std::uint8_t symbols[256];
+    mtf_reset(symbols);
+    for (std::size_t i{0}; i < num_contexts; ++i) {
+        ++plain_counts[context_map[i]];
+        ++mtf_counts[mtf_apply(symbols, context_map[i])];
+    }
+}
+
+constexpr HybridUintConfig CONTEXT_MAP_UINT_CONFIG{2, 0, 1};
+
+// The prefix code of a complex context map and its encoded size in bits.
+struct ContextMapCode {
+    std::uint32_t histogram[CONTEXT_MAP_ALPHABET_SIZE];
+    std::size_t alphabet_size;
+    std::uint8_t depth[CONTEXT_MAP_ALPHABET_SIZE];
+    std::uint16_t bits[CONTEXT_MAP_ALPHABET_SIZE];
+    std::size_t size_bits;
+};
+
+CUJPEGXL_BS_HD inline ContextMapCode build_context_map_code(const std::uint32_t* value_counts) {
+    ContextMapCode code{};
+    std::size_t raw_bits{0};
+    for (std::uint32_t v{0}; v < 256; ++v) {
+        if (value_counts[v] == 0) {
+            continue;
+        }
+        std::uint32_t token{}, nbits{}, extra_bits{};
+        CONTEXT_MAP_UINT_CONFIG.encode(v, token, nbits, extra_bits);
+        assert(token < CONTEXT_MAP_ALPHABET_SIZE);
+        code.histogram[token] += value_counts[v];
+        raw_bits += static_cast<std::size_t>(value_counts[v]) * nbits;
+    }
+    code.alphabet_size = 1;
+    for (std::size_t t{0}; t < CONTEXT_MAP_ALPHABET_SIZE; ++t) {
+        if (code.histogram[t] != 0) {
+            code.alphabet_size = t + 1;
+        }
+    }
+    CountingBitWriter head{};
+    head.write(2, 0);  // is_simple, use_mtf
+    write_prefix_histograms(head, code.histogram, code.alphabet_size, 1, CONTEXT_MAP_UINT_CONFIG,
+                            code.depth, code.bits);
+    code.size_bits = head.bits_written() + raw_bits;
+    for (std::size_t t{0}; t < code.alphabet_size; ++t) {
+        code.size_bits += static_cast<std::size_t>(code.histogram[t]) * code.depth[t];
+    }
+    return code;
+}
+
+// Writes a complex context map with `code`, built from the counts of the values
+// as written (with the move-to-front transform if `use_mtf`). The entries are
+// gathered into 64-bit chunks before reaching `w`.
 template <typename W>
 CUJPEGXL_BS_HD void write_complex_prefix_context_map(W& w, const std::uint8_t* context_map,
-                                                     std::size_t num_contexts, bool use_mtf) {
-    const HybridUintConfig config{2, 0, 1};
-    std::uint32_t histogram[CONTEXT_MAP_ALPHABET_SIZE]{};
+                                                     std::size_t num_contexts, bool use_mtf,
+                                                     const ContextMapCode& code) {
+    w.write(1, 0);
+    w.write(1, use_mtf ? 1 : 0);
+    write_prefix_histogram_head(w, code.alphabet_size, 1, CONTEXT_MAP_UINT_CONFIG);
+    if (code.alphabet_size > 1) {
+        store_huffman_code(code.histogram, code.alphabet_size, code.depth, w);
+    }
 
+    constexpr std::size_t CHUNK_BITS{56};
+    std::uint64_t chunk{0};
+    std::size_t chunk_bits{0};
+    const auto put = [&](std::size_t n, std::uint64_t value) {
+        if (chunk_bits + n > CHUNK_BITS) {
+            w.write(chunk_bits, chunk);
+            chunk = 0;
+            chunk_bits = 0;
+        }
+        chunk |= value << chunk_bits;
+        chunk_bits += n;
+    };
     std::uint8_t symbols[256];
     mtf_reset(symbols);
     for (std::size_t i{0}; i < num_contexts; ++i) {
         const std::uint8_t value{use_mtf ? mtf_apply(symbols, context_map[i]) : context_map[i]};
-        std::uint32_t token{}, nbits{}, bits{};
-        config.encode(value, token, nbits, bits);
-        assert(token < CONTEXT_MAP_ALPHABET_SIZE);
-        ++histogram[token];
-    }
-
-    std::size_t alpha{1};
-    for (std::size_t i{0}; i < CONTEXT_MAP_ALPHABET_SIZE; ++i) {
-        if (histogram[i] != 0) {
-            alpha = i + 1;
-        }
-    }
-
-    w.write(1, 0);
-    w.write(1, use_mtf ? 1 : 0);
-
-    std::uint8_t depth[CONTEXT_MAP_ALPHABET_SIZE]{};
-    std::uint16_t bits[CONTEXT_MAP_ALPHABET_SIZE]{};
-    write_prefix_histograms(w, histogram, alpha, 1, config, depth, bits);
-
-    mtf_reset(symbols);
-    for (std::size_t i{0}; i < num_contexts; ++i) {
-        const std::uint8_t value{use_mtf ? mtf_apply(symbols, context_map[i]) : context_map[i]};
         std::uint32_t token{}, nbits{}, extra_bits{};
-        config.encode(value, token, nbits, extra_bits);
-        w.write(depth[token], bits[token]);
-        if (nbits != 0) {
-            w.write(nbits, extra_bits);
-        }
+        CONTEXT_MAP_UINT_CONFIG.encode(value, token, nbits, extra_bits);
+        put(code.depth[token], code.bits[token]);
+        put(nbits, extra_bits);
+    }
+    if (chunk_bits != 0) {
+        w.write(chunk_bits, chunk);
     }
 }
 
-// Emits the smallest of the legal context-map encodings, choosing by encoded
-// size (measured with a CountingBitWriter so no scratch buffer is needed) and
-// writing the winner straight into `w`. Byte-identical to the host original,
-// which built the candidates into separate writers and appended the shortest.
+template <typename W>
+CUJPEGXL_BS_HD void write_complex_prefix_context_map(W& w, const std::uint8_t* context_map,
+                                                     std::size_t num_contexts, bool use_mtf) {
+    std::uint32_t plain_counts[256];
+    std::uint32_t mtf_counts[256];
+    count_context_map_values(context_map, num_contexts, plain_counts, mtf_counts);
+    write_complex_prefix_context_map(w, context_map, num_contexts, use_mtf,
+                                     build_context_map_code(use_mtf ? mtf_counts : plain_counts));
+}
+
+// Emits the smallest of the legal context-map encodings. The sizes of the
+// complex encodings follow from the value counts, so only the chosen encoding
+// is written.
 template <typename W>
 CUJPEGXL_BS_HD ContextMapEncoding write_best_prefix_context_map(W& w,
                                                                 const std::uint8_t* context_map,
                                                                 std::size_t num_contexts,
                                                                 std::size_t num_clusters) {
-    CountingBitWriter c_complex{};
-    write_complex_prefix_context_map(c_complex, context_map, num_contexts, false);
-    CountingBitWriter c_mtf{};
-    write_complex_prefix_context_map(c_mtf, context_map, num_contexts, true);
+    std::uint32_t plain_counts[256];
+    std::uint32_t mtf_counts[256];
+    count_context_map_values(context_map, num_contexts, plain_counts, mtf_counts);
+    const ContextMapCode complex{build_context_map_code(plain_counts)};
+    const ContextMapCode mtf{build_context_map_code(mtf_counts)};
 
-    std::size_t best_bits{c_complex.bits_written()};
+    std::size_t best_bits{complex.size_bits};
     ContextMapEncoding encoding{ContextMapEncoding::COMPLEX};
-    if (c_mtf.bits_written() < best_bits) {
-        best_bits = c_mtf.bits_written();
+    if (mtf.size_bits < best_bits) {
+        best_bits = mtf.size_bits;
         encoding = ContextMapEncoding::COMPLEX_MTF;
     }
     if (num_clusters <= 8) {
-        CountingBitWriter c_simple{};
-        write_simple_context_map(c_simple, context_map, num_contexts, num_clusters);
-        if (c_simple.bits_written() <= best_bits) {
+        const std::size_t simple_bits{3 + num_contexts * ceil_log2_nonzero(num_clusters)};
+        if (simple_bits <= best_bits) {
             encoding = ContextMapEncoding::SIMPLE;
         }
     }
@@ -687,10 +753,10 @@ CUJPEGXL_BS_HD ContextMapEncoding write_best_prefix_context_map(W& w,
             write_simple_context_map(w, context_map, num_contexts, num_clusters);
             break;
         case ContextMapEncoding::COMPLEX:
-            write_complex_prefix_context_map(w, context_map, num_contexts, false);
+            write_complex_prefix_context_map(w, context_map, num_contexts, false, complex);
             break;
         case ContextMapEncoding::COMPLEX_MTF:
-            write_complex_prefix_context_map(w, context_map, num_contexts, true);
+            write_complex_prefix_context_map(w, context_map, num_contexts, true, mtf);
             break;
     }
     return encoding;
