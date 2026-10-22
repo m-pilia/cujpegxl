@@ -15,11 +15,11 @@ namespace cujpegxl {
 // Linearly filtered texture over a device NV12 chroma plane (interleaved Cb/Cr,
 // (width/2) pairs per row over height/2 rows at `chroma_pitch`, which must be
 // 32-byte aligned), as the front end samples it. Destruction first waits for
-// the legacy default stream, where the front end reads the texture.
+// `stream`, where the front end reads the texture.
 class ChromaTexture {
 public:
     ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                  std::size_t height);
+                  std::size_t height, cudaStream_t stream);
     ChromaTexture(const ChromaTexture&) = delete;
     ChromaTexture& operator=(const ChromaTexture&) = delete;
     ~ChromaTexture();
@@ -29,6 +29,7 @@ public:
 
 private:
     cudaTextureObject_t texture_{};
+    cudaStream_t stream_{nullptr};
     bool valid_{false};
 };
 
@@ -43,10 +44,10 @@ private:
 // covered-block planes, `acs` receives the transform decisions, and
 // `quant_field` receives the per-block quant integers. width and height must be
 // multiples of 8. All pointers are device addresses. Deterministic. Enqueues on
-// the legacy default stream without waiting; returns false on a launch error.
+// `stream` without waiting; returns false on a launch error.
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
                      std::size_t width, std::size_t height, float distance, __half* coeffs,
-                     std::int8_t* acs, std::int32_t* quant_field);
+                     std::int8_t* acs, std::int32_t* quant_field, cudaStream_t stream);
 
 }  // namespace cujpegxl
 

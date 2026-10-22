@@ -1,12 +1,15 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// GPU validation of the encode path (FrameEncoder::encode_nv12): mixed
-// {8,16,32} blocks + chroma-from-luma. Encodes a device NV12 image and decodes
-// the result through libjxl's public decoder, and checks per-device determinism
-// across encodes and worker thread counts.
+// GPU validation of the encode path (FrameEncoder): mixed {8,16,32} blocks +
+// chroma-from-luma. Encodes a device NV12 image and decodes the result through
+// libjxl's public decoder, and checks per-device determinism across encodes,
+// worker thread counts and pipeline depths.
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <memory>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -102,13 +105,21 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
     return testing::AssertionSuccess();
 }
 
+bool submit(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w, std::size_t h,
+            float distance, std::vector<std::uint8_t>& file) {
+    file.assign(max_encoded_size(w, h), 0);
+    return encoder.submit(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, w, h,
+                          distance, quant_params_for_distance(distance), file.data(), file.size());
+}
+
 std::vector<std::uint8_t> encode(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w,
-                                 std::size_t h) {
-    const bitstream::QuantParams qp{quant_params_for_distance(1.0f)};
-    std::vector<std::uint8_t> file(max_encoded_size(w, h));
-    const EncodeResult result{encoder.encode_nv12(nv12.luma, nv12.luma_pitch, nv12.chroma,
-                                                  nv12.chroma_pitch, w, h, 0, 1.0f, qp, file.data(),
-                                                  file.size(), nullptr)};
+                                 std::size_t h, float distance = 1.0f) {
+    std::vector<std::uint8_t> file{};
+    if (!submit(encoder, nv12, w, h, distance, file)) {
+        ADD_FAILURE() << "submit failed";
+        return {};
+    }
+    const EncodeResult result{encoder.receive()};
     EXPECT_EQ(result.status, EncodeStatus::OK);
     file.resize(result.file_size);
     return file;
@@ -121,7 +132,7 @@ TEST_P(EncodeLadder, DecodesWithLibjxl) {
     const std::size_t h{GetParam().second};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder encoder{4};
+    FrameEncoder encoder{0, 4, 1};
     const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
     ASSERT_GT(file.size(), 0u);
     std::uint32_t xs{0};
@@ -144,7 +155,7 @@ TEST(Encode, Deterministic) {
     const std::size_t h{720};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder encoder{4};
+    FrameEncoder encoder{0, 4, 1};
     const std::vector<std::uint8_t> a{encode(encoder, nv12, w, h)};
     const std::vector<std::uint8_t> b{encode(encoder, nv12, w, h)};
     EXPECT_EQ(a, b);
@@ -155,10 +166,10 @@ TEST(Encode, IndependentOfWorkerThreads) {
     const std::size_t h{1080};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder single{1};
+    FrameEncoder single{0, 1, 1};
     const std::vector<std::uint8_t> expected{encode(single, nv12, w, h)};
     for (std::size_t threads : {2, 3, 8}) {
-        FrameEncoder encoder{threads};
+        FrameEncoder encoder{0, threads, 1};
         EXPECT_EQ(encode(encoder, nv12, w, h), expected) << threads << " threads";
     }
 }
@@ -170,13 +181,101 @@ TEST(Encode, FlatImageDecodes) {
     const std::size_t h{384};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12, true));
-    FrameEncoder encoder{4};
+    FrameEncoder encoder{0, 4, 1};
     const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
     std::uint32_t xs{0};
     std::uint32_t ys{0};
     ASSERT_TRUE(decode_dims(file, xs, ys));
     EXPECT_EQ(xs, w);
     EXPECT_EQ(ys, h);
+}
+
+struct PipelineFrame {
+    std::size_t width;
+    std::size_t height;
+    float distance;
+    bool flat;
+};
+
+// Frames of different sizes, contents and distances in flight together, so
+// that consecutive frames reuse slots sized for other frames.
+class Pipeline : public testing::Test {
+protected:
+    static constexpr PipelineFrame FRAMES[]{
+        {1280, 720, 1.0f, false}, {640, 384, 4.0f, false}, {1920, 1080, 1.0f, false},
+        {1280, 720, 2.5f, false}, {640, 384, 1.0f, true},  {1920, 1080, 4.0f, false},
+    };
+    static constexpr std::size_t NUM_FRAMES{std::size(FRAMES)};
+
+    void SetUp() override {
+        FrameEncoder serial{0, 4, 1};
+        for (std::size_t i{0}; i < NUM_FRAMES; ++i) {
+            const PipelineFrame& f{FRAMES[i]};
+            images_[i] = std::make_unique<DeviceNv12>();
+            ASSERT_TRUE(upload_nv12(f.width, f.height, *images_[i], f.flat));
+            expected_[i] = encode(serial, *images_[i], f.width, f.height, f.distance);
+            ASSERT_FALSE(expected_[i].empty());
+        }
+    }
+
+    // Encodes the frames `rounds` times over, keeping `depth` in flight, and
+    // checks each against its serial encode.
+    void expect_serial_output(std::size_t threads, std::size_t depth, std::size_t rounds) {
+        FrameEncoder encoder{0, threads, depth};
+        std::vector<std::vector<std::uint8_t>> files(depth);
+        std::size_t received{0};
+        const auto receive_one = [&] {
+            const std::vector<std::uint8_t>& file{files[received % depth]};
+            const std::vector<std::uint8_t>& expected{expected_[received % NUM_FRAMES]};
+            const EncodeResult result{encoder.receive()};
+            ASSERT_EQ(result.status, EncodeStatus::OK);
+            ASSERT_EQ(result.file_size, expected.size());
+            EXPECT_TRUE(std::equal(expected.begin(), expected.end(), file.begin()))
+                << "frame " << received << ", " << threads << " threads, depth " << depth;
+            ++received;
+        };
+        for (std::size_t k{0}; k < rounds * NUM_FRAMES; ++k) {
+            if (encoder.in_flight() == depth) {
+                receive_one();
+            }
+            const PipelineFrame& f{FRAMES[k % NUM_FRAMES]};
+            ASSERT_TRUE(submit(encoder, *images_[k % NUM_FRAMES], f.width, f.height, f.distance,
+                               files[k % depth]));
+        }
+        while (encoder.in_flight() != 0) {
+            receive_one();
+        }
+    }
+
+    std::unique_ptr<DeviceNv12> images_[NUM_FRAMES];
+    std::vector<std::uint8_t> expected_[NUM_FRAMES];
+};
+
+TEST_F(Pipeline, MatchesSerialEncodes) {
+    for (std::size_t depth : {2, 3, 4}) {
+        expect_serial_output(4, depth, 2);
+    }
+}
+
+TEST_F(Pipeline, IndependentOfWorkerThreads) {
+    for (std::size_t threads : {1, 3}) {
+        expect_serial_output(threads, 3, 1);
+    }
+}
+
+TEST_F(Pipeline, DestructionCompletesFramesInFlight) {
+    std::vector<std::vector<std::uint8_t>> files(3);
+    {
+        FrameEncoder encoder{0, 4, 3};
+        for (std::size_t i{0}; i < files.size(); ++i) {
+            const PipelineFrame& f{FRAMES[i]};
+            ASSERT_TRUE(submit(encoder, *images_[i], f.width, f.height, f.distance, files[i]));
+        }
+    }
+    for (std::size_t i{0}; i < files.size(); ++i) {
+        EXPECT_TRUE(std::equal(expected_[i].begin(), expected_[i].end(), files[i].begin()))
+            << "frame " << i;
+    }
 }
 
 }  // namespace

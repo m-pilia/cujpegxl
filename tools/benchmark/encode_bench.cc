@@ -10,6 +10,12 @@
 // invocation must share the same --dims. Iterations alternate across the input
 // files so that any per-image caching effects average out across the run.
 //
+// cujpegxl encodes the iterations as one stream of frames with up to
+// --pipeline-depth frames in flight, warmup frames first. The reported time per
+// frame is the interval between consecutive completions, the steady-state
+// throughput; the latency of each frame, from submission to completion, is
+// reported separately. At depth 1 the two coincide up to the loop overhead.
+//
 // For cujpegxl the tool additionally supports a --profile mode intended for
 // capture under NVIDIA Nsight Systems (nsys) or Nsight Compute (ncu): it
 // defaults iterations to 1, emits an NVTX range around every encode (also
@@ -60,6 +66,7 @@ constexpr const char* USAGE =
     "  --iterations=N              Timed encode iterations (default 5).\n"
     "  --warmup=N                  Untimed warmup encode iterations (default 1).\n"
     "  --distance=F                cujpegxl Butteraugli distance (default 1.0).\n"
+    "  --pipeline-depth=N          cujpegxl frames in flight (default 4).\n"
     "  --quality=N                 nvJPEG quality 1..100 (default 90).\n"
     "  --device=N                  CUDA device ordinal (default 0).\n"
     "  --profile                   cujpegxl only: defaults iterations to 1 (unless\n"
@@ -75,6 +82,7 @@ struct Args {
     int iterations{5};
     int warmup{1};
     float distance{1.0f};
+    std::size_t pipeline_depth{4};
     int quality{90};
     int device{0};
     bool profile{false};
@@ -174,6 +182,12 @@ Args parse_args(int argc, char** argv) {
                 die("--distance requires a number");
             }
             a.distance = v;
+        } else if (starts_with(arg, "--pipeline-depth")) {
+            long v{0};
+            if (!parse_long(take_value(argc, argv, i, arg).c_str(), &v) || v < 1) {
+                die("--pipeline-depth requires a positive integer");
+            }
+            a.pipeline_depth = static_cast<std::size_t>(v);
         } else if (starts_with(arg, "--quality")) {
             long v{0};
             if (!parse_long(take_value(argc, argv, i, arg).c_str(), &v)) {
@@ -278,6 +292,7 @@ void print_header(const Args& a, std::size_t image_count) {
     std::printf("  warmup:     %d\n", a.warmup);
     if (a.codec == "cujpegxl") {
         std::printf("  distance:   %.2f\n", a.distance);
+        std::printf("  depth:      %zu\n", a.pipeline_depth);
     } else {
         std::printf("  quality:    %d\n", a.quality);
     }
@@ -358,77 +373,109 @@ int run(int argc, char** argv) {
 
     print_header(args, images.size());
 
-    const cujpegxl::bitstream::QuantParams qp{
-        args.codec == "cujpegxl" ? cujpegxl::quant_params_for_distance(args.distance)
-                                 : cujpegxl::bitstream::QuantParams{}};
-    std::vector<std::uint8_t> cujpegxl_out(
-        args.codec == "cujpegxl" ? cujpegxl::max_encoded_size(args.width, args.height) : 0);
-    std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
-    std::unique_ptr<cujpegxl::FrameEncoder> cujpegxl_encoder{};
-    if (args.codec == "cujpegxl") {
-        cujpegxl_encoder =
-            std::make_unique<cujpegxl::FrameEncoder>(cujpegxl::default_worker_threads());
-    }
-
-    std::unique_ptr<cujpegxl::tools::NvjpegEncoder> nvjpeg{};
-    if (args.codec == "nvjpeg") {
-        nvjpeg =
-            std::make_unique<cujpegxl::tools::NvjpegEncoder>(args.quality, args.width, args.height);
-    }
-
-    auto encode_cujpegxl = [&](const BenchImage& img) -> double {
-        cujpegxl_stages.clear();
-        const auto t0{std::chrono::steady_clock::now()};
-        const cujpegxl::EncodeResult result{cujpegxl_encoder->encode_nv12(
-            img.d_luma, args.width, img.d_chroma, args.width, args.width, args.height, args.device,
-            args.distance, qp, cujpegxl_out.data(), cujpegxl_out.size(),
-            args.profile ? &cujpegxl_stages : nullptr)};
-        const auto t1{std::chrono::steady_clock::now()};
-        if (result.status != cujpegxl::EncodeStatus::OK) {
-            die("cujpegxl encode failed");
-        }
-        return std::chrono::duration<double, std::micro>(t1 - t0).count();
-    };
-
-    auto encode_nvjpeg = [&](const BenchImage& img) -> double {
-        const auto t0{std::chrono::steady_clock::now()};
-        nvjpeg->encode(*img.planar);
-        const auto t1{std::chrono::steady_clock::now()};
-        return std::chrono::duration<double, std::micro>(t1 - t0).count();
-    };
-
-    auto encode_one = [&](const BenchImage& img) -> double {
-        const char* range_name{args.codec == "cujpegxl" ? "cujpegxl_encode" : "nvjpeg_encode"};
-        nvtxRangePushA(range_name);
-        const double us{args.codec == "cujpegxl" ? encode_cujpegxl(img) : encode_nvjpeg(img)};
-        nvtxRangePop();
-        return us;
-    };
-
-    // Warmup: run `warmup` encode iterations (alternating across images). The
-    // first encode after handle creation pays one-time CUDA context
-    // init, kernel JIT and nvjpeg state setup; one warmup encode is enough to
-    // reach steady state regardless of the image count.
-    for (int w{0}; w < args.warmup; ++w) {
-        encode_one(images[static_cast<std::size_t>(w) % images.size()]);
-    }
-    check_cuda(cudaDeviceSynchronize(), "post-warmup sync");
-
-    // Timed loop: alternate across images so cache effects are not correlated
-    // with a single input.
     std::vector<double> times_us{};
     times_us.reserve(static_cast<std::size_t>(args.iterations));
-    for (int i{0}; i < args.iterations; ++i) {
-        const BenchImage& img{images[static_cast<std::size_t>(i) % images.size()]};
-        check_cuda(cudaDeviceSynchronize(), "pre-iter sync");
-        const double us{encode_one(img)};
-        check_cuda(cudaDeviceSynchronize(), "post-iter sync");
-        times_us.push_back(us);
-        std::fprintf(stderr, "[%s] iter %d/%d: %.0f us\n", args.codec.c_str(), i + 1,
-                     args.iterations, us);
+    std::vector<double> latencies_us{};
+    std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
+    if (args.codec == "cujpegxl") {
+        const cujpegxl::bitstream::QuantParams qp{
+            cujpegxl::quant_params_for_distance(args.distance)};
+        const std::size_t depth{args.pipeline_depth};
+        cujpegxl::FrameEncoder encoder{args.device, cujpegxl::default_worker_threads(), depth};
+        // Per slot of frames in flight: output buffer, stage timings, NVTX range.
+        std::vector<std::vector<std::uint8_t>> outputs(
+            depth, std::vector<std::uint8_t>(cujpegxl::max_encoded_size(args.width, args.height)));
+        std::vector<std::vector<cujpegxl::StageTiming>> stages(depth);
+        std::vector<nvtxRangeId_t> ranges(depth);
+        const std::size_t num_frames{static_cast<std::size_t>(args.warmup + args.iterations)};
+        std::vector<std::chrono::steady_clock::time_point> submitted(num_frames);
+        std::chrono::steady_clock::time_point last_completion{};
+        std::size_t next_received{0};
+
+        // The first encode after handle creation pays one-time CUDA context
+        // init and kernel JIT; the warmup frames run before the timed ones in
+        // the same stream, so that the timed frames see a full pipeline.
+        const auto receive_one = [&] {
+            const cujpegxl::EncodeResult result{encoder.receive()};
+            const auto now{std::chrono::steady_clock::now()};
+            const std::size_t f{next_received};
+            ++next_received;
+            nvtxRangeEnd(ranges[f % depth]);
+            if (result.status != cujpegxl::EncodeStatus::OK) {
+                die("cujpegxl encode failed");
+            }
+            if (f >= static_cast<std::size_t>(args.warmup)) {
+                const double latency{
+                    std::chrono::duration<double, std::micro>(now - submitted[f]).count()};
+                times_us.push_back(
+                    std::chrono::duration<double, std::micro>(now - last_completion).count());
+                latencies_us.push_back(latency);
+            }
+            if (f + 1 == num_frames) {
+                cujpegxl_stages = stages[f % depth];
+            }
+            last_completion = now;
+        };
+        check_cuda(cudaDeviceSynchronize(), "pre-stream sync");
+        last_completion = std::chrono::steady_clock::now();
+        for (std::size_t f{0}; f < num_frames; ++f) {
+            if (encoder.in_flight() == depth) {
+                receive_one();
+            }
+            const BenchImage& img{images[f % images.size()]};
+            stages[f % depth].clear();
+            submitted[f] = std::chrono::steady_clock::now();
+            ranges[f % depth] = nvtxRangeStartA("cujpegxl_encode");
+            if (!encoder.submit(img.d_luma, args.width, img.d_chroma, args.width, args.width,
+                                args.height, args.distance, qp, outputs[f % depth].data(),
+                                outputs[f % depth].size(),
+                                args.profile ? &stages[f % depth] : nullptr)) {
+                die("cujpegxl submit failed");
+            }
+        }
+        while (encoder.in_flight() != 0) {
+            receive_one();
+        }
+        for (std::size_t i{0}; i < times_us.size(); ++i) {
+            std::fprintf(stderr, "[cujpegxl] iter %zu/%d: %.0f us (latency %.0f us)\n", i + 1,
+                         args.iterations, times_us[i], latencies_us[i]);
+        }
+    } else {
+        cujpegxl::tools::NvjpegEncoder nvjpeg{args.quality, args.width, args.height};
+        auto encode_one = [&](const BenchImage& img) -> double {
+            nvtxRangePushA("nvjpeg_encode");
+            const auto t0{std::chrono::steady_clock::now()};
+            nvjpeg.encode(*img.planar);
+            const auto t1{std::chrono::steady_clock::now()};
+            nvtxRangePop();
+            return std::chrono::duration<double, std::micro>(t1 - t0).count();
+        };
+
+        // Warmup: the first encode after handle creation pays one-time CUDA
+        // context init and nvjpeg state setup.
+        for (int w{0}; w < args.warmup; ++w) {
+            encode_one(images[static_cast<std::size_t>(w) % images.size()]);
+        }
+        check_cuda(cudaDeviceSynchronize(), "post-warmup sync");
+
+        // Timed loop: alternate across images so cache effects are not
+        // correlated with a single input.
+        for (int i{0}; i < args.iterations; ++i) {
+            const BenchImage& img{images[static_cast<std::size_t>(i) % images.size()]};
+            check_cuda(cudaDeviceSynchronize(), "pre-iter sync");
+            const double us{encode_one(img)};
+            check_cuda(cudaDeviceSynchronize(), "post-iter sync");
+            times_us.push_back(us);
+            std::fprintf(stderr, "[nvjpeg] iter %d/%d: %.0f us\n", i + 1, args.iterations, us);
+        }
     }
 
     print_stats(times_us, args.codec);
+    if (!latencies_us.empty()) {
+        std::printf("  latency:    mean %.0f   p50 %.0f   max %.0f\n", mean_of(latencies_us),
+                    percentile_of(latencies_us, 0.50),
+                    *std::max_element(latencies_us.begin(), latencies_us.end()));
+    }
 
     if (args.profile && args.codec == "cujpegxl" && !cujpegxl_stages.empty()) {
         std::printf("\ncujpegxl per-stage timings (last iteration):\n");

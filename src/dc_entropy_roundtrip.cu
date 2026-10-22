@@ -88,6 +88,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     std::uint32_t* d_mid_bits{nullptr};
     std::uint32_t* d_dc_hist{nullptr};
     std::uint32_t* d_am_hist{nullptr};
+    std::uint8_t* d_fb_scratch{nullptr};
     std::size_t* d_fb_pos{nullptr};
     std::size_t* d_fbc{nullptr};
     std::uint32_t* d_sizes{nullptr};
@@ -104,6 +105,8 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             upload(blob_mid_off, &d_mid_off) && upload(blob_mid_bits, &d_mid_bits) &&
             cudaMalloc(&d_dc_hist, code_span * sizeof(std::uint32_t)) == cudaSuccess &&
             cudaMalloc(&d_am_hist, code_span * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_fb_scratch, dc_first_blocks_scratch_bytes(width, height)) ==
+                cudaSuccess &&
             cudaMalloc(&d_fb_pos, num_groups * DC_FIRST_BLOCK_STRIDE * sizeof(std::size_t)) ==
                 cudaSuccess &&
             cudaMalloc(&d_fbc, num_groups * sizeof(std::size_t)) == cudaSuccess &&
@@ -115,7 +118,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
 
     ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist, nullptr);
     ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
-    ok = ok && dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc, nullptr);
+    ok = ok && dc_first_blocks(d_acs, width, height, d_fb_scratch, d_fb_pos, d_fbc, nullptr);
     ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                                 d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                                 d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_scratch, d_out,
@@ -170,6 +173,7 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     cudaFree(d_mid_bits);
     cudaFree(d_dc_hist);
     cudaFree(d_am_hist);
+    cudaFree(d_fb_scratch);
     cudaFree(d_fb_pos);
     cudaFree(d_fbc);
     cudaFree(d_sizes);

@@ -14,6 +14,10 @@
 
 namespace cujpegxl {
 
+// The device wrappers below enqueue all their work on `stream` and do not wait
+// for it, so that the DC path runs concurrently with the AC path and frames run
+// concurrently with each other.
+
 // Upper bound on the AC token alphabet: hybrid-uint tokens of 32-bit values stay
 // below this, so a fixed histogram of this size covers every symbol.
 constexpr std::size_t AC_HISTOGRAM_SIZE = 256;
@@ -44,7 +48,7 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 // (integer atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* histogram, std::uint64_t* item_sizes);
+                        std::uint32_t* histogram, std::uint64_t* item_sizes, cudaStream_t stream);
 
 // Upper bounds of a frame's AC tokens and of the 64-bit words of their raw bits
 // in the ac_token_layout.
@@ -54,6 +58,8 @@ std::size_t ac_max_raw_words(std::size_t width, std::size_t height);
 // Entries of the ac_token_layout `chunk_base` buffer.
 std::size_t ac_token_chunks(std::size_t width, std::size_t height);
 
+std::size_t ac_token_layout_scratch_bytes(std::size_t width, std::size_t height);
+
 // Phase 2: the AC groups' token layout from the phase-1 `item_sizes`. Each AC
 // group (one AcGroup section, raster order) is one token stream: its tokens in
 // decoder order, each an entry cluster << bitstream::TOKEN_CLUSTER_SHIFT |
@@ -62,9 +68,11 @@ std::size_t ac_token_chunks(std::size_t width, std::size_t height);
 // receives token_offset[num_groups + 1] (each group's first token, then the
 // total), raw_offset[num_groups + 1] (each group's first raw word, then the
 // total) and raw_bits[num_groups]. `chunk_base` (device, ac_token_chunks)
-// receives the per-chunk offsets ac_pack_tokens reads. Deterministic.
+// receives the per-chunk offsets ac_pack_tokens reads. `scratch` (device) holds
+// ac_token_layout_scratch_bytes(width, height) bytes. Deterministic.
 bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::size_t height,
-                     std::uint64_t* chunk_base, std::uint32_t* layout);
+                     std::uint8_t* scratch, std::uint64_t* chunk_base, std::uint32_t* layout,
+                     cudaStream_t stream);
 
 // Phase 3: writes the token streams of AC groups [group_begin, group_end) at
 // their `layout` positions: entries into `entries` (device uint16) and raw bits
@@ -74,7 +82,7 @@ bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::i
                     const std::int32_t* nz_exact, std::size_t width, std::size_t height,
                     const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
                     const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
-                    std::uint16_t* entries, std::uint64_t* raw);
+                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.
@@ -83,10 +91,6 @@ std::size_t dc_num_groups(std::size_t width, std::size_t height);
 // Per-group slot stride of the dc_first_blocks position lists.
 constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
 
-// The DcGroup wrappers below (dc_first_blocks, dc_build_histograms,
-// acmeta_build_histograms, dc_encode_groups) enqueue all their work on `stream`,
-// so the DC path can run concurrently with the AC path.
-
 // Per-DcGroup first-blocks (blocks whose transform is not ACS_COVERED). `acs` is
 // the per-8x8 transform signal (nullptr = all 8x8, so every block is one).
 // `positions` (device, dc_num_groups * DC_FIRST_BLOCK_STRIDE std::size_t)
@@ -94,9 +98,13 @@ constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
 // g * DC_FIRST_BLOCK_STRIDE, and `counts` (device, dc_num_groups std::size_t)
 // their number, which is the AcMetadata `count` field. dc_encode_groups maps an
 // ACS/QF column (a first-block ordinal) back to its block through these lists.
+// `scratch` (device) holds dc_first_blocks_scratch_bytes(width, height) bytes.
 // Deterministic. Returns false on a CUDA error.
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::size_t* positions, std::size_t* counts, cudaStream_t stream);
+                     std::uint8_t* scratch, std::size_t* positions, std::size_t* counts,
+                     cudaStream_t stream);
+
+std::size_t dc_first_blocks_scratch_bytes(std::size_t width, std::size_t height);
 
 // Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
 // Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Encodes one raw NV12 frame to a .jxl file via cujpegxl::encode_nv12.
+// Encodes one raw NV12 frame to a .jxl file via cujpegxl::FrameEncoder.
 //
 //   encode_to_file --dims=WxH --distance=F [--device=N] --output=OUT in.nv12
 
@@ -104,12 +104,15 @@ int main(int argc, char** argv) {
                "H2D chroma");
 
     std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
-    cujpegxl::FrameEncoder encoder{cujpegxl::default_worker_threads()};
-    const cujpegxl::EncodeResult result{encoder.encode_nv12(
-        d_luma, width, d_chroma, width, width, height, device, distance,
-        cujpegxl::quant_params_for_distance(distance), out_file.data(), out_file.size())};
+    cujpegxl::FrameEncoder encoder{device, cujpegxl::default_worker_threads(), 1};
+    if (!encoder.submit(d_luma, width, d_chroma, width, width, height, distance,
+                        cujpegxl::quant_params_for_distance(distance), out_file.data(),
+                        out_file.size())) {
+        die("submit failed");
+    }
+    const cujpegxl::EncodeResult result{encoder.receive()};
     if (result.status != cujpegxl::EncodeStatus::OK) {
-        die("encode_nv12 failed");
+        die("encode failed");
     }
 
     std::ofstream out{output, std::ios::binary | std::ios::trunc};

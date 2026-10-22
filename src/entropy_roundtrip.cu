@@ -100,6 +100,7 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     std::int32_t* d_nz_grid{nullptr};
     std::int32_t* d_nz_exact{nullptr};
     std::uint64_t* d_item_sizes{nullptr};
+    std::uint8_t* d_layout_scratch{nullptr};
     std::uint64_t* d_chunk_base{nullptr};
     std::uint32_t* d_layout{nullptr};
     std::uint16_t* d_entries{nullptr};
@@ -109,6 +110,8 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
             cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
             upload(nz.grid, &d_nz_grid) && upload(nz.exact, &d_nz_exact) &&
             cudaMalloc(&d_item_sizes, nz.exact.size() * sizeof(std::uint64_t)) == cudaSuccess &&
+            cudaMalloc(&d_layout_scratch, ac_token_layout_scratch_bytes(width, height)) ==
+                cudaSuccess &&
             cudaMalloc(&d_chunk_base, ac_token_chunks(width, height) * sizeof(std::uint64_t)) ==
                 cudaSuccess &&
             cudaMalloc(&d_layout, layout_words * sizeof(std::uint32_t)) == cudaSuccess &&
@@ -120,14 +123,15 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
                 cudaSuccess};
 
     ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist,
-                                  d_item_sizes);
-    ok = ok && ac_token_layout(d_item_sizes, width, height, d_chunk_base, d_layout);
+                                  d_item_sizes, nullptr);
+    ok = ok && ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base,
+                               d_layout, nullptr);
     for (std::size_t b{0}; ok && b < batches; ++b) {
         const std::size_t begin{b * num_groups / batches};
         const std::size_t end{(b + 1) * num_groups / batches};
         ok = begin == end ||
              ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_item_sizes,
-                            d_chunk_base, d_layout, begin, end, d_entries, d_raw);
+                            d_chunk_base, d_layout, begin, end, d_entries, d_raw, nullptr);
     }
     ok = ok && download(d_hist, AC_HIST_SPAN, out.histogram) &&
          download(d_layout, layout_words, out.layout) &&
@@ -140,6 +144,7 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     cudaFree(d_nz_grid);
     cudaFree(d_nz_exact);
     cudaFree(d_item_sizes);
+    cudaFree(d_layout_scratch);
     cudaFree(d_chunk_base);
     cudaFree(d_layout);
     cudaFree(d_entries);

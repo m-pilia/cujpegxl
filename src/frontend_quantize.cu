@@ -69,7 +69,9 @@ __global__ void build_llf_dc_terms_kernel(LlfDcTerms* __restrict__ table) {
 
 // Built by a device kernel so that the weights carry the device math library's
 // FP64 cos/sqrt, which may round differently from the host's. Lazily
-// initialized on the device active at first use (the single target device).
+// initialized on the device active at first use (the single target device). The
+// kernel runs on the legacy default stream; the wait orders it before the
+// kernels of the non-blocking streams.
 const LlfDcTerms* llf_dc_terms_device() {
     static const LlfDcTerms* const table{[]() -> const LlfDcTerms* {
         LlfDcTerms* t{nullptr};
@@ -77,7 +79,7 @@ const LlfDcTerms* llf_dc_terms_device() {
             return nullptr;
         }
         build_llf_dc_terms_kernel<<<1, LLF_DC_TERM_ENTRIES>>>(t);
-        if (cudaGetLastError() != cudaSuccess) {
+        if (cudaGetLastError() != cudaSuccess || cudaStreamSynchronize(nullptr) != cudaSuccess) {
             cudaFree(t);
             return nullptr;
         }
@@ -441,7 +443,7 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
                        const std::int32_t* quant_field, std::size_t width, std::size_t height,
                        float distance, std::int8_t* ytox_map, std::int8_t* ytob_map,
                        std::int16_t* ac, std::int32_t* dc, std::int32_t* nz_exact,
-                       std::int32_t* nz_grid) {
+                       std::int32_t* nz_grid, cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const QuantCalibration cal{calibrate_quant(distance)};
@@ -453,7 +455,7 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
     }
     const std::uint32_t tiles_x{static_cast<std::uint32_t>(ceil_div(bw, TILE_SIDE))};
     const std::uint32_t tiles{tiles_x * static_cast<std::uint32_t>(ceil_div(bh, TILE_SIDE))};
-    quantize_tile_kernel<<<tiles, QUANT_THREADS>>>(
+    quantize_tile_kernel<<<tiles, QUANT_THREADS, 0, stream>>>(
         coeffs, acs, quant_field, dc_terms, static_cast<std::uint32_t>(bw),
         static_cast<std::uint32_t>(bh), tiles_x, gsf, dc_scale, ytox_map, ytob_map, ac, dc,
         nz_exact, nz_grid);

@@ -141,7 +141,7 @@ std::vector<T> download(const T* device, std::size_t count) {
     cudaMalloc(&d_nz_grid, 3 * NBLK * sizeof(std::int32_t));
 
     const bool ok{quantize_residual(d_coeffs, d_acs, d_qf, WIDTH, HEIGHT, 1.0f, d_mx, d_mb, d_ac,
-                                    d_dc, d_nz_exact, d_nz_grid)};
+                                    d_dc, d_nz_exact, d_nz_grid, nullptr)};
     out.ytox_map = download(d_mx, CMW * CMH);
     out.ytob_map = download(d_mb, CMW * CMH);
     out.ac = download(d_ac, 3 * CPLANE);

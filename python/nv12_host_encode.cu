@@ -33,12 +33,14 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
             cudaMemcpy(d_chroma, chroma, chroma_bytes, cudaMemcpyHostToDevice) == cudaSuccess};
     if (ok) {
         out.resize(max_encoded_size(width, height));
-        FrameEncoder encoder{default_worker_threads()};
-        const EncodeResult result{encoder.encode_nv12(
-            d_luma, width, d_chroma, width, width, height, device_ordinal, distance,
-            quant_params_for_distance(distance), out.data(), out.size(), stats)};
-        ok = result.status == EncodeStatus::OK;
-        out.resize(result.file_size);
+        FrameEncoder encoder{device_ordinal, default_worker_threads(), 1};
+        ok = encoder.submit(d_luma, width, d_chroma, width, width, height, distance,
+                            quant_params_for_distance(distance), out.data(), out.size(), stats);
+        if (ok) {
+            const EncodeResult result{encoder.receive()};
+            ok = result.status == EncodeStatus::OK;
+            out.resize(result.file_size);
+        }
     }
     cudaFree(d_luma);
     cudaFree(d_chroma);

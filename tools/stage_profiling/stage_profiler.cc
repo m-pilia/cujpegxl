@@ -190,6 +190,8 @@ int main(int argc, char** argv) {
     const QuantCalibration cal{calibrate_quant(args.distance)};
     const bitstream::QuantParams qp{cal.global_scale, cal.quant_dc};
 
+    std::uint8_t* d_fb_scratch{
+        device_alloc<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height))};
     std::size_t* d_fb_pos{device_alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
 
@@ -197,6 +199,8 @@ int main(int argc, char** argv) {
     constexpr std::size_t HIST_WORDS{AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE};
     const std::size_t layout_words{3 * num_ac + 2};
     std::uint64_t* d_item_sizes{device_alloc<std::uint64_t>(3 * blocks)};
+    std::uint8_t* d_layout_scratch{
+        device_alloc<std::uint8_t>(ac_token_layout_scratch_bytes(width, height))};
     std::uint64_t* d_chunk_base{device_alloc<std::uint64_t>(ac_token_chunks(width, height))};
     std::uint32_t* d_layout{device_alloc<std::uint32_t>(layout_words)};
     std::uint16_t* d_entries{device_alloc<std::uint16_t>(ac_max_tokens(width, height))};
@@ -259,27 +263,29 @@ int main(int argc, char** argv) {
         cudaMemcpy(d_luma, frame.data(), ysize, cudaMemcpyHostToDevice);
         cudaMemcpy(d_chroma, frame.data() + ysize, ysize / 2, cudaMemcpyHostToDevice);
 
-        // Front-end sub-stages, in FrameEncoder::encode_nv12 order.
+        // Front-end sub-stages, in FrameEncoder order.
         timed(s_fe, record, [&] {
-            const ChromaTexture chroma{d_chroma, width, width, height};
+            const ChromaTexture chroma{d_chroma, width, width, height, nullptr};
             encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
-                            d_qf);
+                            d_qf, nullptr);
         });
         timed(s_qz, record, [&] {
             quantize_residual(d_coeffs, d_acs, d_qf, width, height, args.distance, d_mx, d_mb,
-                              d_ac16, d_dc32, d_nz_exact, d_nz_grid);
+                              d_ac16, d_dc32, d_nz_exact, d_nz_grid, nullptr);
         });
 
         // Entropy sub-stages, serialized.
         timed(s_ach, record, [&] {
             ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist,
-                               d_item_sizes);
+                               d_item_sizes, nullptr);
         });
-        timed(s_acl, record,
-              [&] { ac_token_layout(d_item_sizes, width, height, d_chunk_base, d_layout); });
+        timed(s_acl, record, [&] {
+            ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
+                            nullptr);
+        });
         timed(s_acp, record, [&] {
             ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_item_sizes,
-                           d_chunk_base, d_layout, 0, num_ac, d_entries, d_raw);
+                           d_chunk_base, d_layout, 0, num_ac, d_entries, d_raw, nullptr);
         });
         timed(s_act, record, [&] {
             cudaMemcpy(h_ac_meta, d_ac_hist, HIST_WORDS * sizeof(std::uint32_t),
@@ -296,8 +302,9 @@ int main(int argc, char** argv) {
         timed(s_amh, record, [&] {
             acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
         });
-        timed(s_fbc, record,
-              [&] { dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc, nullptr); });
+        timed(s_fbc, record, [&] {
+            dc_first_blocks(d_acs, width, height, d_fb_scratch, d_fb_pos, d_fbc, nullptr);
+        });
         timed(s_dcb, record, [&] {
             build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                         d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,

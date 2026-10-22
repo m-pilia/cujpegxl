@@ -6,11 +6,15 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <numeric>
+#include <optional>
 #include <thread>
 
 #include <cuda_runtime.h>
@@ -40,82 +44,21 @@ constexpr EncodeResult ENCODE_FAILED{EncodeStatus::FAILED, 0};
 // the host codes a batch while the device packs and copies the next ones.
 constexpr std::size_t AC_BATCHES{4};
 
+constexpr std::size_t HIST_WORDS{AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE};
+
+constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
+
 double us_since(Clock::time_point start) {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
 
-// Retain freed blocks in the device's default stream-ordered memory pool instead
-// of returning them to the driver, so the per-frame scratch (the ~300 MB
-// frontend planes and the entropy/assembly bodies) is reused across encodes
-// rather than re-allocated every frame.
-void retain_default_mempool(int device) {
-    cudaMemPool_t pool{};
-    if (cudaDeviceGetDefaultMemPool(&pool, device) != cudaSuccess) {
-        return;
-    }
-    std::uint64_t threshold{UINT64_MAX};
-    cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold);
+std::size_t batch_begin(std::size_t num_ac, std::size_t b) {
+    return b * num_ac / AC_BATCHES;
 }
 
-// Forks `side` off the legacy default stream: work enqueued on `side` starts
-// after the default stream's work enqueued so far, and join() makes the
-// default stream wait for `side`'s work. Destruction joins as well, so on an
-// early return the DeviceScope frees (ordered on the default stream) cannot
-// overtake work still pending on `side`.
-class StreamFork {
-public:
-    explicit StreamFork(cudaStream_t side) : side_{side} {
-        forked_ = cudaEventCreateWithFlags(&event_, cudaEventDisableTiming) == cudaSuccess &&
-                  cudaEventRecord(event_, 0) == cudaSuccess &&
-                  cudaStreamWaitEvent(side_, event_, 0) == cudaSuccess;
-    }
-    StreamFork(const StreamFork&) = delete;
-    StreamFork& operator=(const StreamFork&) = delete;
-    ~StreamFork() {
-        if (forked_ && !joined_ && !join()) {
-            cudaStreamSynchronize(side_);
-        }
-        if (event_ != nullptr) {
-            cudaEventDestroy(event_);
-        }
-    }
-
-    bool forked() const { return forked_; }
-
-    bool join() {
-        joined_ = cudaEventRecord(event_, side_) == cudaSuccess &&
-                  cudaStreamWaitEvent(0, event_, 0) == cudaSuccess;
-        return joined_;
-    }
-
-private:
-    cudaStream_t side_{nullptr};
-    cudaEvent_t event_{nullptr};
-    bool forked_{false};
-    bool joined_{false};
-};
-
-// A device allocation freed when the encode returns, keeping the orchestrator's
-// many scratch buffers out of the happy-path control flow. Backed by the
-// stream-ordered pool allocator so the freed blocks are recycled across frames.
-struct DeviceScope {
-    std::vector<void*> ptrs{};
-    template <typename T>
-    T* alloc(std::size_t count) {
-        void* p{nullptr};
-        if (cudaMallocAsync(&p, count * sizeof(T), 0) != cudaSuccess) {
-            return nullptr;
-        }
-        ptrs.push_back(p);
-        return static_cast<T*>(p);
-    }
-    void track(void* p) { ptrs.push_back(p); }
-    ~DeviceScope() {
-        for (void* p : ptrs) {
-            cudaFreeAsync(p, 0);
-        }
-    }
-};
+std::size_t aligned_chroma_pitch(std::size_t width) {
+    return (width + 511) & ~std::size_t{511};
+}
 
 // Grow-only page-locked host buffer of `T`, kept across frames.
 template <typename T>
@@ -159,6 +102,247 @@ private:
     std::size_t capacity_{0};
 };
 
+// Grow-only device allocation, kept across frames. Persistent scratch keeps the
+// frames in flight independent: per-frame stream-ordered allocations would let
+// the pool hand a block freed by one frame's stream to another's, ordering the
+// two.
+class DeviceArena {
+public:
+    DeviceArena() = default;
+    DeviceArena(const DeviceArena&) = delete;
+    DeviceArena& operator=(const DeviceArena&) = delete;
+    ~DeviceArena() {
+        if (data_ != nullptr) {
+            cudaFree(data_);
+        }
+    }
+
+    // Makes room for `bytes`; the contents are not kept.
+    bool reserve(std::size_t bytes) {
+        if (bytes <= capacity_) {
+            return true;
+        }
+        if (data_ != nullptr) {
+            cudaFree(data_);
+            data_ = nullptr;
+            capacity_ = 0;
+        }
+        void* p{nullptr};
+        if (cudaMalloc(&p, bytes) != cudaSuccess) {
+            return false;
+        }
+        data_ = static_cast<std::uint8_t*>(p);
+        capacity_ = bytes;
+        return true;
+    }
+
+    std::uint8_t* data() const { return data_; }
+
+private:
+    std::uint8_t* data_{nullptr};
+    std::size_t capacity_{0};
+};
+
+// Hands out consecutive aligned ranges from address `base`; with base 0 it only
+// measures their total size.
+class ArenaCarver {
+public:
+    explicit ArenaCarver(std::uintptr_t base) : base_{base} {}
+
+    template <typename T>
+    T* take(std::size_t count) {
+        constexpr std::size_t ALIGNMENT{256};
+        offset_ = (offset_ + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+        T* const p{reinterpret_cast<T*>(base_ + offset_)};
+        offset_ += count * sizeof(T);
+        return p;
+    }
+
+    std::size_t size() const { return offset_; }
+
+private:
+    std::uintptr_t base_;
+    std::size_t offset_{0};
+};
+
+struct FrameBuffers {
+    std::uint8_t* aligned_chroma{nullptr};
+    __half* coeffs{nullptr};
+    std::int8_t* acs{nullptr};
+    std::int8_t* ytox_map{nullptr};
+    std::int8_t* ytob_map{nullptr};
+    std::int32_t* quant_field{nullptr};
+    std::int16_t* ac{nullptr};
+    std::int32_t* dc{nullptr};
+    std::int32_t* nz_exact{nullptr};
+    std::int32_t* nz_grid{nullptr};
+    std::uint32_t* ac_hist{nullptr};
+    std::uint64_t* item_sizes{nullptr};
+    std::uint8_t* layout_scratch{nullptr};
+    std::uint64_t* chunk_base{nullptr};
+    std::uint32_t* layout{nullptr};
+    std::uint16_t* entries{nullptr};
+    std::uint64_t* raw{nullptr};
+    std::uint32_t* dc_hist{nullptr};
+    std::uint32_t* am_hist{nullptr};
+    std::uint8_t* fb_scratch{nullptr};
+    std::size_t* fb_pos{nullptr};
+    std::size_t* fbc{nullptr};
+    std::uint8_t* dc_depth{nullptr};
+    std::uint16_t* dc_bits{nullptr};
+    std::uint8_t* am_depth{nullptr};
+    std::uint16_t* am_bits{nullptr};
+    std::uint8_t* pre{nullptr};
+    std::uint32_t* pre_off{nullptr};
+    std::uint32_t* pre_bits{nullptr};
+    std::uint8_t* mid{nullptr};
+    std::uint32_t* mid_off{nullptr};
+    std::uint32_t* mid_bits{nullptr};
+    std::uint8_t* dc_body{nullptr};
+    std::uint32_t* dc_sizes{nullptr};
+    std::uint32_t* dc_offsets{nullptr};
+    std::uint8_t* dc_scratch{nullptr};
+};
+
+FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::size_t height) {
+    const std::size_t blocks{(width / 8) * (height / 8)};
+    const std::size_t color_tiles{(((width / 8) + 7) / 8) * (((height / 8) + 7) / 8)};
+    const std::size_t num_ac{bitstream::ac_group_count(width, height)};
+    const std::size_t num_dc{bitstream::dc_group_count(width, height)};
+    const std::size_t codes{num_dc * bitstream::HISTOGRAM_STRIDE};
+    return FrameBuffers{
+        .aligned_chroma = carver.take<std::uint8_t>(aligned_chroma_pitch(width) * (height / 2)),
+        .coeffs = carver.take<__half>(3 * blocks * COEFFS_PER_BLOCK),
+        .acs = carver.take<std::int8_t>(blocks),
+        .ytox_map = carver.take<std::int8_t>(color_tiles),
+        .ytob_map = carver.take<std::int8_t>(color_tiles),
+        .quant_field = carver.take<std::int32_t>(blocks),
+        .ac = carver.take<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK),
+        .dc = carver.take<std::int32_t>(3 * blocks),
+        .nz_exact = carver.take<std::int32_t>(3 * blocks),
+        .nz_grid = carver.take<std::int32_t>(3 * blocks),
+        .ac_hist = carver.take<std::uint32_t>(HIST_WORDS),
+        .item_sizes = carver.take<std::uint64_t>(3 * blocks),
+        .layout_scratch = carver.take<std::uint8_t>(ac_token_layout_scratch_bytes(width, height)),
+        .chunk_base = carver.take<std::uint64_t>(ac_token_chunks(width, height)),
+        .layout = carver.take<std::uint32_t>(3 * num_ac + 2),
+        .entries = carver.take<std::uint16_t>(ac_max_tokens(width, height)),
+        .raw = carver.take<std::uint64_t>(ac_max_raw_words(width, height)),
+        .dc_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
+        .am_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
+        .fb_scratch = carver.take<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height)),
+        .fb_pos = carver.take<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE),
+        .fbc = carver.take<std::size_t>(num_dc),
+        .dc_depth = carver.take<std::uint8_t>(codes),
+        .dc_bits = carver.take<std::uint16_t>(codes),
+        .am_depth = carver.take<std::uint8_t>(codes),
+        .am_bits = carver.take<std::uint16_t>(codes),
+        .pre = carver.take<std::uint8_t>(num_dc * DC_BLOB_STRIDE),
+        .pre_off = carver.take<std::uint32_t>(num_dc),
+        .pre_bits = carver.take<std::uint32_t>(num_dc),
+        .mid = carver.take<std::uint8_t>(num_dc * DC_BLOB_STRIDE),
+        .mid_off = carver.take<std::uint32_t>(num_dc),
+        .mid_bits = carver.take<std::uint32_t>(num_dc),
+        .dc_body = carver.take<std::uint8_t>(section_capacities(width, height).dc_groups),
+        .dc_sizes = carver.take<std::uint32_t>(num_dc),
+        .dc_offsets = carver.take<std::uint32_t>(num_dc),
+        .dc_scratch = carver.take<std::uint8_t>(dc_encode_scratch_bytes(width, height)),
+    };
+}
+
+// A frame in flight: its parameters and result, and the resources it uses. The
+// device work runs on `stream`, with the DC path on `dc_stream` and the AC
+// token copies on `copy_stream`.
+struct Slot {
+    Slot() = default;
+    Slot(const Slot&) = delete;
+    Slot& operator=(const Slot&) = delete;
+    ~Slot() {
+        chroma.reset();
+        release();
+    }
+
+    // Creates the streams and events on the current device, once.
+    bool init();
+    void release();
+
+    bool ready{false};
+    cudaStream_t stream{nullptr};
+    cudaStream_t dc_stream{nullptr};
+    cudaStream_t copy_stream{nullptr};
+    cudaEvent_t forked{nullptr};
+    cudaEvent_t layout_copied{nullptr};
+    cudaEvent_t dc_sizes_copied{nullptr};
+    cudaEvent_t dc_body_copied{nullptr};
+    std::array<cudaEvent_t, AC_BATCHES> batch_packed{};
+    std::array<cudaEvent_t, AC_BATCHES> batch_copied{};
+
+    DeviceArena arena;
+    FrameBuffers device{};
+    // The AC cluster histograms followed by the AC token layout.
+    PinnedBuffer<std::uint32_t> ac_meta;
+    PinnedBuffer<std::uint32_t> dc_sizes;
+    PinnedBuffer<std::uint8_t> dc_body;
+    PinnedBuffer<std::uint16_t> entries;
+    PinnedBuffer<std::uint64_t> raw;
+    std::optional<ChromaTexture> chroma;
+
+    std::size_t width{0};
+    std::size_t height{0};
+    bitstream::QuantParams qp{};
+    std::uint8_t* out_file{nullptr};
+    std::size_t out_capacity{0};
+    std::vector<StageTiming>* stats{nullptr};
+    Clock::time_point entropy_start{};
+    Clock::time_point layout_landed{};
+    bool copies_started{false};
+    EncodeResult result{};
+};
+
+bool Slot::init() {
+    if (ready) {
+        return true;
+    }
+    release();
+    const auto create_event = [](cudaEvent_t& e) {
+        return cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
+    };
+    // Non-blocking, so that the slots' streams do not synchronize with each other
+    // through the legacy default stream.
+    ready = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
+            cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
+            cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess &&
+            create_event(forked) && create_event(layout_copied) && create_event(dc_sizes_copied) &&
+            create_event(dc_body_copied);
+    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
+        ready = ready && create_event(batch_packed[b]) && create_event(batch_copied[b]);
+    }
+    return ready;
+}
+
+void Slot::release() {
+    const auto destroy_event = [](cudaEvent_t& e) {
+        if (e != nullptr) {
+            cudaEventDestroy(e);
+            e = nullptr;
+        }
+    };
+    for (cudaEvent_t* e : {&forked, &layout_copied, &dc_sizes_copied, &dc_body_copied}) {
+        destroy_event(*e);
+    }
+    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
+        destroy_event(batch_packed[b]);
+        destroy_event(batch_copied[b]);
+    }
+    for (cudaStream_t* s : {&stream, &dc_stream, &copy_stream}) {
+        if (*s != nullptr) {
+            cudaStreamDestroy(*s);
+            *s = nullptr;
+        }
+    }
+    ready = false;
+}
+
 enum class Placement : std::uint8_t { PENDING, PLACE, SKIP };
 
 }  // namespace
@@ -189,45 +373,39 @@ bitstream::QuantParams quant_params_for_distance(float distance) {
     return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
 }
 
+// Frame k uses slot k % depth. The caller thread enqueues a frame's device work
+// in submit(); the driver thread then runs each frame's host stage in order, on
+// the worker pool as its thread 0.
 struct FrameEncoder::State {
-    explicit State(std::size_t worker_threads) : pool{worker_threads} {}
+    State(int device_ordinal, std::size_t worker_threads, std::size_t pipeline_depth)
+        : device{device_ordinal},
+          depth{pipeline_depth},
+          slots{std::make_unique<Slot[]>(pipeline_depth)},
+          pool{worker_threads},
+          driver{[this] { drive(); }} {}
     State(const State&) = delete;
     State& operator=(const State&) = delete;
-    ~State() { release_device_objects(); }
+    ~State() {
+        {
+            const std::lock_guard<std::mutex> lock{mutex};
+            stop = true;
+        }
+        submitted_cv.notify_one();
+        driver.join();
+    }
 
-    bool bind_device(int device_ordinal);
-    void release_device_objects();
+    bool enqueue_frame(Slot& slot, const std::uint8_t* luma, std::size_t luma_pitch,
+                       const std::uint8_t* chroma, std::size_t chroma_pitch, float distance);
+    void drive();
+    EncodeResult code_frame(Slot& slot, std::uint64_t frame);
+    bool start_copies(Slot& slot, bool wait);
+    void start_next_copies(std::uint64_t frame);
+    bool release_batches(Slot& slot, bitstream::StreamQueue& queue);
 
-    EncodeResult encode_frame(const std::int16_t* ac_device, const std::int32_t* dc_device,
-                              const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                              const std::int8_t* acs, const std::int8_t* ytox_map,
-                              const std::int8_t* ytob_map, std::size_t width, std::size_t height,
-                              const bitstream::QuantParams& qp, const std::int32_t* quant_field,
-                              std::uint8_t* out_file, std::size_t out_capacity,
-                              std::vector<StageTiming>* stats);
-
-    // Releases the AC groups to `queue` batch by batch as their copies land,
-    // each time all the batches landed so far, longest groups first. False on a
-    // CUDA error.
-    template <typename BatchBegin>
-    bool release_batches(bitstream::StreamQueue& queue, BatchBegin batch_begin);
-
+    const int device;
+    const std::size_t depth;
+    const std::unique_ptr<Slot[]> slots;
     WorkerPool pool;
-    int device{-1};
-    cudaStream_t dc_stream{nullptr};
-    cudaStream_t copy_stream{nullptr};
-    cudaEvent_t layout_copied{nullptr};
-    cudaEvent_t dc_sizes_copied{nullptr};
-    cudaEvent_t dc_body_copied{nullptr};
-    std::array<cudaEvent_t, AC_BATCHES> batch_packed{};
-    std::array<cudaEvent_t, AC_BATCHES> batch_copied{};
-
-    // The AC cluster histograms followed by the AC token layout.
-    PinnedBuffer<std::uint32_t> ac_meta;
-    PinnedBuffer<std::uint32_t> dc_sizes;
-    PinnedBuffer<std::uint8_t> dc_body;
-    PinnedBuffer<std::uint16_t> entries;
-    PinnedBuffer<std::uint64_t> raw;
 
     bitstream::TokenCode code;
     std::vector<bitstream::TokenStream> streams;
@@ -237,64 +415,209 @@ struct FrameEncoder::State {
     std::vector<std::uint64_t> slot_words;
     std::vector<std::size_t> ac_offsets;
     std::vector<std::uint32_t> section_sizes;
+
+    // Frame counts since construction; submitted and received change only on
+    // the caller thread, completed only on the driver thread.
+    std::mutex mutex;
+    std::condition_variable submitted_cv;
+    std::condition_variable completed_cv;
+    std::uint64_t submitted{0};
+    std::uint64_t completed{0};
+    std::uint64_t received{0};
+    bool stop{false};
+    std::thread driver;
 };
 
-bool FrameEncoder::State::bind_device(int device_ordinal) {
-    if (device == device_ordinal) {
-        return true;
-    }
-    release_device_objects();
-    const auto create_event = [](cudaEvent_t& e) {
-        return cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
-    };
-    bool ok{cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            create_event(layout_copied) && create_event(dc_sizes_copied) &&
-            create_event(dc_body_copied)};
-    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
-        ok = ok && create_event(batch_packed[b]) && create_event(batch_copied[b]);
-    }
-    if (!ok) {
-        release_device_objects();
+bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
+                                        std::size_t luma_pitch, const std::uint8_t* chroma,
+                                        std::size_t chroma_pitch, float distance) {
+    const std::size_t width{slot.width};
+    const std::size_t height{slot.height};
+    const std::size_t num_ac{bitstream::ac_group_count(width, height)};
+    const std::size_t num_dc{bitstream::dc_group_count(width, height)};
+    const std::size_t layout_words{3 * num_ac + 2};
+
+    ArenaCarver measure{0};
+    carve_frame_buffers(measure, width, height);
+    if (!slot.arena.reserve(measure.size()) || !slot.ac_meta.reserve(HIST_WORDS + layout_words) ||
+        !slot.dc_sizes.reserve(num_dc)) {
         return false;
     }
-    device = device_ordinal;
+    ArenaCarver carver{reinterpret_cast<std::uintptr_t>(slot.arena.data())};
+    slot.device = carve_frame_buffers(carver, width, height);
+    const FrameBuffers& d{slot.device};
+
+    const std::uint8_t* chroma_src{chroma};
+    std::size_t chroma_src_pitch{chroma_pitch};
+    if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
+        chroma_src_pitch = aligned_chroma_pitch(width);
+        if (cudaMemcpy2DAsync(d.aligned_chroma, chroma_src_pitch, chroma, chroma_pitch, width,
+                              height / 2, cudaMemcpyDeviceToDevice, slot.stream) != cudaSuccess) {
+            return false;
+        }
+        chroma_src = d.aligned_chroma;
+    }
+    slot.chroma.emplace(chroma_src, chroma_src_pitch, width, height, slot.stream);
+
+    const Clock::time_point frontend_start{Clock::now()};
+    if (!encode_frontend(luma, luma_pitch, *slot.chroma, width, height, distance, d.coeffs, d.acs,
+                         d.quant_field, slot.stream) ||
+        !quantize_residual(d.coeffs, d.acs, d.quant_field, width, height, distance, d.ytox_map,
+                           d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, slot.stream)) {
+        return false;
+    }
+    if (slot.stats != nullptr) {
+        // Instrumentation-only wait, so that the front end's wall time is its own.
+        if (cudaStreamSynchronize(slot.stream) != cudaSuccess) {
+            return false;
+        }
+        slot.stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
+    }
+    slot.entropy_start = Clock::now();
+
+    // The DC path (DcGroup histograms, prefix codes and sections) runs on its own
+    // stream alongside the AC path.
+    if (cudaEventRecord(slot.forked, slot.stream) != cudaSuccess ||
+        cudaStreamWaitEvent(slot.dc_stream, slot.forked, 0) != cudaSuccess ||
+        !dc_build_histograms(d.dc, width, height, d.dc_hist, slot.dc_stream) ||
+        !acmeta_build_histograms(d.quant_field, d.acs, d.ytox_map, d.ytob_map, width, height,
+                                 d.am_hist, slot.dc_stream) ||
+        !dc_first_blocks(d.acs, width, height, d.fb_scratch, d.fb_pos, d.fbc, slot.dc_stream) ||
+        !build_dc_group_blobs_device(width, height, d.dc_hist, d.am_hist, d.fbc, d.dc_depth,
+                                     d.dc_bits, d.am_depth, d.am_bits, d.pre, d.pre_off, d.pre_bits,
+                                     d.mid, d.mid_off, d.mid_bits, slot.dc_stream) ||
+        !dc_encode_groups(d.dc, width, height, d.quant_field, d.acs, d.ytox_map, d.ytob_map,
+                          d.fb_pos, d.fbc, d.dc_depth, d.dc_bits, d.am_depth, d.am_bits, d.pre,
+                          d.pre_off, d.pre_bits, d.mid, d.mid_off, d.mid_bits, d.dc_scratch,
+                          d.dc_body, section_capacities(width, height).dc_groups, d.dc_sizes,
+                          d.dc_offsets, slot.dc_stream) ||
+        cudaMemcpyAsync(slot.dc_sizes.data(), d.dc_sizes, num_dc * sizeof(std::uint32_t),
+                        cudaMemcpyDeviceToHost, slot.dc_stream) != cudaSuccess ||
+        cudaEventRecord(slot.dc_sizes_copied, slot.dc_stream) != cudaSuccess) {
+        return false;
+    }
+
+    if (!ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height, d.ac_hist,
+                            d.item_sizes, slot.stream) ||
+        !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
+                         slot.stream) ||
+        cudaMemcpyAsync(slot.ac_meta.data(), d.ac_hist, HIST_WORDS * sizeof(std::uint32_t),
+                        cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
+        cudaMemcpyAsync(slot.ac_meta.data() + HIST_WORDS, d.layout,
+                        layout_words * sizeof(std::uint32_t), cudaMemcpyDeviceToHost,
+                        slot.stream) != cudaSuccess ||
+        cudaEventRecord(slot.layout_copied, slot.stream) != cudaSuccess) {
+        return false;
+    }
+    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
+        const std::size_t g0{batch_begin(num_ac, b)};
+        const std::size_t g1{batch_begin(num_ac, b + 1)};
+        if ((g0 != g1 &&
+             !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height, d.item_sizes,
+                             d.chunk_base, d.layout, g0, g1, d.entries, d.raw, slot.stream)) ||
+            cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
+            return false;
+        }
+    }
     return true;
 }
 
-void FrameEncoder::State::release_device_objects() {
-    const auto destroy_event = [](cudaEvent_t& e) {
-        if (e != nullptr) {
-            cudaEventDestroy(e);
-            e = nullptr;
+void FrameEncoder::State::drive() {
+    // A failure shows in the frames' CUDA calls.
+    cudaSetDevice(device);
+    std::unique_lock<std::mutex> lock{mutex};
+    for (;;) {
+        submitted_cv.wait(lock, [this] { return stop || completed != submitted; });
+        if (completed == submitted) {
+            return;
         }
-    };
-    destroy_event(layout_copied);
-    destroy_event(dc_sizes_copied);
-    destroy_event(dc_body_copied);
-    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
-        destroy_event(batch_packed[b]);
-        destroy_event(batch_copied[b]);
+        const std::uint64_t frame{completed};
+        lock.unlock();
+        Slot& slot{slots[frame % depth]};
+        const EncodeResult result{code_frame(slot, frame)};
+        lock.lock();
+        slot.result = result;
+        ++completed;
+        completed_cv.notify_one();
     }
-    for (cudaStream_t* s : {&dc_stream, &copy_stream}) {
-        if (*s != nullptr) {
-            cudaStreamDestroy(*s);
-            *s = nullptr;
-        }
-    }
-    device = -1;
 }
 
-template <typename BatchBegin>
-bool FrameEncoder::State::release_batches(bitstream::StreamQueue& queue, BatchBegin batch_begin) {
+// Enqueues the copies of the slot's AC token batches once its token layout has
+// landed; with `wait` false, only if it already has. False on a CUDA error.
+bool FrameEncoder::State::start_copies(Slot& slot, bool wait) {
+    if (slot.copies_started) {
+        return true;
+    }
+    if (wait) {
+        if (cudaEventSynchronize(slot.layout_copied) != cudaSuccess) {
+            return false;
+        }
+    } else {
+        const cudaError_t status{cudaEventQuery(slot.layout_copied)};
+        if (status == cudaErrorNotReady) {
+            return true;
+        }
+        if (status != cudaSuccess) {
+            return false;
+        }
+    }
+    slot.layout_landed = Clock::now();
+    const std::size_t num_ac{bitstream::ac_group_count(slot.width, slot.height)};
+    const std::uint32_t* const token_offset{slot.ac_meta.data() + HIST_WORDS};
+    const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
+    // One raw word past the last group's: the coder may read it.
+    if (!slot.entries.reserve(token_offset[num_ac]) || !slot.raw.reserve(raw_offset[num_ac] + 1)) {
+        return false;
+    }
+    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
+        const std::size_t g0{batch_begin(num_ac, b)};
+        const std::size_t g1{batch_begin(num_ac, b + 1)};
+        const std::size_t num_tokens{token_offset[g1] - token_offset[g0]};
+        const std::size_t num_raw{raw_offset[g1] - raw_offset[g0]};
+        if (cudaStreamWaitEvent(slot.copy_stream, slot.batch_packed[b], 0) != cudaSuccess ||
+            (num_tokens != 0 &&
+             cudaMemcpyAsync(slot.entries.data() + token_offset[g0],
+                             slot.device.entries + token_offset[g0],
+                             num_tokens * sizeof(std::uint16_t), cudaMemcpyDeviceToHost,
+                             slot.copy_stream) != cudaSuccess) ||
+            (num_raw != 0 &&
+             cudaMemcpyAsync(slot.raw.data() + raw_offset[g0], slot.device.raw + raw_offset[g0],
+                             num_raw * sizeof(std::uint64_t), cudaMemcpyDeviceToHost,
+                             slot.copy_stream) != cudaSuccess) ||
+            cudaEventRecord(slot.batch_copied[b], slot.copy_stream) != cudaSuccess) {
+            return false;
+        }
+    }
+    slot.copies_started = true;
+    return true;
+}
+
+// Starts the next frame's copies if its token layout has already landed, so that
+// they overlap the end of this frame's host stage instead of delaying the next
+// one's. A failure shows again when the next frame's host stage starts them.
+void FrameEncoder::State::start_next_copies(std::uint64_t frame) {
+    {
+        const std::lock_guard<std::mutex> lock{mutex};
+        if (frame + 1 == submitted) {
+            return;
+        }
+    }
+    start_copies(slots[(frame + 1) % depth], false);
+}
+
+// Releases the AC groups to `queue` batch by batch as their copies land, each
+// time all the batches landed so far, longest groups first. False on a CUDA
+// error.
+bool FrameEncoder::State::release_batches(Slot& slot, bitstream::StreamQueue& queue) {
+    const std::size_t num_ac{queue.num_streams};
     std::size_t landed{0};
     while (landed < AC_BATCHES) {
-        if (cudaEventSynchronize(batch_copied[landed]) != cudaSuccess) {
+        if (cudaEventSynchronize(slot.batch_copied[landed]) != cudaSuccess) {
             return false;
         }
         ++landed;
         for (cudaError_t status{}; landed < AC_BATCHES; ++landed) {
-            status = cudaEventQuery(batch_copied[landed]);
+            status = cudaEventQuery(slot.batch_copied[landed]);
             if (status == cudaErrorNotReady) {
                 break;
             }
@@ -303,7 +626,7 @@ bool FrameEncoder::State::release_batches(bitstream::StreamQueue& queue, BatchBe
             }
         }
         const std::size_t begin{queue.ready.load(std::memory_order_relaxed)};
-        const std::size_t end{batch_begin(landed)};
+        const std::size_t end{batch_begin(num_ac, landed)};
         std::iota(order.begin() + static_cast<std::ptrdiff_t>(begin),
                   order.begin() + static_cast<std::ptrdiff_t>(end), begin);
         std::stable_sort(order.begin() + static_cast<std::ptrdiff_t>(begin),
@@ -316,140 +639,27 @@ bool FrameEncoder::State::release_batches(bitstream::StreamQueue& queue, BatchBe
     return true;
 }
 
-EncodeResult FrameEncoder::State::encode_frame(
-    const std::int16_t* ac_device, const std::int32_t* dc_device, const std::int32_t* nz_grid,
-    const std::int32_t* nz_exact, const std::int8_t* acs, const std::int8_t* ytox_map,
-    const std::int8_t* ytob_map, std::size_t width, std::size_t height,
-    const bitstream::QuantParams& qp, const std::int32_t* quant_field, std::uint8_t* out_file,
-    std::size_t out_capacity, std::vector<StageTiming>* stats) {
+EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
+    const std::size_t width{slot.width};
+    const std::size_t height{slot.height};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
-    if (num_ac <= 1) {
-        return ENCODE_FAILED;
-    }
     const SectionCapacities caps{section_capacities(width, height)};
-    const std::size_t blocks{(width / 8) * (height / 8)};
-    constexpr std::size_t HIST_WORDS{AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE};
-    const std::size_t layout_words{3 * num_ac + 2};
-
-    DeviceScope scope{};
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
-    const Clock::time_point entropy_gpu_start{Clock::now()};
 
-    // Everything the DC path and the copies touch is allocated before the forks:
-    // an allocation ordered on the default stream after a fork would not be
-    // ordered before the side stream's use.
-    std::uint32_t* d_ac_hist{scope.alloc<std::uint32_t>(HIST_WORDS)};
-    std::uint64_t* d_item_sizes{scope.alloc<std::uint64_t>(3 * blocks)};
-    std::uint64_t* d_chunk_base{scope.alloc<std::uint64_t>(ac_token_chunks(width, height))};
-    std::uint32_t* d_layout{scope.alloc<std::uint32_t>(layout_words)};
-    std::uint16_t* d_entries{scope.alloc<std::uint16_t>(ac_max_tokens(width, height))};
-    std::uint64_t* d_raw{scope.alloc<std::uint64_t>(ac_max_raw_words(width, height))};
-    std::uint32_t* d_dc_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-    std::uint32_t* d_am_hist{scope.alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-    std::size_t* d_fb_pos{scope.alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
-    std::size_t* d_fbc{scope.alloc<std::size_t>(num_dc)};
-    std::uint8_t* d_dc_depth{scope.alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
-    std::uint16_t* d_dc_bits{scope.alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
-    std::uint8_t* d_am_depth{scope.alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
-    std::uint16_t* d_am_bits{scope.alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
-    std::uint8_t* d_pre{scope.alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
-    std::uint32_t* d_pre_off{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint32_t* d_pre_bits{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint8_t* d_mid{scope.alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
-    std::uint32_t* d_mid_off{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint32_t* d_mid_bits{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint8_t* d_dc_body{scope.alloc<std::uint8_t>(caps.dc_groups)};
-    std::uint32_t* d_dc_sizes{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint32_t* d_dc_offsets{scope.alloc<std::uint32_t>(num_dc)};
-    std::uint8_t* d_dc_scratch{scope.alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
-    if (!d_ac_hist || !d_item_sizes || !d_chunk_base || !d_layout || !d_entries || !d_raw ||
-        !d_dc_hist || !d_am_hist || !d_fb_pos || !d_fbc || !d_dc_depth || !d_dc_bits ||
-        !d_am_depth || !d_am_bits || !d_pre || !d_pre_off || !d_pre_bits || !d_mid || !d_mid_off ||
-        !d_mid_bits || !d_dc_body || !d_dc_sizes || !d_dc_offsets || !d_dc_scratch ||
-        !ac_meta.reserve(HIST_WORDS + layout_words) || !dc_sizes.reserve(num_dc)) {
+    if (!start_copies(slot, true)) {
         return ENCODE_FAILED;
     }
-
-    // The DC path (DcGroup histograms, prefix codes and sections) and the AC
-    // token copies run on their own streams alongside the AC path.
-    StreamFork dc_fork{dc_stream};
-    StreamFork copy_fork{copy_stream};
-    if (!dc_fork.forked() || !copy_fork.forked()) {
-        return ENCODE_FAILED;
-    }
-    if (!dc_build_histograms(dc_device, width, height, d_dc_hist, dc_stream) ||
-        !acmeta_build_histograms(quant_field, acs, ytox_map, ytob_map, width, height, d_am_hist,
-                                 dc_stream) ||
-        !dc_first_blocks(acs, width, height, d_fb_pos, d_fbc, dc_stream) ||
-        !build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
-                                     d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off, d_pre_bits,
-                                     d_mid, d_mid_off, d_mid_bits, dc_stream) ||
-        !dc_encode_groups(dc_device, width, height, quant_field, acs, ytox_map, ytob_map, d_fb_pos,
-                          d_fbc, d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
-                          d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
-                          caps.dc_groups, d_dc_sizes, d_dc_offsets, dc_stream) ||
-        cudaMemcpyAsync(dc_sizes.data(), d_dc_sizes, num_dc * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost, dc_stream) != cudaSuccess ||
-        cudaEventRecord(dc_sizes_copied, dc_stream) != cudaSuccess) {
-        return ENCODE_FAILED;
-    }
-
-    if (!ac_build_histogram(ac_device, acs, nz_grid, nz_exact, width, height, d_ac_hist,
-                            d_item_sizes) ||
-        !ac_token_layout(d_item_sizes, width, height, d_chunk_base, d_layout) ||
-        cudaMemcpyAsync(ac_meta.data(), d_ac_hist, HIST_WORDS * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost, 0) != cudaSuccess ||
-        cudaMemcpyAsync(ac_meta.data() + HIST_WORDS, d_layout, layout_words * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost, 0) != cudaSuccess ||
-        cudaEventRecord(layout_copied, 0) != cudaSuccess) {
-        return ENCODE_FAILED;
-    }
-    const auto batch_begin = [num_ac](std::size_t b) { return b * num_ac / AC_BATCHES; };
-    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
-        if ((batch_begin(b) != batch_begin(b + 1) &&
-             !ac_pack_tokens(ac_device, acs, nz_grid, nz_exact, width, height, d_item_sizes,
-                             d_chunk_base, d_layout, batch_begin(b), batch_begin(b + 1), d_entries,
-                             d_raw)) ||
-            cudaEventRecord(batch_packed[b], 0) != cudaSuccess) {
-            return ENCODE_FAILED;
-        }
-    }
-
-    const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(qp)};
-    if (cudaEventSynchronize(layout_copied) != cudaSuccess) {
-        return ENCODE_FAILED;
-    }
-    entropy.gpu_us = us_since(entropy_gpu_start);
+    entropy.gpu_us =
+        std::chrono::duration<double, std::micro>(slot.layout_landed - slot.entropy_start).count();
     const Clock::time_point entropy_cpu_start{Clock::now()};
+    const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(slot.qp)};
 
-    const std::uint32_t* const histograms{ac_meta.data()};
+    const std::uint32_t* const histograms{slot.ac_meta.data()};
     const std::uint32_t* const token_offset{histograms + HIST_WORDS};
     const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
     const std::uint32_t* const raw_bits{raw_offset + num_ac + 1};
-    // One raw word past the last group's: the coder may read it.
-    if (!entries.reserve(token_offset[num_ac]) || !raw.reserve(raw_offset[num_ac] + 1)) {
-        return ENCODE_FAILED;
-    }
-    for (std::size_t b{0}; b < AC_BATCHES; ++b) {
-        const std::size_t g0{batch_begin(b)};
-        const std::size_t g1{batch_begin(b + 1)};
-        const std::size_t num_tokens{token_offset[g1] - token_offset[g0]};
-        const std::size_t num_raw{raw_offset[g1] - raw_offset[g0]};
-        if (cudaStreamWaitEvent(copy_stream, batch_packed[b], 0) != cudaSuccess ||
-            (num_tokens != 0 &&
-             cudaMemcpyAsync(entries.data() + token_offset[g0], d_entries + token_offset[g0],
-                             num_tokens * sizeof(std::uint16_t), cudaMemcpyDeviceToHost,
-                             copy_stream) != cudaSuccess) ||
-            (num_raw != 0 && cudaMemcpyAsync(raw.data() + raw_offset[g0], d_raw + raw_offset[g0],
-                                             num_raw * sizeof(std::uint64_t),
-                                             cudaMemcpyDeviceToHost, copy_stream) != cudaSuccess) ||
-            cudaEventRecord(batch_copied[b], copy_stream) != cudaSuccess) {
-            return ENCODE_FAILED;
-        }
-    }
-
     bitstream::AcGlobalBuilder tables{histograms, num_ac, code};
     streams.resize(num_ac);
     order.resize(num_ac);
@@ -458,9 +668,9 @@ EncodeResult FrameEncoder::State::encode_frame(
     ac_offsets.resize(num_ac);
     std::size_t slot_total{0};
     for (std::size_t g{0}; g < num_ac; ++g) {
-        streams[g] = bitstream::TokenStream{entries.data() + token_offset[g],
+        streams[g] = bitstream::TokenStream{slot.entries.data() + token_offset[g],
                                             token_offset[g + 1] - token_offset[g],
-                                            raw.data() + raw_offset[g], raw_bits[g]};
+                                            slot.raw.data() + raw_offset[g], raw_bits[g]};
         slot_total += bitstream::coded_stream_capacity_words(streams[g]);
         slot_end[g] = slot_total;
     }
@@ -501,7 +711,7 @@ EncodeResult FrameEncoder::State::encode_frame(
             }
             ac_global = tables.finish();
             code_ready.store(true, std::memory_order_release);
-            if (!release_batches(queue, batch_begin)) {
+            if (!release_batches(slot, queue)) {
                 queue.cancelled.store(true, std::memory_order_release);
             }
         } else {
@@ -516,30 +726,32 @@ EncodeResult FrameEncoder::State::encode_frame(
                 std::this_thread::yield();
             }
         } else {
+            start_next_copies(frame);
             bool dc_ok{!queue.cancelled.load(std::memory_order_acquire) &&
-                       cudaEventSynchronize(dc_sizes_copied) == cudaSuccess};
+                       cudaEventSynchronize(slot.dc_sizes_copied) == cudaSuccess};
             std::size_t dc_total{0};
             if (dc_ok) {
                 // The DC encoder skips sections over its capacity without failing.
-                dc_total =
-                    std::accumulate(dc_sizes.data(), dc_sizes.data() + num_dc, std::size_t{0});
-                dc_ok = dc_total <= caps.dc_groups && dc_body.reserve(dc_total) &&
-                        cudaMemcpyAsync(dc_body.data(), d_dc_body, dc_total, cudaMemcpyDeviceToHost,
-                                        dc_stream) == cudaSuccess &&
-                        cudaEventRecord(dc_body_copied, dc_stream) == cudaSuccess;
+                dc_total = std::accumulate(slot.dc_sizes.data(), slot.dc_sizes.data() + num_dc,
+                                           std::size_t{0});
+                dc_ok = dc_total <= caps.dc_groups && slot.dc_body.reserve(dc_total) &&
+                        cudaMemcpyAsync(slot.dc_body.data(), slot.device.dc_body, dc_total,
+                                        cudaMemcpyDeviceToHost, slot.dc_stream) == cudaSuccess &&
+                        cudaEventRecord(slot.dc_body_copied, slot.dc_stream) == cudaSuccess;
             }
             while (coders_done.load(std::memory_order_acquire) != num_threads) {
                 std::this_thread::yield();
             }
             entropy.cpu_us = us_since(entropy_cpu_start);
             const Clock::time_point assembly_start{Clock::now()};
-            if (!dc_ok || cudaEventSynchronize(dc_body_copied) != cudaSuccess) {
+            if (!dc_ok || cudaEventSynchronize(slot.dc_body_copied) != cudaSuccess) {
                 placement.store(Placement::SKIP, std::memory_order_release);
                 return;
             }
             section_sizes.clear();
             section_sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
-            section_sizes.insert(section_sizes.end(), dc_sizes.data(), dc_sizes.data() + num_dc);
+            section_sizes.insert(section_sizes.end(), slot.dc_sizes.data(),
+                                 slot.dc_sizes.data() + num_dc);
             section_sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
             std::size_t ac_total{0};
             for (const bitstream::CodedStream& c : coded) {
@@ -553,17 +765,17 @@ EncodeResult FrameEncoder::State::encode_frame(
                                               ac_global.size() + ac_total};
             const std::vector<std::uint8_t> framing{bitstream::container_framing(codestream_size)};
             const std::size_t file_size{framing.size() + codestream_size};
-            if (file_size > out_capacity) {
+            if (file_size > slot.out_capacity) {
                 result = EncodeResult{EncodeStatus::BUFFER_TOO_SMALL, file_size};
                 placement.store(Placement::SKIP, std::memory_order_release);
                 return;
             }
-            std::uint8_t* at{std::copy(framing.begin(), framing.end(), out_file)};
+            std::uint8_t* at{std::copy(framing.begin(), framing.end(), slot.out_file)};
             at = std::copy(head.begin(), head.end(), at);
             at = std::copy(dc_global.begin(), dc_global.end(), at);
-            std::memcpy(at, dc_body.data(), dc_total);
+            std::memcpy(at, slot.dc_body.data(), dc_total);
             at = std::copy(ac_global.begin(), ac_global.end(), at + dc_total);
-            std::size_t offset{static_cast<std::size_t>(at - out_file)};
+            std::size_t offset{static_cast<std::size_t>(at - slot.out_file)};
             for (std::size_t g{0}; g < num_ac; ++g) {
                 ac_offsets[g] = offset;
                 offset += coded[g].size_bytes();
@@ -575,83 +787,80 @@ EncodeResult FrameEncoder::State::encode_frame(
         if (placement.load(std::memory_order_acquire) == Placement::PLACE) {
             for (std::size_t g{next_placed.fetch_add(1, std::memory_order_relaxed)}; g < num_ac;
                  g = next_placed.fetch_add(1, std::memory_order_relaxed)) {
-                bitstream::place_coded_stream(coded[g], out_file + ac_offsets[g]);
+                bitstream::place_coded_stream(coded[g], slot.out_file + ac_offsets[g]);
             }
         }
     });
 
-    if (stats != nullptr) {
-        stats->push_back(entropy);
-        stats->push_back(assembly);
+    if (slot.stats != nullptr) {
+        slot.stats->push_back(entropy);
+        slot.stats->push_back(assembly);
     }
     return result;
 }
 
-FrameEncoder::FrameEncoder(std::size_t worker_threads)
-    : state_{std::make_unique<State>(worker_threads)} {}
+FrameEncoder::FrameEncoder(std::int32_t device_ordinal, std::size_t worker_threads,
+                           std::size_t pipeline_depth)
+    : state_{std::make_unique<State>(device_ordinal, worker_threads, pipeline_depth)} {
+    assert(pipeline_depth >= 1);
+}
 
 FrameEncoder::~FrameEncoder() = default;
 
-EncodeResult FrameEncoder::encode_nv12(const std::uint8_t* luma, std::size_t luma_pitch,
-                                       const std::uint8_t* chroma, std::size_t chroma_pitch,
-                                       std::size_t width, std::size_t height,
-                                       std::int32_t device_ordinal, float distance,
-                                       const bitstream::QuantParams& qp, std::uint8_t* out_file,
-                                       std::size_t out_capacity, std::vector<StageTiming>* stats) {
-    if (cudaSetDevice(device_ordinal) != cudaSuccess || !state_->bind_device(device_ordinal)) {
-        return ENCODE_FAILED;
-    }
-    retain_default_mempool(device_ordinal);
+std::size_t FrameEncoder::pipeline_depth() const {
+    return state_->depth;
+}
 
-    DeviceScope scope{};
-    const std::size_t blocks{(width / 8) * (height / 8)};
-    const std::size_t cmw{((width / 8) + 7) / 8};
-    const std::size_t cmh{((height / 8) + 7) / 8};
-    __half* d_coeffs{scope.alloc<__half>(3 * blocks * COEFFS_PER_BLOCK)};
-    std::int8_t* d_acs{scope.alloc<std::int8_t>(blocks)};
-    std::int8_t* d_mx{scope.alloc<std::int8_t>(cmw * cmh)};
-    std::int8_t* d_mb{scope.alloc<std::int8_t>(cmw * cmh)};
-    std::int32_t* d_qf{scope.alloc<std::int32_t>(blocks)};
-    std::int16_t* d_ac16{scope.alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
-    std::int32_t* d_dc32{scope.alloc<std::int32_t>(3 * blocks)};
-    std::int32_t* d_nz_exact{scope.alloc<std::int32_t>(3 * blocks)};
-    std::int32_t* d_nz_grid{scope.alloc<std::int32_t>(3 * blocks)};
-    if (!d_coeffs || !d_acs || !d_mx || !d_mb || !d_qf || !d_ac16 || !d_dc32 || !d_nz_exact ||
-        !d_nz_grid) {
-        return ENCODE_FAILED;
-    }
+std::size_t FrameEncoder::in_flight() const {
+    const std::lock_guard<std::mutex> lock{state_->mutex};
+    return static_cast<std::size_t>(state_->submitted - state_->received);
+}
 
-    constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
-    const std::uint8_t* chroma_src{chroma};
-    std::size_t chroma_src_pitch{chroma_pitch};
-    if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
-        const std::size_t aligned_pitch{(width + 511) & ~std::size_t{511}};
-        std::uint8_t* aligned{scope.alloc<std::uint8_t>(aligned_pitch * (height / 2))};
-        if (!aligned || cudaMemcpy2DAsync(aligned, aligned_pitch, chroma, chroma_pitch, width,
-                                          height / 2, cudaMemcpyDeviceToDevice, 0) != cudaSuccess) {
-            return ENCODE_FAILED;
-        }
-        chroma_src = aligned;
-        chroma_src_pitch = aligned_pitch;
+bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
+                          const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
+                          std::size_t height, float distance, const bitstream::QuantParams& qp,
+                          std::uint8_t* out_file, std::size_t out_capacity,
+                          std::vector<StageTiming>* stats) {
+    assert(in_flight() < pipeline_depth());
+    State& s{*state_};
+    if (bitstream::ac_group_count(width, height) <= 1) {
+        return false;
     }
+    Slot& slot{s.slots[s.submitted % s.depth]};
+    // The slot's previous frame has completed, but after a failure its device
+    // work may still be running.
+    if (cudaSetDevice(s.device) != cudaSuccess || !slot.init() ||
+        cudaStreamSynchronize(slot.stream) != cudaSuccess ||
+        cudaStreamSynchronize(slot.dc_stream) != cudaSuccess ||
+        cudaStreamSynchronize(slot.copy_stream) != cudaSuccess) {
+        return false;
+    }
+    slot.width = width;
+    slot.height = height;
+    slot.qp = qp;
+    slot.out_file = out_file;
+    slot.out_capacity = out_capacity;
+    slot.stats = stats;
+    slot.copies_started = false;
+    if (!s.enqueue_frame(slot, luma, luma_pitch, chroma, chroma_pitch, distance)) {
+        return false;
+    }
+    {
+        const std::lock_guard<std::mutex> lock{s.mutex};
+        ++s.submitted;
+    }
+    s.submitted_cv.notify_one();
+    return true;
+}
 
-    const ChromaTexture chroma_texture{chroma_src, chroma_src_pitch, width, height};
-    const Clock::time_point frontend_start{Clock::now()};
-    if (!encode_frontend(luma, luma_pitch, chroma_texture, width, height, distance, d_coeffs, d_acs,
-                         d_qf) ||
-        !quantize_residual(d_coeffs, d_acs, d_qf, width, height, distance, d_mx, d_mb, d_ac16,
-                           d_dc32, d_nz_exact, d_nz_grid)) {
-        return ENCODE_FAILED;
-    }
-    if (stats != nullptr) {
-        // The frontend runs sync-free (its kernels only enqueue), so bracket the
-        // stage with an instrumentation-only sync to keep the per-stage wall-clock
-        // attribution valid. Production (stats == nullptr) stays fully pipelined.
-        cudaDeviceSynchronize();
-        stats->push_back(StageTiming{"frontend", 0, us_since(frontend_start), 0.0});
-    }
-    return state_->encode_frame(d_ac16, d_dc32, d_nz_grid, d_nz_exact, d_acs, d_mx, d_mb, width,
-                                height, qp, d_qf, out_file, out_capacity, stats);
+EncodeResult FrameEncoder::receive() {
+    assert(in_flight() > 0);
+    State& s{*state_};
+    std::unique_lock<std::mutex> lock{s.mutex};
+    s.completed_cv.wait(lock, [&s] { return s.completed != s.received; });
+    const EncodeResult result{s.slots[s.received % s.depth].result};
+    ++s.received;
+    return result;
 }
 
 }  // namespace cujpegxl

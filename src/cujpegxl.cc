@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <new>
+#include <vector>
 
 #include "cujpegxl/capability.h"
 #include "frame_encoder.h"
@@ -15,6 +16,10 @@
 struct cujpegxl_encoder {
     cujpegxl_config config;
     cujpegxl::FrameEncoder frame_encoder;
+    // The outputs of the frames in flight, in a ring of pipeline_depth entries
+    // from the oldest frame's at `oldest_output`.
+    std::vector<cujpegxl_output*> outputs;
+    std::size_t oldest_output;
 };
 
 namespace {
@@ -72,6 +77,10 @@ const char* cujpegxl_status_string(cujpegxl_status status) {
             return "internal-error";
         case CUJPEGXL_BUFFER_TOO_SMALL:
             return "buffer-too-small";
+        case CUJPEGXL_PIPELINE_FULL:
+            return "pipeline-full";
+        case CUJPEGXL_PIPELINE_EMPTY:
+            return "pipeline-empty";
     }
     return "internal-error";
 }
@@ -112,9 +121,9 @@ cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* 
     return CUJPEGXL_OK;
 }
 
-cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config,
+cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, uint32_t pipeline_depth,
                                         cujpegxl_encoder** out_encoder) {
-    if (config == nullptr || out_encoder == nullptr) {
+    if (config == nullptr || out_encoder == nullptr || pipeline_depth == 0) {
         return CUJPEGXL_INVALID_ARGUMENT;
     }
     *out_encoder = nullptr;
@@ -127,7 +136,10 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config,
         return CUJPEGXL_NO_DEVICE;
     }
     auto* encoder{new (std::nothrow) cujpegxl_encoder{
-        *config, cujpegxl::FrameEncoder{cujpegxl::default_worker_threads()}}};
+        *config,
+        cujpegxl::FrameEncoder{config->device_ordinal, cujpegxl::default_worker_threads(),
+                               pipeline_depth},
+        std::vector<cujpegxl_output*>(pipeline_depth, nullptr), 0}};
     if (encoder == nullptr) {
         return CUJPEGXL_INTERNAL_ERROR;
     }
@@ -144,11 +156,14 @@ cujpegxl_status cujpegxl_encoder_configure(cujpegxl_encoder* encoder,
     if (status != CUJPEGXL_OK) {
         return status;
     }
+    if (config->device_ordinal != encoder->config.device_ordinal) {
+        return CUJPEGXL_INVALID_ARGUMENT;
+    }
     encoder->config = *config;
     return CUJPEGXL_OK;
 }
 
-cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegxl_nv12_input* input,
+cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegxl_nv12_input* input,
                                         cujpegxl_output* output) {
     if (encoder == nullptr || input == nullptr || output == nullptr || output->data == nullptr ||
         input->luma == 0 || input->chroma == 0) {
@@ -159,13 +174,33 @@ cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegx
     if (status != CUJPEGXL_OK) {
         return status;
     }
+    cujpegxl::FrameEncoder& frame_encoder{encoder->frame_encoder};
+    const std::size_t in_flight{frame_encoder.in_flight()};
+    if (in_flight == frame_encoder.pipeline_depth()) {
+        return CUJPEGXL_PIPELINE_FULL;
+    }
+    if (!frame_encoder.submit(reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
+                              reinterpret_cast<const std::uint8_t*>(input->chroma),
+                              input->chroma_pitch, config.width, config.height, config.distance,
+                              cujpegxl::quant_params_for_distance(config.distance), output->data,
+                              output->capacity)) {
+        return CUJPEGXL_INTERNAL_ERROR;
+    }
+    encoder->outputs[(encoder->oldest_output + in_flight) % encoder->outputs.size()] = output;
+    return CUJPEGXL_OK;
+}
 
-    const cujpegxl::EncodeResult result{encoder->frame_encoder.encode_nv12(
-        reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
-        reinterpret_cast<const std::uint8_t*>(input->chroma), input->chroma_pitch, config.width,
-        config.height, config.device_ordinal, config.distance,
-        cujpegxl::quant_params_for_distance(config.distance), output->data, output->capacity,
-        nullptr)};
+cujpegxl_status cujpegxl_encoder_receive(cujpegxl_encoder* encoder, cujpegxl_output** out_output) {
+    if (encoder == nullptr || out_output == nullptr) {
+        return CUJPEGXL_INVALID_ARGUMENT;
+    }
+    if (encoder->frame_encoder.in_flight() == 0) {
+        return CUJPEGXL_PIPELINE_EMPTY;
+    }
+    const cujpegxl::EncodeResult result{encoder->frame_encoder.receive()};
+    cujpegxl_output* const output{encoder->outputs[encoder->oldest_output]};
+    encoder->oldest_output = (encoder->oldest_output + 1) % encoder->outputs.size();
+    *out_output = output;
     switch (result.status) {
         case cujpegxl::EncodeStatus::OK:
             output->size = result.file_size;

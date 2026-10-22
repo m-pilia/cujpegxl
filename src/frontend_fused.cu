@@ -806,7 +806,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
 }  // namespace
 
 ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitch,
-                             std::size_t width, std::size_t height) {
+                             std::size_t width, std::size_t height, cudaStream_t stream)
+    : stream_{stream} {
     cudaResourceDesc resource{};
     resource.resType = cudaResourceTypePitch2D;
     resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
@@ -827,14 +828,14 @@ ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitc
 
 ChromaTexture::~ChromaTexture() {
     if (valid_) {
-        cudaStreamSynchronize(0);
+        cudaStreamSynchronize(stream_);
         cudaDestroyTextureObject(texture_);
     }
 }
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
                      std::size_t width, std::size_t height, float distance, __half* coeffs,
-                     std::int8_t* acs, std::int32_t* quant_field) {
+                     std::int8_t* acs, std::int32_t* quant_field, cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
 
@@ -873,7 +874,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
     const dim3 block{FRONTEND_THREADS};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
-    frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES>>>(
+    frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES, stream>>>(
         luma, luma_pitch, chroma.get(), width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
         cal.inv_global_scale, qgsf, coeffs, acs, quant_field);
     return cudaGetLastError() == cudaSuccess;

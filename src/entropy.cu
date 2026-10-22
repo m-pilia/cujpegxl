@@ -78,9 +78,14 @@ void init_constants() {
     cudaMemcpyToSymbol(NATURAL_ORDER_32, o32.data(), o32.size() * sizeof(std::uint32_t));
 }
 
+// The copies run on the legacy default stream; the wait orders them before the
+// kernels of the non-blocking streams.
 void ensure_constants() {
     static std::once_flag flag;
-    std::call_once(flag, init_constants);
+    std::call_once(flag, [] {
+        init_constants();
+        cudaStreamSynchronize(nullptr);
+    });
 }
 
 __device__ void hybrid_encode(std::uint32_t value, std::uint32_t& token, std::uint32_t& nbits,
@@ -1214,25 +1219,31 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height) {
 
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* histogram, std::uint64_t* item_sizes) {
+                        std::uint32_t* histogram, std::uint64_t* item_sizes, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
-    if (cudaMemsetAsync(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t), 0) != cudaSuccess) {
+    if (cudaMemsetAsync(histogram, 0, AC_CLUSTER_HIST * sizeof(std::uint32_t), stream) !=
+        cudaSuccess) {
         return false;
     }
     const std::size_t total{3 * bw * bh};
     const unsigned int blocks{
         static_cast<unsigned int>((total + HIST_ITEMS_PER_CTA - 1) / HIST_ITEMS_PER_CTA)};
-    histogram_kernel<<<blocks, HIST_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, nblocks,
-                                               histogram,
-                                               reinterpret_cast<unsigned long long*>(item_sizes));
+    histogram_kernel<<<blocks, HIST_THREADS, 0, stream>>>(
+        ac, acs, nz_grid, nz_exact, bw, bh, nblocks, histogram,
+        reinterpret_cast<unsigned long long*>(item_sizes));
     return cudaGetLastError() == cudaSuccess;
 }
 
 std::size_t ac_token_chunks(std::size_t width, std::size_t height) {
     return ac_num_groups(width, height) * AC_GROUP_CHUNKS;
+}
+
+std::size_t ac_token_layout_scratch_bytes(std::size_t width, std::size_t height) {
+    return (ac_token_chunks(width, height) + ac_num_groups(width, height)) *
+           sizeof(unsigned long long);
 }
 
 std::size_t ac_max_tokens(std::size_t width, std::size_t height) {
@@ -1246,54 +1257,48 @@ std::size_t ac_max_raw_words(std::size_t width, std::size_t height) {
 }
 
 bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::size_t height,
-                     std::uint64_t* chunk_base, std::uint32_t* layout) {
+                     std::uint8_t* scratch, std::uint64_t* chunk_base, std::uint32_t* layout,
+                     cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
     const std::size_t num_chunks{num_groups * AC_GROUP_CHUNKS};
-    unsigned long long* sizes{nullptr};
-    if (cudaMallocAsync(&sizes, (num_chunks + num_groups) * sizeof(unsigned long long), 0) !=
-        cudaSuccess) {
-        return false;
-    }
-    unsigned long long* const chunk_sizes{sizes};
-    unsigned long long* const group_sizes{sizes + num_chunks};
+    auto* const chunk_sizes{reinterpret_cast<unsigned long long*>(scratch)};
+    unsigned long long* const group_sizes{chunk_sizes + num_chunks};
     const std::size_t chunks_per_cta{AC_CHUNK_THREADS / 32};
     ac_chunk_sizes_kernel<<<static_cast<unsigned int>((num_chunks + chunks_per_cta - 1) /
                                                       chunks_per_cta),
-                            AC_CHUNK_THREADS>>>(
+                            AC_CHUNK_THREADS, 0, stream>>>(
         reinterpret_cast<const unsigned long long*>(item_sizes), bw, bh, xg, num_groups,
         chunk_sizes);
-    ac_group_scan_kernel<<<static_cast<unsigned int>(num_groups), AC_GROUP_CHUNKS>>>(
+    ac_group_scan_kernel<<<static_cast<unsigned int>(num_groups), AC_GROUP_CHUNKS, 0, stream>>>(
         chunk_sizes, reinterpret_cast<unsigned long long*>(chunk_base), group_sizes);
-    ac_group_layout_kernel<<<1, AC_LAYOUT_THREADS>>>(group_sizes, num_groups, layout);
-    const bool ok{cudaGetLastError() == cudaSuccess};
-    cudaFreeAsync(sizes, 0);
-    return ok;
+    ac_group_layout_kernel<<<1, AC_LAYOUT_THREADS, 0, stream>>>(group_sizes, num_groups, layout);
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                     const std::int32_t* nz_exact, std::size_t width, std::size_t height,
                     const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
                     const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
-                    std::uint16_t* entries, std::uint64_t* raw) {
+                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xg{(bw + AC_GROUP_BLOCKS - 1) / AC_GROUP_BLOCKS};
     const std::size_t num_groups{ac_num_groups(width, height)};
     auto* const raw_words{reinterpret_cast<unsigned long long*>(raw)};
-    zero_raw_words_kernel<<<ZERO_FILL_BLOCKS, ZERO_FILL_THREADS>>>(
+    zero_raw_words_kernel<<<ZERO_FILL_BLOCKS, ZERO_FILL_THREADS, 0, stream>>>(
         raw_words, layout + num_groups + 1, group_begin, group_end);
     const std::size_t num_chunks{(group_end - group_begin) * AC_GROUP_CHUNKS};
     const std::size_t chunks_per_cta{AC_CHUNK_THREADS / 32};
     ac_pack_kernel<<<static_cast<unsigned int>((num_chunks + chunks_per_cta - 1) / chunks_per_cta),
-                     AC_CHUNK_THREADS>>>(ac, acs, nz_grid, nz_exact, bw, bh, bw * bh, xg,
-                                         group_begin, group_end,
-                                         reinterpret_cast<const unsigned long long*>(item_sizes),
-                                         reinterpret_cast<const unsigned long long*>(chunk_base),
-                                         layout, num_groups, entries, raw_words);
+                     AC_CHUNK_THREADS, 0, stream>>>(
+        ac, acs, nz_grid, nz_exact, bw, bh, bw * bh, xg, group_begin, group_end,
+        reinterpret_cast<const unsigned long long*>(item_sizes),
+        reinterpret_cast<const unsigned long long*>(chunk_base), layout, num_groups, entries,
+        raw_words);
     return cudaGetLastError() == cudaSuccess;
 }
 
@@ -1311,25 +1316,23 @@ std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height) {
            chunks * DC_EMIT_THREADS * sizeof(std::uint32_t);
 }
 
+std::size_t dc_first_blocks_scratch_bytes(std::size_t width, std::size_t height) {
+    return dc_num_groups(width, height) * DC_GROUP_BLOCKS * sizeof(std::uint32_t);
+}
+
 bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::size_t* positions, std::size_t* counts, cudaStream_t stream) {
+                     std::uint8_t* scratch, std::size_t* positions, std::size_t* counts,
+                     cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
-    const std::size_t num_groups{dc_num_groups(width, height)};
-    std::uint32_t* row_counts{nullptr};
-    if (cudaMallocAsync(&row_counts, num_groups * DC_GROUP_BLOCKS * sizeof(std::uint32_t),
-                        stream) != cudaSuccess) {
-        return false;
-    }
+    auto* const row_counts{reinterpret_cast<std::uint32_t*>(scratch)};
     const dim3 grid{static_cast<unsigned int>(bh), static_cast<unsigned int>(xdg)};
     first_block_row_count_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(acs, bw, xdg,
                                                                            row_counts);
     first_block_scatter_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(
         acs, bw, bh, xdg, row_counts, positions, counts);
-    const bool ok{cudaGetLastError() == cudaSuccess};
-    cudaFreeAsync(row_counts, stream);
-    return ok;
+    return cudaGetLastError() == cudaSuccess;
 }
 
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
