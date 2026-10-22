@@ -8,10 +8,9 @@
 #include <cuda_runtime.h>
 
 #include "cfl.h"
+#include "dequant_weight_pairs.h"
+#include "exact_div.cuh"
 #include "quant_calibration.h"
-#include "quant_weights_dct16.h"
-#include "quant_weights_dct32.h"
-#include "quant_weights_dct8.h"
 #include "vardct_layout.h"
 
 namespace cujpegxl {
@@ -21,14 +20,18 @@ std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
 }
 
-__device__ inline float dequant_weight(int side, int channel, int raw) {
-    if (side == 16) {
-        return DCT16_DEQUANT_WEIGHTS[channel][raw];
-    }
-    if (side == 32) {
-        return DCT32_DEQUANT_WEIGHTS[channel][raw];
-    }
-    return DCT8_DEQUANT_WEIGHTS[channel][raw];
+// In global memory: the lanes of a warp read different weights, which
+// constant memory would serialize.
+__device__ const DequantWeightPairs<64> DCT8_PAIRS{DCT8_DEQUANT_PAIRS};
+__device__ const DequantWeightPairs<256> DCT16_PAIRS{DCT16_DEQUANT_PAIRS};
+__device__ const DequantWeightPairs<1024> DCT32_PAIRS{DCT32_DEQUANT_PAIRS};
+
+__device__ inline DequantWeightPair dequant_weight(int side, int channel, int raw) {
+    const DequantWeightPair* pair{side == 16   ? &DCT16_PAIRS.w[channel][raw]
+                                  : side == 32 ? &DCT32_PAIRS.w[channel][raw]
+                                               : &DCT8_PAIRS.w[channel][raw]};
+    const float2 w{__ldg(reinterpret_cast<const float2*>(pair))};
+    return {w.x, w.y};
 }
 
 // LlfDcTerms of every covered block of a DCT16 (entries 0-3) and a DCT32
@@ -188,7 +191,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
                          std::int32_t* __restrict__ nz_exact, std::int32_t* __restrict__ nz_grid) {
     __shared__ __align__(16) __half tile_coeffs[3][TILE_SLOTS];
     __shared__ std::uint64_t tile_llf_mask[TILE_POSITIONS];
-    __shared__ float tile_qgsf[TILE_POSITIONS];
+    // The owner's quantizer strength and its reciprocal.
+    __shared__ float2 tile_qgsf[TILE_POSITIONS];
     __shared__ TilePosition tile_pos[TILE_POSITIONS];
     __shared__ std::int32_t tile_nz[3][TILE_POSITIONS];
     __shared__ float cfl_warp[3][QUANT_WARPS];
@@ -234,7 +238,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         const bool in_frame{lx < cols && ly < rows};
         tile_pos[tid] = pos;
         tile_llf_mask[tid] = in_frame ? llf_slot_mask(side, covered_ordinal) : ~std::uint64_t{0};
-        tile_qgsf[tid] = static_cast<float>(owner_qf) * gsf;
+        const float qgsf{static_cast<float>(owner_qf) * gsf};
+        tile_qgsf[tid] = make_float2(qgsf, 1.0f / qgsf);
         for (std::uint32_t c{0}; c < 3; ++c) {
             tile_nz[c][tid] = 0;
         }
@@ -316,7 +321,7 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         }
         const TilePosition at_pos{tile_pos[p]};
         const std::uint64_t llf_mask{tile_llf_mask[p]};
-        const float qgsf{tile_qgsf[p]};
+        const float2 qgsf{tile_qgsf[p]};
         std::int16_t qy[2]{};
 #pragma unroll
         for (std::uint32_t j{0}; j < 2; ++j) {
@@ -325,9 +330,10 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             if (!((llf_mask >> slot) & 1)) {
                 const int raw{static_cast<int>(at_pos.covered_ordinal * BLOCK_SLOTS + slot)};
                 const float yr{__half2float(tile_coeffs[1][p * BLOCK_SLOTS + slot])};
-                const float wy{dequant_weight(at_pos.side, 1, raw)};
-                const int qy_int{static_cast<int>(lrintf(yr * qgsf / wy))};
-                y_round[k][j] = static_cast<float>(qy_int) * wy / qgsf;
+                const DequantWeightPair wy{dequant_weight(at_pos.side, 1, raw)};
+                const int qy_int{
+                    static_cast<int>(lrintf(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight)))};
+                y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
                 qy[j] = static_cast<std::int16_t>(qy_int);
             }
         }
@@ -373,7 +379,7 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         }
         const TilePosition at_pos{tile_pos[p]};
         const std::uint64_t llf_mask{tile_llf_mask[p]};
-        const float qgsf{tile_qgsf[p]};
+        const float qgsf{tile_qgsf[p].x};
         std::int16_t qx[2]{};
         std::int16_t qb[2]{};
 #pragma unroll
@@ -383,10 +389,12 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
                 const int raw{static_cast<int>(at_pos.covered_ordinal * BLOCK_SLOTS + slot)};
                 const float xr{__half2float(tile_coeffs[0][p * BLOCK_SLOTS + slot])};
                 const float br{__half2float(tile_coeffs[2][p * BLOCK_SLOTS + slot])};
-                const float wx{dequant_weight(at_pos.side, 0, raw)};
-                qx[j] = static_cast<std::int16_t>(lrintf((xr - ytox * y_round[k][j]) * qgsf / wx));
-                const float wb{dequant_weight(at_pos.side, 2, raw)};
-                qb[j] = static_cast<std::int16_t>(lrintf((br - ytob * y_round[k][j]) * qgsf / wb));
+                const DequantWeightPair wx{dequant_weight(at_pos.side, 0, raw)};
+                qx[j] = static_cast<std::int16_t>(
+                    lrintf(div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight)));
+                const DequantWeightPair wb{dequant_weight(at_pos.side, 2, raw)};
+                qb[j] = static_cast<std::int16_t>(
+                    lrintf(div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight)));
             }
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};

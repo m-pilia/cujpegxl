@@ -50,6 +50,11 @@ cc_library(
 )
 
 cc_library(
+    name = "exact_div",
+    hdrs = ["exact_div.cuh"],
+)
+
+cc_library(
     name = "warp_scan",
     hdrs = ["warp_scan.cuh"],
 )
@@ -141,6 +146,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":cfl",
+        ":exact_div",
         ":quant_consts",
         ":vardct_layout",
     ],
@@ -208,6 +214,7 @@ cc_binary(
 cc_library(
     name = "quant_consts",
     hdrs = [
+        "dequant_weight_pairs.h",
         "quant_calibration.h",
         "quant_weights_dct16.h",
         "quant_weights_dct32.h",
@@ -236,6 +243,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":dct_impl",
+        ":exact_div",
         ":quant_consts",
         ":transform_select_impl",
         ":vardct_layout",

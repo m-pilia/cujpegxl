@@ -10,9 +10,10 @@
 
 #include "adaptive_quant_impl.cuh"
 #include "dct_impl.cuh"
+#include "dequant_weight_pairs.h"
+#include "exact_div.cuh"
 #include "gaborish.h"
 #include "quant_calibration.h"
-#include "quant_weights_dct8.h"
 #include "transform_select_impl.cuh"
 #include "vardct_layout.h"
 #include "xyb_impl.cuh"
@@ -197,38 +198,6 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
     }
 }
 
-// a / b correctly rounded given inv_b = 1 / b correctly rounded, without the
-// slow-path branch of the IEEE division. q is faithful after one residual step,
-// so the second step yields the correctly rounded quotient (Markstein) unless
-// the residual underflows, which needs |a| close to the smallest normal: the
-// quotients here are then far below 0.5 and only feed rintf.
-__device__ inline float div_rn(float a, float b, float inv_b) {
-    float q{a * inv_b};
-    float r{fmaf(-b, q, a)};
-    q = fmaf(r, inv_b, q);
-    r = fmaf(-b, q, a);
-    return fmaf(r, inv_b, q);
-}
-
-struct YWeight {
-    float weight;
-    float inv_weight;
-};
-
-struct YWeights {
-    YWeight w[64];
-};
-
-constexpr YWeights make_y_weights() {
-    YWeights weights{};
-    for (int i{0}; i < 64; ++i) {
-        weights.w[i] = {DCT8_DEQUANT_WEIGHTS[1][i], 1.0f / DCT8_DEQUANT_WEIGHTS[1][i]};
-    }
-    return weights;
-}
-
-constexpr YWeights Y_WEIGHTS{make_y_weights()};
-
 // rate_terms[i] = 1 + log2f(1 + i) for 0 < i < RATE_TERMS, and 0 for i = 0.
 __device__ inline void init_rate_terms(float* __restrict__ rate_terms, int tid) {
     if (tid < RATE_TERMS) {
@@ -250,7 +219,7 @@ __device__ inline void accumulate_coeff_cost(float coeff, int fx, int fy, int n,
     int sy{(fy * 8 + n / 2) / n};
     sx = sx > 7 ? 7 : sx;
     sy = sy > 7 ? 7 : sy;
-    const YWeight w{Y_WEIGHTS.w[sx * 8 + sy]};
+    const DequantWeightPair w{DCT8_DEQUANT_PAIRS.w[1][sx * 8 + sy]};
     const float q{rintf(div_rn(coeff * qgsf, w.weight, w.inv_weight))};
     const float err{div_rn(q * w.weight, qgsf, inv_qgsf) - coeff};
     dist += err * err;
