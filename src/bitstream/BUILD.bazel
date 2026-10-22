@@ -14,13 +14,16 @@ RUNTIME_COPTS = [
 cc_library(
     name = "bitstream",
     srcs = [
+        "ans.cc",
         "codestream.cc",
         "container.cc",
         "context_map.cc",
         "histogram_writer.cc",
         "prefix_code.cc",
+        "token_stream.cc",
     ],
     hdrs = [
+        "ans.h",
         "bit_sink.h",
         "bit_writer.h",
         "codestream.h",
@@ -32,11 +35,45 @@ cc_library(
         "hybrid_uint.h",
         "prefix_code.h",
         "serialize_impl.h",
+        "token_stream.h",
     ],
     copts = RUNTIME_COPTS,
     deps = [
         "//src:ac_context",
         "//src:dc_predict",
+    ],
+)
+
+cc_library(
+    name = "token_stream_reference",
+    testonly = True,
+    srcs = ["token_stream_reference.cc"],
+    hdrs = ["token_stream_reference.h"],
+    deps = [":bitstream"],
+)
+
+cc_test(
+    name = "ans_test",
+    srcs = ["ans_test.cc"],
+    deps = [
+        ":bitstream",
+        "@googletest//:gtest_main",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
+    ],
+)
+
+cc_test(
+    name = "token_stream_test",
+    srcs = ["token_stream_test.cc"],
+    deps = [
+        ":bitstream",
+        ":frame_assembly",
+        ":token_stream_reference",
+        "//src:ac_context",
+        "@googletest//:gtest_main",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_private",
     ],
 )
 
@@ -72,7 +109,6 @@ cc_library(
     deps = [
         ":bitstream",
         ":frame_assembly",
-        "//src:ac_context",
         "//src:vardct_layout",
     ],
 )

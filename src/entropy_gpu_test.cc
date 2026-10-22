@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Validates the device AC entropy encoder against the host bitstream reference:
-// the pooled symbol histogram, per-group byte-aligned token streams and their
-// scanned offsets must match byte-for-byte, and repeated runs must be identical.
+// Validates the device AC token coder against the host bitstream reference: the
+// pooled cluster histograms and every group's token entries and raw bits must
+// match exactly, whatever the batching of the pack, and repeated runs must be
+// identical.
 
 #include <cstddef>
 #include <cstdint>
@@ -22,8 +23,6 @@ namespace {
 using bitstream::AcReference;
 using bitstream::FrameCoefficients;
 using bitstream::reference_ac_encode;
-
-constexpr std::size_t OUT_CAPACITY{std::size_t{1} << 22};
 
 // Flattens fc.ac into the device coefficient layout (plane-major over channels
 // X, Y, B; blocks in raster order; 64 coefficients each).
@@ -113,76 +112,82 @@ FrameCoefficients make_mixed_frame(std::size_t w, std::size_t h) {
     return fc;
 }
 
-void check_matches_reference(const FrameCoefficients& fc) {
+void check_matches_reference(const FrameCoefficients& fc, std::size_t batches) {
     const AcReference ref{reference_ac_encode(fc)};
-    const std::vector<std::int32_t> q{flatten_ac(fc)};
-    AcDeviceResult dev{};
-    ASSERT_TRUE(
-        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, dev));
+    AcDeviceTokens dev{};
+    ASSERT_TRUE(ac_tokens_device(flatten_ac(fc), fc.acs, fc.width, fc.height, batches, dev));
 
-    for (std::size_t s{0}; s < ref.histogram.size(); ++s) {
-        EXPECT_EQ(dev.histogram[s], ref.histogram[s]) << "histogram symbol " << s;
+    EXPECT_EQ(dev.histogram, ref.histogram);
+    const std::size_t num_groups{ref.group_entries.size()};
+    ASSERT_EQ(dev.layout.size(), 3 * num_groups + 2);
+    const std::uint32_t* const token_offset{dev.layout.data()};
+    const std::uint32_t* const raw_offset{token_offset + num_groups + 1};
+    const std::uint32_t* const raw_bits{raw_offset + num_groups + 1};
+    std::uint32_t tokens{0};
+    std::uint32_t words{0};
+    for (std::size_t g{0}; g < num_groups; ++g) {
+        const std::vector<std::uint16_t>& entries{ref.group_entries[g]};
+        ASSERT_EQ(token_offset[g], tokens) << "group " << g;
+        ASSERT_EQ(raw_offset[g], words) << "group " << g;
+        ASSERT_EQ(raw_bits[g], ref.group_raw_bits[g]) << "group " << g;
+        EXPECT_EQ(std::vector<std::uint16_t>(dev.entries.begin() + tokens,
+                                             dev.entries.begin() + tokens + entries.size()),
+                  entries)
+            << "group " << g << " entries";
+        const std::uint32_t group_words{(raw_bits[g] + 63) / 64};
+        EXPECT_EQ(std::vector<std::uint64_t>(dev.raw.begin() + words,
+                                             dev.raw.begin() + words + group_words),
+                  std::vector<std::uint64_t>(ref.group_raw[g].begin(),
+                                             ref.group_raw[g].begin() + group_words))
+            << "group " << g << " raw bits";
+        tokens += static_cast<std::uint32_t>(entries.size());
+        words += group_words;
     }
-    std::uint32_t offset{0};
-    for (std::size_t g{0}; g < ref.group_streams.size(); ++g) {
-        const std::vector<std::uint8_t>& expected{ref.group_streams[g]};
-        EXPECT_EQ(dev.group_sizes[g], expected.size()) << "group " << g << " size";
-        EXPECT_EQ(dev.group_offsets[g], offset) << "group " << g << " offset";
-        offset += dev.group_sizes[g];
-        for (std::size_t i{0}; i < expected.size(); ++i) {
-            EXPECT_EQ(dev.stream[dev.group_offsets[g] + i], expected[i])
-                << "group " << g << " byte " << i;
-        }
-    }
-    EXPECT_EQ(dev.stream.size(), offset);
+    EXPECT_EQ(token_offset[num_groups], tokens);
+    EXPECT_EQ(raw_offset[num_groups], words);
 }
 
 TEST(EntropyGpu, Dct8OnlyMatchesReference) {
     FrameCoefficients fc{make_frame(256, 256)};
     fill_ac_pattern(fc);
     fc.acs.assign((256 / 8) * (256 / 8), 8);  // explicit all-DCT8
-    check_matches_reference(fc);
+    check_matches_reference(fc, 1);
 }
 
 TEST(EntropyGpu, MixedSingleGroupMatchesReference) {
-    check_matches_reference(make_mixed_frame(256, 256));
+    check_matches_reference(make_mixed_frame(256, 256), 1);
 }
 
 TEST(EntropyGpu, MixedMultiGroupMatchesReference) {
-    check_matches_reference(make_mixed_frame(512, 384));
+    check_matches_reference(make_mixed_frame(512, 384), 1);
+    check_matches_reference(make_mixed_frame(512, 384), 4);
+}
+
+TEST(EntropyGpu, PartialGroupsMatchReference) {
+    FrameCoefficients fc{make_frame(1048, 520)};
+    fill_ac_pattern(fc);
+    // Large magnitudes, so that tokens carry up to the 13 raw bits of an int16.
+    const std::size_t blocks{(fc.width / 8) * (fc.height / 8)};
+    for (std::size_t block{0}; block < blocks; block += 5) {
+        for (int c{0}; c < 3; ++c) {
+            fc.ac[c][block * 64 + 40] = (static_cast<std::int32_t>((block + c) % 3) - 1) * 32000 +
+                                        static_cast<std::int32_t>(block % 97);
+        }
+    }
+    check_matches_reference(fc, 3);
 }
 
 TEST(EntropyGpu, Deterministic) {
-    FrameCoefficients fc{make_mixed_frame(512, 384)};
-    const AcReference ref{reference_ac_encode(fc)};
+    const FrameCoefficients fc{make_mixed_frame(512, 384)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};
-
-    AcDeviceResult a{};
-    AcDeviceResult b{};
-    ASSERT_TRUE(
-        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, a));
-    ASSERT_TRUE(
-        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, b));
-    EXPECT_EQ(a.stream, b.stream);
-    EXPECT_EQ(a.group_sizes, b.group_sizes);
-    EXPECT_EQ(a.group_offsets, b.group_offsets);
+    AcDeviceTokens a{};
+    AcDeviceTokens b{};
+    ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, a));
+    ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, b));
     EXPECT_EQ(a.histogram, b.histogram);
-}
-
-TEST(EntropyGpu, OverCapacityLeavesOutputUntouched) {
-    FrameCoefficients fc{make_mixed_frame(512, 384)};
-    const AcReference ref{reference_ac_encode(fc)};
-    const std::vector<std::int32_t> q{flatten_ac(fc)};
-
-    AcDeviceResult fits{};
-    ASSERT_TRUE(
-        ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits, OUT_CAPACITY, fits));
-    const std::size_t short_capacity{fits.stream.size() - 1};
-    AcDeviceResult over{};
-    ASSERT_TRUE(ac_encode_device(q, fc.acs, fc.width, fc.height, ref.depth, ref.bits,
-                                 short_capacity, over));
-    EXPECT_EQ(over.group_sizes, fits.group_sizes);
-    EXPECT_EQ(over.stream, std::vector<std::uint8_t>(short_capacity, AC_OUT_SENTINEL));
+    EXPECT_EQ(a.layout, b.layout);
+    EXPECT_EQ(a.entries, b.entries);
+    EXPECT_EQ(a.raw, b.raw);
 }
 
 }  // namespace

@@ -24,6 +24,7 @@ cc_binary(
     deps = [
         ":nvjpeg_encoder",
         "//src:frame_encoder",
+        "//src:worker_pool",
         "@cuda//:nvtx3",
     ],
 )

@@ -7,7 +7,6 @@
 
 #include <cuda_runtime.h>
 
-#include "ac_context.h"
 #include "dc_predict.h"
 #include "src/bitstream/bit_sink.h"
 #include "src/bitstream/frame_assembly.h"
@@ -18,33 +17,20 @@
 namespace cujpegxl {
 namespace {
 
-using bitstream::CountingBitWriter;
 using bitstream::HISTOGRAM_STRIDE;
 using bitstream::HybridUintConfig;
 namespace detail = bitstream::detail;
 
 constexpr unsigned int FULL_MASK{~0u};
 
-// Each prefix code (AC cluster, DC or AcMetadata group histogram) is built and
-// described by one warp, as a single-warp block.
+// Each prefix code (DC or AcMetadata group histogram) is built and described by
+// one warp, as a single-warp block.
 constexpr unsigned int CODE_THREADS{32};
-
-constexpr unsigned int AC_SERIALIZE_THREADS{256};
-
-// Shared-memory staging for the AcGlobal section, sized well above the real
-// section (~1.4 KB) and the structural worst case.
-constexpr std::size_t AC_SECTION_SHMEM = 24576;
-
-// Byte slot reserved per cluster for its serialized prefix-code description. A
-// 256-symbol code description is a few hundred bits; this bounds it with margin.
-constexpr std::size_t CLUSTER_BLOB_STRIDE = 512;
 
 // Code lengths of a length-limited (<= 15 bits) code are below this.
 constexpr std::uint32_t DEPTH_VALUES{16};
 
 constexpr std::size_t MAX_TREE_NODES{2 * detail::MAX_ALPHABET + 4};
-
-static_assert(AC_NUM_CLUSTERS == 32, "ac_serialize_kernel maps one lane per cluster");
 
 std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
@@ -85,27 +71,6 @@ struct SharedBitWriter {
         pos += static_cast<std::uint32_t>(n_bits);
     }
 };
-
-// Writes the `nbits` LSB-first bits of the byte blob `src` at bit `dst_pos`, one
-// 32-bit chunk per participating thread (`thread` of `num_threads`).
-__device__ void copy_bits(unsigned int* words, std::uint32_t dst_pos, const std::uint8_t* src,
-                          std::uint32_t nbits, unsigned int thread, unsigned int num_threads) {
-    const std::uint32_t nbytes{(nbits + 7) / 8};
-    for (std::uint32_t chunk{thread}; chunk * 32 < nbits; chunk += num_threads) {
-        std::uint32_t value{0};
-        for (std::uint32_t b{0}; b < 4; ++b) {
-            const std::uint32_t byte{chunk * 4 + b};
-            if (byte < nbytes) {
-                value |= static_cast<std::uint32_t>(src[byte]) << (8 * b);
-            }
-        }
-        const std::uint32_t n{min(32u, nbits - chunk * 32)};
-        if (n < 32) {
-            value &= (1u << n) - 1u;
-        }
-        SharedBitWriter{words, dst_pos + chunk * 32, true}.write(n, value);
-    }
-}
 
 struct TreeScratch {
     std::uint32_t leaf_count[detail::MAX_ALPHABET];
@@ -432,121 +397,6 @@ __device__ void warp_write_modular_header(SharedBitWriter& w, int predictor, DcB
                                  lane);
 }
 
-// One warp per AC cluster: builds the cluster's prefix code and serializes its
-// code description into its own blob slot.
-__global__ void ac_build_codes_kernel(const std::uint32_t* ac_hist, std::uint8_t* depth,
-                                      std::uint16_t* bits, std::uint8_t* cluster_blob,
-                                      std::uint32_t* cluster_alpha, std::uint32_t* cluster_nbits) {
-    __shared__ CodeScratch s;
-    __shared__ unsigned int s_words[CLUSTER_BLOB_STRIDE / 4];
-    const unsigned int lane{threadIdx.x};
-    const std::size_t c{blockIdx.x};
-
-    load_histogram(ac_hist + c * HISTOGRAM_STRIDE, s.code, lane);
-    for (std::size_t i{lane}; i < CLUSTER_BLOB_STRIDE / 4; i += CODE_THREADS) {
-        s_words[i] = 0;
-    }
-    __syncwarp();
-
-    const HistogramSummary summary{summarize_histogram(s.code.hist, HISTOGRAM_STRIDE, lane)};
-    SharedBitWriter w{s_words, 0, lane == 0};
-    if (summary.alphabet > 1) {
-        warp_build_and_store_huffman_code(s.code, summary.alphabet, summary, w, s.code_length,
-                                          s.tree, lane);
-    }
-    assert(w.pos <= CLUSTER_BLOB_STRIDE * 8);
-    __syncwarp();
-
-    store_code(s.code, depth + c * HISTOGRAM_STRIDE, bits + c * HISTOGRAM_STRIDE, lane);
-    auto* blob_words{reinterpret_cast<unsigned int*>(cluster_blob + c * CLUSTER_BLOB_STRIDE)};
-    for (std::uint32_t i{lane}; i < (w.pos + 31) / 32; i += CODE_THREADS) {
-        blob_words[i] = s_words[i];
-    }
-    if (lane == 0) {
-        cluster_alpha[c] = summary.alphabet;
-        cluster_nbits[c] = w.pos;
-    }
-}
-
-// Serializes the AcGlobal section: the fixed head, the precomputed context map,
-// the per-cluster uint configs and alphabet sizes, and the cluster code blobs,
-// each placed at its scanned bit offset and copied in parallel.
-__global__ void ac_serialize_kernel(std::size_t num_ac_groups, const std::uint8_t* ctxmap_blob,
-                                    std::uint32_t ctxmap_nbits, const std::uint32_t* cluster_alpha,
-                                    const std::uint8_t* cluster_blob,
-                                    const std::uint32_t* cluster_nbits, std::uint8_t* section,
-                                    std::uint32_t* section_len) {
-    __shared__ unsigned int s_words[AC_SECTION_SHMEM / 4];
-    __shared__ std::uint32_t s_alpha_pos[AC_NUM_CLUSTERS];
-    __shared__ std::uint32_t s_blob_pos[AC_NUM_CLUSTERS];
-    __shared__ std::uint32_t s_total_bits;
-    const unsigned int tid{threadIdx.x};
-    const unsigned int lane{tid & 31u};
-    const unsigned int warp{tid >> 5};
-
-    CountingBitWriter head{};
-    detail::serialize_ac_global_head(head, num_ac_groups);
-    head.write(1, 0);  // lz77.enabled = false
-    CountingBitWriter config{};
-    detail::encode_uint_config(config, HybridUintConfig{}, detail::PREFIX_MAX_BITS);
-    const auto ctxmap_pos{static_cast<std::uint32_t>(head.bits_written())};
-    const std::uint32_t use_prefix_pos{ctxmap_pos + ctxmap_nbits};
-    const auto config_bits{static_cast<std::uint32_t>(config.bits_written())};
-    const std::uint32_t alpha_pos{use_prefix_pos + 1 + AC_NUM_CLUSTERS * config_bits};
-
-    if (warp == 0) {
-        CountingBitWriter alpha_field{};
-        detail::store_var_len_uint16(alpha_field, cluster_alpha[lane] - 1);
-        const auto alpha_bits{static_cast<std::uint32_t>(alpha_field.bits_written())};
-        const std::uint32_t blob_bits{cluster_alpha[lane] > 1 ? cluster_nbits[lane] : 0};
-        const std::uint32_t alpha_end{warp_inclusive_sum(alpha_bits, lane)};
-        const std::uint32_t blob_end{warp_inclusive_sum(blob_bits, lane)};
-        const std::uint32_t blobs_pos{alpha_pos + __shfl_sync(FULL_MASK, alpha_end, 31)};
-        s_alpha_pos[lane] = alpha_pos + alpha_end - alpha_bits;
-        s_blob_pos[lane] = blobs_pos + blob_end - blob_bits;
-        if (lane == 31) {
-            s_total_bits = blobs_pos + blob_end;
-        }
-    }
-    __syncthreads();
-    const std::uint32_t total_bits{s_total_bits};
-    assert(total_bits <= AC_SECTION_SHMEM * 8);
-    for (std::uint32_t i{tid}; i < (total_bits + 31) / 32; i += blockDim.x) {
-        s_words[i] = 0;
-    }
-    __syncthreads();
-
-    if (tid == 0) {
-        SharedBitWriter w{s_words, 0, true};
-        detail::serialize_ac_global_head(w, num_ac_groups);
-        w.write(1, 0);                                               // lz77.enabled = false
-        SharedBitWriter{s_words, use_prefix_pos, true}.write(1, 1);  // use_prefix_code
-    }
-    if (tid < AC_NUM_CLUSTERS) {
-        SharedBitWriter config_w{s_words, use_prefix_pos + 1 + tid * config_bits, true};
-        detail::encode_uint_config(config_w, HybridUintConfig{}, detail::PREFIX_MAX_BITS);
-        SharedBitWriter alpha_w{s_words, s_alpha_pos[tid], true};
-        detail::store_var_len_uint16(alpha_w, cluster_alpha[tid] - 1);
-    }
-    copy_bits(s_words, ctxmap_pos, ctxmap_blob, ctxmap_nbits, tid, blockDim.x);
-    for (unsigned int c{warp}; c < AC_NUM_CLUSTERS; c += blockDim.x / 32) {
-        if (cluster_alpha[c] > 1) {
-            copy_bits(s_words, s_blob_pos[c], cluster_blob + c * CLUSTER_BLOB_STRIDE,
-                      cluster_nbits[c], lane, 32);
-        }
-    }
-    __syncthreads();
-
-    const std::uint32_t num_bytes{(total_bits + 7) / 8};
-    const auto* bytes{reinterpret_cast<const std::uint8_t*>(s_words)};
-    for (std::uint32_t i{tid}; i < num_bytes; i += blockDim.x) {
-        section[i] = bytes[i];
-    }
-    if (tid == 0) {
-        *section_len = num_bytes;
-    }
-}
-
 // One warp per (Dc group, blob): even blocks build the group's pre blob (DC
 // prefix code), odd blocks its mid blob (AcMetadata prefix code).
 __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
@@ -603,32 +453,6 @@ __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_
 }
 
 }  // namespace
-
-bool build_ac_global_device(const std::uint32_t* d_ac_hist, std::size_t num_ac_groups,
-                            const std::uint8_t* d_ctxmap_blob, std::size_t ctxmap_nbits,
-                            std::uint8_t* d_depth, std::uint16_t* d_bits, std::uint8_t* d_section,
-                            std::size_t section_cap, std::uint32_t* d_section_len) {
-    assert(section_cap >= AC_SECTION_SHMEM);
-    (void)section_cap;
-    std::uint8_t* d_cluster_blob{nullptr};
-    std::uint32_t* d_cluster_meta{nullptr};
-    if (cudaMallocAsync(&d_cluster_blob, AC_NUM_CLUSTERS * CLUSTER_BLOB_STRIDE, 0) != cudaSuccess ||
-        cudaMallocAsync(&d_cluster_meta, 2 * AC_NUM_CLUSTERS * sizeof(std::uint32_t), 0) !=
-            cudaSuccess) {
-        return false;
-    }
-    std::uint32_t* d_cluster_alpha{d_cluster_meta};
-    std::uint32_t* d_cluster_nbits{d_cluster_meta + AC_NUM_CLUSTERS};
-    ac_build_codes_kernel<<<AC_NUM_CLUSTERS, CODE_THREADS>>>(
-        d_ac_hist, d_depth, d_bits, d_cluster_blob, d_cluster_alpha, d_cluster_nbits);
-    ac_serialize_kernel<<<1, AC_SERIALIZE_THREADS>>>(
-        num_ac_groups, d_ctxmap_blob, static_cast<std::uint32_t>(ctxmap_nbits), d_cluster_alpha,
-        d_cluster_blob, d_cluster_nbits, d_section, d_section_len);
-    const bool ok{cudaGetLastError() == cudaSuccess};
-    cudaFreeAsync(d_cluster_blob, 0);
-    cudaFreeAsync(d_cluster_meta, 0);
-    return ok;
-}
 
 bool build_dc_group_blobs_device(std::size_t width, std::size_t height,
                                  const std::uint32_t* d_dc_hist, const std::uint32_t* d_am_hist,

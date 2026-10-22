@@ -53,20 +53,26 @@ struct FrameCoefficients {
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
 // freshly allocated byte buffer. The output is decodable by libjxl/djxl. The AC
 // coefficients are coded with libjxl's real per-token contexts split across
-// AC_NUM_CLUSTERS histograms.
+// AC_NUM_CLUSTERS histograms: in a multi-group frame with the production
+// AcGlobal code (rANS or prefix codes), in a single-group frame with prefix
+// codes.
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
 
-// The host reference for the device AC entropy encoder, using the real per-token
-// contexts clustered into AC_NUM_CLUSTERS histograms. `histogram` and
-// `depth`/`bits` are laid out per cluster (cluster * 256 + symbol); each AC
-// group's byte-aligned token stream (one AcGroup TOC section per group, raster
-// order) codes each token with its cluster's prefix code. This is exactly what
-// write_vardct_codestream(fc) emits for the AC groups; the
-// device port must reproduce `histogram` and `group_streams` byte-for-byte.
+// The host reference for the device AC token coder, using the real per-token
+// contexts clustered into AC_NUM_CLUSTERS histograms (`histogram`, cluster * 256
+// + symbol). Per AC group (one AcGroup TOC section, raster order) it carries the
+// token stream the device must pack, entries cluster << TOKEN_CLUSTER_SHIFT |
+// symbol and their `group_raw_bits` raw bits packed LSB-first in `group_raw`
+// (with a zero word past the last), and the group section coded with the
+// production AcGlobal code (`ac_global`). This is exactly what
+// write_vardct_codestream(fc) emits for the AcGlobal and AC groups of a
+// multi-group frame.
 struct AcReference {
     std::vector<std::uint32_t> histogram{};
-    std::vector<std::uint8_t> depth{};
-    std::vector<std::uint16_t> bits{};
+    std::vector<std::vector<std::uint16_t>> group_entries{};
+    std::vector<std::vector<std::uint64_t>> group_raw{};
+    std::vector<std::uint64_t> group_raw_bits{};
+    std::vector<std::uint8_t> ac_global{};
     std::vector<std::vector<std::uint8_t>> group_streams{};
 };
 AcReference reference_ac_encode(const FrameCoefficients& fc);

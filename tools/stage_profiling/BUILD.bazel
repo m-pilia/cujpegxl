@@ -19,6 +19,7 @@ cc_binary(
         "//src:prefix_build",
         "//src:quant_consts",
         "//src:vardct_layout",
+        "//src:worker_pool",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",
     ],

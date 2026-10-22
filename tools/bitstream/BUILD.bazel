@@ -37,6 +37,8 @@ cc_library(
         "//src:coeff_order",
         "//src:vardct_layout",
         "//src/bitstream",
+        "//src/bitstream:frame_assembly",
+        "//src/bitstream:token_stream_reference",
     ],
 )
 

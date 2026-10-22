@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Asserts the warp-cooperative on-device prefix-code build (prefix_build.cu)
-// reproduces the serial host reference (build_ac_global / build_dc_group_blobs)
-// byte-for-byte over histograms spanning every Huffman path: empty, single
-// symbol, the <=4-symbol simple form, the complex code-length-code form, the
-// full 256-symbol alphabet, and trees exceeding the depth limit.
+// reproduces the serial host reference (build_dc_group_blobs) byte-for-byte over histograms
+// spanning every Huffman path: empty, single symbol, the <=4-symbol simple form, the complex
+// code-length-code form, the full 256-symbol alphabet, and trees exceeding the depth limit.
 
 #include <algorithm>
 #include <cstdint>
@@ -15,7 +14,6 @@
 #include <gtest/gtest.h>
 
 #include "prefix_build.h"
-#include "src/ac_context.h"
 #include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/prefix_build_reference.h"
 #include "src/entropy.h"
@@ -23,7 +21,6 @@
 namespace cujpegxl {
 namespace {
 
-using bitstream::AcGlobalResult;
 using bitstream::DcGroupBlobs;
 using bitstream::HISTOGRAM_STRIDE;
 
@@ -98,50 +95,6 @@ std::vector<T> device_download(const T* d, std::size_t count) {
 // tail of the final byte, so a full-byte compare is exact).
 std::size_t byte_span(std::uint32_t nbits) {
     return (nbits + 7) / 8;
-}
-
-void check_ac_global(std::size_t width, std::size_t height, Lcg& rng) {
-    const std::size_t num_ac{bitstream::ac_group_count(width, height)};
-    std::vector<std::uint32_t> ac_hist(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE);
-    for (int c{0}; c < AC_NUM_CLUSTERS; ++c) {
-        fill_histogram(ac_hist.data() + c * HISTOGRAM_STRIDE, c, rng);
-    }
-
-    const AcGlobalResult host{bitstream::build_ac_global(ac_hist.data(), num_ac)};
-    const bitstream::AcContextMapBlob ctxmap{bitstream::build_ac_context_map_blob()};
-
-    std::uint32_t* d_hist{device_upload(ac_hist)};
-    std::uint8_t* d_ctxmap{device_upload(ctxmap.bytes)};
-    std::uint8_t* d_depth{nullptr};
-    std::uint16_t* d_bits{nullptr};
-    std::uint8_t* d_section{nullptr};
-    std::uint32_t* d_section_len{nullptr};
-    const std::size_t section_cap{1u << 16};
-    ASSERT_EQ(cudaMalloc(&d_depth, AC_NUM_CLUSTERS * HISTOGRAM_STRIDE), cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_bits, AC_NUM_CLUSTERS * HISTOGRAM_STRIDE * sizeof(std::uint16_t)),
-              cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_section, section_cap), cudaSuccess);
-    ASSERT_EQ(cudaMalloc(&d_section_len, sizeof(std::uint32_t)), cudaSuccess);
-
-    ASSERT_TRUE(build_ac_global_device(d_hist, num_ac, d_ctxmap, ctxmap.nbits, d_depth, d_bits,
-                                       d_section, section_cap, d_section_len));
-
-    const auto dev_depth{device_download(d_depth, AC_NUM_CLUSTERS * HISTOGRAM_STRIDE)};
-    const auto dev_bits{device_download(d_bits, AC_NUM_CLUSTERS * HISTOGRAM_STRIDE)};
-    const auto dev_len{device_download(d_section_len, 1)};
-    const auto dev_section{device_download(d_section, dev_len[0])};
-
-    EXPECT_EQ(dev_len[0], host.section.size());
-    EXPECT_EQ(dev_section, host.section);
-    EXPECT_EQ(dev_depth, host.depth);
-    EXPECT_EQ(dev_bits, host.bits);
-
-    cudaFree(d_hist);
-    cudaFree(d_ctxmap);
-    cudaFree(d_depth);
-    cudaFree(d_bits);
-    cudaFree(d_section);
-    cudaFree(d_section_len);
 }
 
 void check_dc_group_blobs(std::size_t width, std::size_t height, Lcg& rng) {
@@ -236,14 +189,6 @@ void check_dc_group_blobs(std::size_t width, std::size_t height, Lcg& rng) {
     cudaFree(d_mid);
     cudaFree(d_mid_off);
     cudaFree(d_mid_bits);
-}
-
-TEST(PrefixBuildGpu, AcGlobalMatchesHost) {
-    Lcg rng{0x1234567u};
-    for (int iter{0}; iter < 8; ++iter) {
-        check_ac_global(1920, 1080, rng);
-        check_ac_global(3840, 2160, rng);
-    }
 }
 
 TEST(PrefixBuildGpu, DcGroupBlobsMatchHost) {

@@ -10,7 +10,10 @@ cc_binary(
     srcs = ["encode_to_file.cc"],
     tags = ["gpu"],
     visibility = ["//visibility:public"],
-    deps = ["//src:frame_encoder"],
+    deps = [
+        "//src:frame_encoder",
+        "//src:worker_pool",
+    ],
 )
 
 py_library(

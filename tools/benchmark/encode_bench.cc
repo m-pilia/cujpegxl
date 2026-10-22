@@ -39,6 +39,7 @@
 
 #include "src/bitstream/frame_assembly.h"
 #include "src/frame_encoder.h"
+#include "src/worker_pool.h"
 #include "tools/benchmark/nvjpeg_encoder.h"
 
 namespace {
@@ -363,6 +364,11 @@ int run(int argc, char** argv) {
     std::vector<std::uint8_t> cujpegxl_out(
         args.codec == "cujpegxl" ? cujpegxl::max_encoded_size(args.width, args.height) : 0);
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
+    std::unique_ptr<cujpegxl::FrameEncoder> cujpegxl_encoder{};
+    if (args.codec == "cujpegxl") {
+        cujpegxl_encoder =
+            std::make_unique<cujpegxl::FrameEncoder>(cujpegxl::default_worker_threads());
+    }
 
     std::unique_ptr<cujpegxl::tools::NvjpegEncoder> nvjpeg{};
     if (args.codec == "nvjpeg") {
@@ -373,10 +379,10 @@ int run(int argc, char** argv) {
     auto encode_cujpegxl = [&](const BenchImage& img) -> double {
         cujpegxl_stages.clear();
         const auto t0{std::chrono::steady_clock::now()};
-        const cujpegxl::EncodeResult result{
-            cujpegxl::encode_nv12(img.d_luma, args.width, img.d_chroma, args.width, args.width,
-                                  args.height, args.device, args.distance, qp, cujpegxl_out.data(),
-                                  cujpegxl_out.size(), args.profile ? &cujpegxl_stages : nullptr)};
+        const cujpegxl::EncodeResult result{cujpegxl_encoder->encode_nv12(
+            img.d_luma, args.width, img.d_chroma, args.width, args.width, args.height, args.device,
+            args.distance, qp, cujpegxl_out.data(), cujpegxl_out.size(),
+            args.profile ? &cujpegxl_stages : nullptr)};
         const auto t1{std::chrono::steady_clock::now()};
         if (result.status != cujpegxl::EncodeStatus::OK) {
             die("cujpegxl encode failed");

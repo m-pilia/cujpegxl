@@ -6,10 +6,10 @@
 // attribute a per-workstream runtime change. This harness calls the *public*
 // sub-stage functions directly and wall-clock times each one; the production
 // functions are sync-free, so `timed` issues its own cudaDeviceSynchronize after
-// each sub-call, making the blocking wall time that sub-stage's GPU time. It
-// deliberately mirrors the encode_nv12 + encode_frame orchestration so
-// the internal sub-stages of encode_frame can be timed without instrumenting
-// production files.
+// each sub-call, making the blocking wall time that sub-stage's GPU time (or,
+// for the host sub-stages, their CPU time). It deliberately mirrors the
+// FrameEncoder orchestration, serialized, so its internal sub-stages can be
+// timed without instrumenting production files.
 //
 // Numbers are for *relative* attribution: scratch is allocated once up front and
 // every sub-stage is followed by a device sync, so the sum differs from the
@@ -25,6 +25,7 @@
 // //tools/corpus:corpus_prep.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,7 @@
 #include "src/ac_context.h"
 #include "src/bitstream/container.h"
 #include "src/bitstream/frame_assembly.h"
+#include "src/bitstream/token_stream.h"
 #include "src/entropy.h"
 #include "src/frame_encoder.h"
 #include "src/frontend_fused.h"
@@ -50,6 +52,7 @@
 #include "src/prefix_build.h"
 #include "src/quant_calibration.h"
 #include "src/vardct_layout.h"
+#include "src/worker_pool.h"
 
 namespace {
 
@@ -82,13 +85,10 @@ T* device_alloc(std::size_t count) {
 }
 
 template <typename T>
-T* upload(const std::vector<T>& host) {
-    if (host.empty()) {
-        return nullptr;
-    }
-    T* device{device_alloc<T>(host.size())};
-    cudaMemcpy(device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice);
-    return device;
+T* pinned_alloc(std::size_t count) {
+    void* p{nullptr};
+    cudaHostAlloc(&p, count * sizeof(T), cudaHostAllocDefault);
+    return static_cast<T*>(p);
 }
 
 std::vector<std::uint8_t> read_file(const std::string& path) {
@@ -103,6 +103,7 @@ struct Args {
     int iterations{20};
     int warmup{5};
     float distance{1.0f};
+    std::size_t threads{cujpegxl::default_worker_threads()};
     std::vector<std::string> inputs;
 };
 
@@ -118,6 +119,8 @@ Args parse_args(int argc, char** argv) {
             args.warmup = std::atoi(a.c_str() + 9);
         } else if (a.rfind("--distance=", 0) == 0) {
             args.distance = static_cast<float>(std::atof(a.c_str() + 11));
+        } else if (a.rfind("--threads=", 0) == 0) {
+            args.threads = static_cast<std::size_t>(std::atoi(a.c_str() + 10));
         } else {
             args.inputs.push_back(a);
         }
@@ -133,7 +136,7 @@ int main(int argc, char** argv) {
     if (args.inputs.empty()) {
         std::fprintf(stderr,
                      "usage: stage_profiler --dims=WxH [--iterations=N] [--warmup=N] "
-                     "[--distance=F] <file.nv12> [...]\n");
+                     "[--distance=F] [--threads=N] <file.nv12> [...]\n");
         return 2;
     }
 
@@ -191,17 +194,13 @@ int main(int argc, char** argv) {
     std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
 
     const SectionCapacities caps{section_capacities(width, height)};
-    const bitstream::AcContextMapBlob ctxmap{bitstream::build_ac_context_map_blob()};
-    std::uint8_t* d_ctxmap{upload(ctxmap.bytes)};
-    std::uint8_t* d_ac_depth{
-        device_alloc<std::uint8_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
-    std::uint16_t* d_ac_bits{
-        device_alloc<std::uint16_t>(AC_NUM_CLUSTERS * bitstream::HISTOGRAM_STRIDE)};
-    std::uint8_t* d_ac_section{device_alloc<std::uint8_t>(caps.ac_global)};
-    std::uint32_t* d_section_sizes{device_alloc<std::uint32_t>(num_dc + 1 + num_ac)};
-    std::uint32_t* d_dc_sizes{d_section_sizes};
-    std::uint32_t* d_ac_global_size{d_section_sizes + num_dc};
-    std::uint32_t* d_ac_sizes{d_section_sizes + num_dc + 1};
+    constexpr std::size_t HIST_WORDS{AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE};
+    const std::size_t layout_words{3 * num_ac + 2};
+    std::uint64_t* d_item_sizes{device_alloc<std::uint64_t>(3 * blocks)};
+    std::uint64_t* d_chunk_base{device_alloc<std::uint64_t>(ac_token_chunks(width, height))};
+    std::uint32_t* d_layout{device_alloc<std::uint32_t>(layout_words)};
+    std::uint16_t* d_entries{device_alloc<std::uint16_t>(ac_max_tokens(width, height))};
+    std::uint64_t* d_raw{device_alloc<std::uint64_t>(ac_max_raw_words(width, height))};
     std::uint8_t* d_dc_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_dc_bits{device_alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_am_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
@@ -212,29 +211,46 @@ int main(int argc, char** argv) {
     std::uint8_t* d_mid{device_alloc<std::uint8_t>(num_dc * DC_BLOB_STRIDE)};
     std::uint32_t* d_mid_off{device_alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_mid_bits{device_alloc<std::uint32_t>(num_dc)};
-
-    std::uint8_t* d_ac_body{device_alloc<std::uint8_t>(caps.ac_groups)};
     std::uint8_t* d_dc_body{device_alloc<std::uint8_t>(caps.dc_groups)};
-    std::uint32_t* d_ac_offsets{device_alloc<std::uint32_t>(num_ac)};
+    std::uint32_t* d_dc_sizes{device_alloc<std::uint32_t>(num_dc)};
     std::uint32_t* d_dc_offsets{device_alloc<std::uint32_t>(num_dc)};
     std::uint8_t* d_dc_scratch{device_alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
-    std::uint8_t* d_body{
-        device_alloc<std::uint8_t>(caps.ac_groups + caps.dc_groups + caps.ac_global + 4096)};
+
+    std::uint32_t* h_ac_meta{pinned_alloc<std::uint32_t>(HIST_WORDS + layout_words)};
+    std::uint16_t* h_entries{pinned_alloc<std::uint16_t>(ac_max_tokens(width, height))};
+    std::uint64_t* h_raw{pinned_alloc<std::uint64_t>(ac_max_raw_words(width, height) + 1)};
+    std::uint32_t* h_dc_sizes{pinned_alloc<std::uint32_t>(num_dc)};
+    std::uint8_t* h_dc_body{pinned_alloc<std::uint8_t>(caps.dc_groups)};
+    const std::uint32_t* const token_offset{h_ac_meta + HIST_WORDS};
+    const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
+    const std::uint32_t* const raw_bits{raw_offset + num_ac + 1};
+
+    WorkerPool workers{args.threads};
     std::vector<std::uint8_t> file(max_encoded_size(width, height));
 
     Stage s_fe{"frontend_fused"};
     Stage s_qz{"quantize_residual"};
     Stage s_ach{"ac_build_histogram"};
+    Stage s_acl{"ac_token_layout"};
+    Stage s_acp{"ac_pack_tokens"};
+    Stage s_act{"AC tokens D2H"};
     Stage s_dch{"dc_build_histograms"};
     Stage s_amh{"acmeta_build_histograms"};
     Stage s_fbc{"dc_first_blocks"};
-    Stage s_acg{"build_ac_global_device"};
     Stage s_dcb{"build_dc_group_blobs_device"};
     Stage s_dcg{"build_dc_global (CPU)"};
-    Stage s_ace{"ac_encode_groups"};
     Stage s_dce{"dc_encode_groups"};
-    Stage s_sz{"section sizes D2H"};
-    Stage s_asm{"assembly head + gather + D2H"};
+    Stage s_dct{"DcGroups D2H"};
+    Stage s_acg{"AcGlobal + ANS tables (CPU)"};
+    Stage s_acc{"code_token_streams (CPU)"};
+    Stage s_asm{"assembly (CPU)"};
+
+    bitstream::TokenCode code{};
+    std::vector<bitstream::TokenStream> streams(num_ac);
+    std::vector<bitstream::CodedStream> coded(num_ac);
+    std::vector<std::size_t> slot_end(num_ac);
+    std::vector<std::size_t> order(num_ac);
+    std::vector<std::uint64_t> slot_words{};
 
     for (int it{0}; it < args.warmup + args.iterations; ++it) {
         const bool record{it >= args.warmup};
@@ -243,7 +259,7 @@ int main(int argc, char** argv) {
         cudaMemcpy(d_luma, frame.data(), ysize, cudaMemcpyHostToDevice);
         cudaMemcpy(d_chroma, frame.data() + ysize, ysize / 2, cudaMemcpyHostToDevice);
 
-        // Front-end sub-stages, in encode_nv12 order.
+        // Front-end sub-stages, in FrameEncoder::encode_nv12 order.
         timed(s_fe, record, [&] {
             const ChromaTexture chroma{d_chroma, width, width, height};
             encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
@@ -254,9 +270,26 @@ int main(int argc, char** argv) {
                               d_ac16, d_dc32, d_nz_exact, d_nz_grid);
         });
 
-        // Entropy sub-stages, in encode_frame order.
+        // Entropy sub-stages, serialized.
         timed(s_ach, record, [&] {
-            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist);
+            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_hist,
+                               d_item_sizes);
+        });
+        timed(s_acl, record,
+              [&] { ac_token_layout(d_item_sizes, width, height, d_chunk_base, d_layout); });
+        timed(s_acp, record, [&] {
+            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_item_sizes,
+                           d_chunk_base, d_layout, 0, num_ac, d_entries, d_raw);
+        });
+        timed(s_act, record, [&] {
+            cudaMemcpy(h_ac_meta, d_ac_hist, HIST_WORDS * sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_ac_meta + HIST_WORDS, d_layout, layout_words * sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_entries, d_entries, token_offset[num_ac] * sizeof(std::uint16_t),
+                       cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_raw, d_raw, raw_offset[num_ac] * sizeof(std::uint64_t),
+                       cudaMemcpyDeviceToHost);
         });
         timed(s_dch, record,
               [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist, nullptr); });
@@ -265,10 +298,6 @@ int main(int argc, char** argv) {
         });
         timed(s_fbc, record,
               [&] { dc_first_blocks(d_acs, width, height, d_fb_pos, d_fbc, nullptr); });
-        timed(s_acg, record, [&] {
-            build_ac_global_device(d_ac_hist, num_ac, d_ctxmap, ctxmap.nbits, d_ac_depth, d_ac_bits,
-                                   d_ac_section, caps.ac_global, d_ac_global_size);
-        });
         timed(s_dcb, record, [&] {
             build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
                                         d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
@@ -276,58 +305,96 @@ int main(int argc, char** argv) {
         });
         std::vector<std::uint8_t> dc_global;
         timed(s_dcg, record, [&] { dc_global = bitstream::build_dc_global(qp); });
-
-        timed(s_ace, record, [&] {
-            ac_encode_groups(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_ac_depth,
-                             d_ac_bits, d_ac_body, caps.ac_groups, d_ac_sizes, d_ac_offsets);
-        });
         timed(s_dce, record, [&] {
             dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                              d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                              d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_dc_scratch, d_dc_body,
                              caps.dc_groups, d_dc_sizes, d_dc_offsets, nullptr);
         });
+        std::size_t dc_total{0};
+        timed(s_dct, record, [&] {
+            cudaMemcpy(h_dc_sizes, d_dc_sizes, num_dc * sizeof(std::uint32_t),
+                       cudaMemcpyDeviceToHost);
+            dc_total = std::accumulate(h_dc_sizes, h_dc_sizes + num_dc, std::size_t{0});
+            cudaMemcpy(h_dc_body, d_dc_body, dc_total, cudaMemcpyDeviceToHost);
+        });
 
-        std::vector<std::uint32_t> section_sizes(1 + num_dc + 1 + num_ac);
-        timed(s_sz, record, [&] {
-            section_sizes[0] = static_cast<std::uint32_t>(dc_global.size());
-            cudaMemcpy(section_sizes.data() + 1, d_section_sizes,
-                       (num_dc + 1 + num_ac) * sizeof(std::uint32_t), cudaMemcpyDeviceToHost);
+        std::vector<std::uint8_t> ac_global;
+        timed(s_acg, record, [&] {
+            bitstream::AcGlobalBuilder tables{h_ac_meta, num_ac, code};
+            std::atomic<std::size_t> next{0};
+            workers.run([&](std::size_t) {
+                for (std::size_t c{next.fetch_add(1)}; c < AC_NUM_CLUSTERS; c = next.fetch_add(1)) {
+                    tables.build_cluster(c);
+                }
+            });
+            ac_global = tables.finish();
+        });
+
+        timed(s_acc, record, [&] {
+            std::size_t slot_total{0};
+            for (std::size_t g{0}; g < num_ac; ++g) {
+                streams[g] = bitstream::TokenStream{h_entries + token_offset[g],
+                                                    token_offset[g + 1] - token_offset[g],
+                                                    h_raw + raw_offset[g], raw_bits[g]};
+                slot_total += bitstream::coded_stream_capacity_words(streams[g]);
+                slot_end[g] = slot_total;
+            }
+            if (slot_words.size() < slot_total) {
+                slot_words.resize(slot_total);
+            }
+            std::iota(order.begin(), order.end(), std::size_t{0});
+            std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+                return streams[a].num_tokens > streams[b].num_tokens;
+            });
+            bitstream::StreamQueue queue{};
+            queue.streams = streams.data();
+            queue.num_streams = num_ac;
+            queue.order = order.data();
+            queue.slot_words = slot_words.data();
+            queue.slot_end = slot_end.data();
+            queue.coded = coded.data();
+            queue.ready.store(num_ac);
+            workers.run([&](std::size_t) { bitstream::code_token_streams(code, queue); });
         });
 
         timed(s_asm, record, [&] {
-            const auto dc_sizes_begin{section_sizes.begin() + 1};
-            const auto ac_sizes_begin{dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc) + 1};
-            const std::size_t dc_total{std::accumulate(
-                dc_sizes_begin, dc_sizes_begin + static_cast<std::ptrdiff_t>(num_dc),
-                std::size_t{0})};
-            const std::uint32_t ac_global_size{section_sizes[1 + num_dc]};
-            const std::size_t ac_total{
-                std::accumulate(ac_sizes_begin, section_sizes.end(), std::size_t{0})};
+            std::vector<std::uint32_t> section_sizes{};
+            section_sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
+            section_sizes.insert(section_sizes.end(), h_dc_sizes, h_dc_sizes + num_dc);
+            section_sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
+            std::size_t ac_total{0};
+            for (const bitstream::CodedStream& c : coded) {
+                section_sizes.push_back(static_cast<std::uint32_t>(c.size_bytes()));
+                ac_total += c.size_bytes();
+            }
             const std::vector<std::uint8_t> head{bitstream::build_codestream_head(
                 static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                 section_sizes)};
-            const std::size_t body_size{dc_global.size() + dc_total + ac_global_size + ac_total};
-            std::size_t at{0};
-            cudaMemcpyAsync(d_body + at, dc_global.data(), dc_global.size(), cudaMemcpyHostToDevice,
-                            nullptr);
-            at += dc_global.size();
-            cudaMemcpyAsync(d_body + at, d_dc_body, dc_total, cudaMemcpyDeviceToDevice, nullptr);
-            at += dc_total;
-            cudaMemcpyAsync(d_body + at, d_ac_section, ac_global_size, cudaMemcpyDeviceToDevice,
-                            nullptr);
-            at += ac_global_size;
-            cudaMemcpyAsync(d_body + at, d_ac_body, ac_total, cudaMemcpyDeviceToDevice, nullptr);
-            const std::size_t codestream_size{head.size() + body_size};
+            const std::size_t codestream_size{head.size() + dc_global.size() + dc_total +
+                                              ac_global.size() + ac_total};
             const std::vector<std::uint8_t> framing{bitstream::container_framing(codestream_size)};
-            std::uint8_t* const head_dst{std::copy(framing.begin(), framing.end(), file.data())};
-            std::uint8_t* const body_dst{std::copy(head.begin(), head.end(), head_dst)};
-            cudaMemcpy(body_dst, d_body, body_size, cudaMemcpyDeviceToHost);
+            std::uint8_t* at{std::copy(framing.begin(), framing.end(), file.data())};
+            at = std::copy(head.begin(), head.end(), at);
+            at = std::copy(dc_global.begin(), dc_global.end(), at);
+            std::memcpy(at, h_dc_body, dc_total);
+            at = std::copy(ac_global.begin(), ac_global.end(), at + dc_total);
+            std::vector<std::size_t> offsets(num_ac);
+            for (std::size_t g{0}; g < num_ac; ++g) {
+                offsets[g] = static_cast<std::size_t>(at - file.data());
+                at += coded[g].size_bytes();
+            }
+            std::atomic<std::size_t> next{0};
+            workers.run([&](std::size_t) {
+                for (std::size_t g{next.fetch_add(1)}; g < num_ac; g = next.fetch_add(1)) {
+                    bitstream::place_coded_stream(coded[g], file.data() + offsets[g]);
+                }
+            });
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_dch, &s_amh, &s_fbc, &s_acg,
-                          &s_dcb, &s_dcg, &s_ace, &s_dce, &s_sz,  &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acp, &s_act, &s_dch, &s_amh,
+                          &s_fbc, &s_dcb, &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {

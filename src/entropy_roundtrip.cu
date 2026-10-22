@@ -3,9 +3,7 @@
 
 #include "entropy_roundtrip.h"
 
-#include <algorithm>
 #include <cstddef>
-#include <numeric>
 
 #include <cuda_runtime.h>
 
@@ -16,7 +14,7 @@
 namespace cujpegxl {
 namespace {
 
-// The device AC histogram and prefix code span all clusters (cluster*256+symbol).
+// The device AC histogram spans all clusters (cluster*256+symbol).
 constexpr std::size_t AC_HIST_SPAN = AC_NUM_CLUSTERS * AC_HISTOGRAM_SIZE;
 
 template <typename T>
@@ -72,13 +70,20 @@ NonzeroCounts nonzero_counts(const std::vector<std::int16_t>& ac,
     return nz;
 }
 
+template <typename T>
+bool download(const T* device, std::size_t count, std::vector<T>& host) {
+    host.assign(count, T{});
+    return count == 0 || cudaMemcpy(host.data(), device, count * sizeof(T),
+                                    cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
 }  // namespace
 
-bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
-                      std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
-                      const std::vector<std::uint16_t>& bits, std::size_t out_capacity,
-                      AcDeviceResult& out) {
+bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
+                      std::size_t width, std::size_t height, std::size_t batches,
+                      AcDeviceTokens& out) {
     const std::size_t num_groups{ac_num_groups(width, height)};
+    const std::size_t layout_words{3 * num_groups + 2};
 
     // The covered-block layout is consumed directly (int32 -> int16, three planes
     // of blocks*64 slots each).
@@ -91,57 +96,54 @@ bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std:
 
     std::int16_t* d_ac{nullptr};
     std::int8_t* d_acs{nullptr};
-    std::uint8_t* d_depth{nullptr};
-    std::uint16_t* d_bits{nullptr};
     std::uint32_t* d_hist{nullptr};
     std::int32_t* d_nz_grid{nullptr};
     std::int32_t* d_nz_exact{nullptr};
-    std::uint32_t* d_sizes{nullptr};
-    std::uint32_t* d_offsets{nullptr};
-    std::uint8_t* d_out{nullptr};
+    std::uint64_t* d_item_sizes{nullptr};
+    std::uint64_t* d_chunk_base{nullptr};
+    std::uint32_t* d_layout{nullptr};
+    std::uint16_t* d_entries{nullptr};
+    std::uint64_t* d_raw{nullptr};
 
-    bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) && upload(depth, &d_depth) &&
-            upload(bits, &d_bits) &&
+    bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) &&
             cudaMalloc(&d_hist, AC_HIST_SPAN * sizeof(std::uint32_t)) == cudaSuccess &&
             upload(nz.grid, &d_nz_grid) && upload(nz.exact, &d_nz_exact) &&
-            cudaMalloc(&d_sizes, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_offsets, num_groups * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_out, out_capacity) == cudaSuccess &&
-            cudaMemset(d_out, AC_OUT_SENTINEL, out_capacity) == cudaSuccess};
+            cudaMalloc(&d_item_sizes, nz.exact.size() * sizeof(std::uint64_t)) == cudaSuccess &&
+            cudaMalloc(&d_chunk_base, ac_token_chunks(width, height) * sizeof(std::uint64_t)) ==
+                cudaSuccess &&
+            cudaMalloc(&d_layout, layout_words * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_entries, ac_max_tokens(width, height) * sizeof(std::uint16_t)) ==
+                cudaSuccess &&
+            cudaMalloc(&d_raw, ac_max_raw_words(width, height) * sizeof(std::uint64_t)) ==
+                cudaSuccess &&
+            cudaMemset(d_raw, 0xA5, ac_max_raw_words(width, height) * sizeof(std::uint64_t)) ==
+                cudaSuccess};
 
-    ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist);
-    ok = ok && ac_encode_groups(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_depth, d_bits,
-                                d_out, out_capacity, d_sizes, d_offsets);
-
-    if (ok) {
-        out.histogram.assign(AC_HIST_SPAN, 0);
-        out.group_sizes.assign(num_groups, 0);
-        out.group_offsets.assign(num_groups, 0);
-        ok = cudaMemcpy(out.histogram.data(), d_hist, AC_HIST_SPAN * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess &&
-             cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess &&
-             cudaMemcpy(out.group_offsets.data(), d_offsets, num_groups * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess;
+    ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist,
+                                  d_item_sizes);
+    ok = ok && ac_token_layout(d_item_sizes, width, height, d_chunk_base, d_layout);
+    for (std::size_t b{0}; ok && b < batches; ++b) {
+        const std::size_t begin{b * num_groups / batches};
+        const std::size_t end{(b + 1) * num_groups / batches};
+        ok = begin == end ||
+             ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_item_sizes,
+                            d_chunk_base, d_layout, begin, end, d_entries, d_raw);
     }
-    const std::size_t total_bytes{
-        std::accumulate(out.group_sizes.begin(), out.group_sizes.end(), std::size_t{0})};
-    if (ok) {
-        out.stream.assign(std::min(total_bytes, out_capacity), 0);
-        ok = cudaMemcpy(out.stream.data(), d_out, out.stream.size(), cudaMemcpyDeviceToHost) ==
-             cudaSuccess;
-    }
+    ok = ok && download(d_hist, AC_HIST_SPAN, out.histogram) &&
+         download(d_layout, layout_words, out.layout) &&
+         download(d_entries, out.layout[num_groups], out.entries) &&
+         download(d_raw, out.layout[2 * num_groups + 1], out.raw);
 
     cudaFree(d_ac);
     cudaFree(d_acs);
-    cudaFree(d_depth);
-    cudaFree(d_bits);
     cudaFree(d_hist);
     cudaFree(d_nz_grid);
     cudaFree(d_nz_exact);
-    cudaFree(d_sizes);
-    cudaFree(d_offsets);
-    cudaFree(d_out);
+    cudaFree(d_item_sizes);
+    cudaFree(d_chunk_base);
+    cudaFree(d_layout);
+    cudaFree(d_entries);
+    cudaFree(d_raw);
     return ok;
 }
 

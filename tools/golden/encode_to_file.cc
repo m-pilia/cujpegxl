@@ -15,6 +15,7 @@
 #include <cuda_runtime.h>
 
 #include "src/frame_encoder.h"
+#include "src/worker_pool.h"
 
 namespace {
 
@@ -103,7 +104,8 @@ int main(int argc, char** argv) {
                "H2D chroma");
 
     std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
-    const cujpegxl::EncodeResult result{cujpegxl::encode_nv12(
+    cujpegxl::FrameEncoder encoder{cujpegxl::default_worker_threads()};
+    const cujpegxl::EncodeResult result{encoder.encode_nv12(
         d_luma, width, d_chroma, width, width, height, device, distance,
         cujpegxl::quant_params_for_distance(distance), out_file.data(), out_file.size())};
     if (result.status != cujpegxl::EncodeStatus::OK) {

@@ -40,6 +40,16 @@ struct HybridUintConfig {
         nbits = n - msb_in_token - lsb_in_token;
         bits = (value >> lsb_in_token) & ((1u << nbits) - 1);
     }
+
+    // The `nbits` of encode() for a value coded as `token`.
+    CUJPEGXL_BS_HD std::uint32_t raw_bits(std::uint32_t token) const {
+        const std::uint32_t split{split_token()};
+        if (token < split) {
+            return 0;
+        }
+        return split_exponent - (msb_in_token + lsb_in_token) +
+               ((token - split) >> (msb_in_token + lsb_in_token));
+    }
 };
 
 // libjxl PackSigned: maps signed values to unsigned so small magnitudes get

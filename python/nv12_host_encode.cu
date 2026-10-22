@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 
 #include "src/frame_encoder.h"
+#include "src/worker_pool.h"
 
 namespace cujpegxl::pybind_support {
 
@@ -32,9 +33,10 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
             cudaMemcpy(d_chroma, chroma, chroma_bytes, cudaMemcpyHostToDevice) == cudaSuccess};
     if (ok) {
         out.resize(max_encoded_size(width, height));
-        const EncodeResult result{
-            encode_nv12(d_luma, width, d_chroma, width, width, height, device_ordinal, distance,
-                        quant_params_for_distance(distance), out.data(), out.size(), stats)};
+        FrameEncoder encoder{default_worker_threads()};
+        const EncodeResult result{encoder.encode_nv12(
+            d_luma, width, d_chroma, width, width, height, device_ordinal, distance,
+            quant_params_for_distance(distance), out.data(), out.size(), stats)};
         ok = result.status == EncodeStatus::OK;
         out.resize(result.file_size);
     }

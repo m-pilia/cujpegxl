@@ -10,29 +10,23 @@
 
 namespace cujpegxl {
 
-// Test-only host-vector wrapper around the device AC entropy kernels: uploads
-// the quantized coefficients, their non-zero counts (computed on the host) and
-// the shared prefix code, runs ac_build_histogram and ac_encode_groups, and
-// downloads the results. Used by the GPU conformance test to diff against the
-// host bitstream reference.
-struct AcDeviceResult {
+// Test-only host-vector wrapper around the device AC token coder: uploads the
+// quantized coefficients and their non-zero counts (computed on the host), runs
+// ac_build_histogram, ac_token_layout and ac_pack_tokens (over the groups split
+// into `batches` batches), and downloads the results. Used by the GPU
+// conformance test to diff against the host bitstream reference.
+struct AcDeviceTokens {
     std::vector<std::uint32_t> histogram{};
-    std::vector<std::uint32_t> group_sizes{};
-    std::vector<std::uint32_t> group_offsets{};
-    std::vector<std::uint8_t> stream{};  // concatenated byte-aligned AcGroups
+    std::vector<std::uint32_t> layout{};
+    std::vector<std::uint16_t> entries{};
+    std::vector<std::uint64_t> raw{};
 };
-
-constexpr std::uint8_t AC_OUT_SENTINEL = 0xA5;
 
 // `q` is the covered-block coefficient layout (three planes of
 // (width/8 * height/8) * 64 int32) and `acs` the per-8x8 transform signal.
-// The device output buffer of `out_capacity` bytes starts filled with
-// AC_OUT_SENTINEL; when the AcGroups exceed it, `stream` receives the whole
-// buffer instead.
-bool ac_encode_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
-                      std::size_t width, std::size_t height, const std::vector<std::uint8_t>& depth,
-                      const std::vector<std::uint16_t>& bits, std::size_t out_capacity,
-                      AcDeviceResult& out);
+bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std::int8_t>& acs,
+                      std::size_t width, std::size_t height, std::size_t batches,
+                      AcDeviceTokens& out);
 
 }  // namespace cujpegxl
 

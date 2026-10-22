@@ -26,7 +26,7 @@ constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
 // including partial edge groups. width/height must be multiples of 8.
 std::size_t ac_num_groups(std::size_t width, std::size_t height);
 
-// Phase 1 of the device entropy coder: accumulate the pooled AC symbol histogram
+// Phase 1 of the AC token coder: accumulate the pooled AC symbol histogram
 // over every group. `ac` is the covered-block coefficient buffer (device; three
 // channel-major planes X, Y, B of (width/8 * height/8) * COEFFS_PER_BLOCK int16)
 // and `acs` the per-8x8 transform signal (nullptr = all 8x8 blocks). Each
@@ -36,28 +36,45 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 // count normalized per covered 8x8 and broadcast to every covered position (the
 // neighbor-prediction input); both are device buffers of 3 * (width/8 *
 // height/8) int32 in the planes' channel order, as produced by
-// quantize_residual. `histogram` is a device buffer of AC_HISTOGRAM_SIZE uint32
-// (zeroed by the call). Deterministic (integer atomics). Returns false on a CUDA
-// error.
+// quantize_residual. `histogram` is a device buffer of AC_NUM_CLUSTERS *
+// AC_HISTOGRAM_SIZE uint32 (cluster * AC_HISTOGRAM_SIZE + symbol; zeroed by the
+// call). `item_sizes` (device, 3 * width/8 * height/8) receives each
+// block/channel item's token count (low 32 bits) and raw bit count (high 32
+// bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. Deterministic
+// (integer atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* histogram);
+                        std::uint32_t* histogram, std::uint64_t* item_sizes);
 
-// Phase 2: emit each AC group's token bitstream (byte-aligned, one AcGroup TOC
-// section per group) concatenated into `out`, mirroring the host bitstream
-// writer byte-for-byte. `ac`/`acs`/`nz_grid`/`nz_exact` are as in
-// ac_build_histogram. `depth`/`bits` are the shared prefix code built from the
-// phase-1 histogram. A CUB exclusive scan of the per-group byte sizes fixes each
-// group's offset; `group_sizes` and `group_offsets` (num_groups entries) receive
-// the layout. The section total stays on the device, so the call never blocks
-// the host: a section larger than `out_capacity` leaves `out` untouched, and the
-// caller detects it from the sum of `group_sizes`. Deterministic. All pointers
-// are device pointers.
-bool ac_encode_groups(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
-                      const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                      const std::uint8_t* depth, const std::uint16_t* bits, std::uint8_t* out,
-                      std::size_t out_capacity, std::uint32_t* group_sizes,
-                      std::uint32_t* group_offsets);
+// Upper bounds of a frame's AC tokens and of the 64-bit words of their raw bits
+// in the ac_token_layout.
+std::size_t ac_max_tokens(std::size_t width, std::size_t height);
+std::size_t ac_max_raw_words(std::size_t width, std::size_t height);
+
+// Entries of the ac_token_layout `chunk_base` buffer.
+std::size_t ac_token_chunks(std::size_t width, std::size_t height);
+
+// Phase 2: the AC groups' token layout from the phase-1 `item_sizes`. Each AC
+// group (one AcGroup section, raster order) is one token stream: its tokens in
+// decoder order, each an entry cluster << bitstream::TOKEN_CLUSTER_SHIFT |
+// symbol, and their raw bits packed LSB-first from a 64-bit word boundary.
+// `layout` (device, 3 * num_groups + 2 uint32, num_groups = ac_num_groups)
+// receives token_offset[num_groups + 1] (each group's first token, then the
+// total), raw_offset[num_groups + 1] (each group's first raw word, then the
+// total) and raw_bits[num_groups]. `chunk_base` (device, ac_token_chunks)
+// receives the per-chunk offsets ac_pack_tokens reads. Deterministic.
+bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::size_t height,
+                     std::uint64_t* chunk_base, std::uint32_t* layout);
+
+// Phase 3: writes the token streams of AC groups [group_begin, group_end) at
+// their `layout` positions: entries into `entries` (device uint16) and raw bits
+// into `raw` (device 64-bit words; the groups' words are zeroed by the call).
+// The inputs are those of the two previous phases. Deterministic.
+bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
+                    const std::int32_t* nz_exact, std::size_t width, std::size_t height,
+                    const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
+                    const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
+                    std::uint16_t* entries, std::uint64_t* raw);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.
@@ -111,9 +128,10 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 // header bit blobs bracketing the token runs and the two shared prefix codes;
 // the device emits the DC tokens (from `dc`) and the AcMetadata tokens (from the
 // group geometry and the per-block `quant_field`). `group_sizes` and
-// `group_offsets` receive each group's byte size and offset in `out`. As in
-// ac_encode_groups, the call never blocks the host, and a section larger than
-// `out_capacity` leaves `out` untouched. Deterministic. All pointers are device
+// `group_offsets` receive each group's byte size and offset in `out`. A
+// scan of the group sizes on the device fixes the offsets, so the call never
+// blocks the host; a section larger than `out_capacity` leaves `out` untouched,
+// and the caller detects it from the sum of `group_sizes`. Deterministic. All pointers are device
 // pointers. `scratch` holds dc_encode_scratch_bytes(width, height) bytes.
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block

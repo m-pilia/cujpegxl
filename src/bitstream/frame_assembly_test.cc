@@ -104,15 +104,6 @@ TEST(FrameAssembly, DcGroupBlobsMatchOracle) {
     }
 }
 
-TEST(FrameAssembly, AcPrefixCodeMatchesOracle) {
-    const FrameCoefficients fc{make_frame(512, 512)};
-    const AcReference ref{reference_ac_encode(fc)};
-    const AcGlobalResult ac{
-        build_ac_global(ref.histogram.data(), ac_group_count(fc.width, fc.height))};
-    EXPECT_EQ(ac.depth, ref.depth);
-    EXPECT_EQ(ac.bits, ref.bits);
-}
-
 // Reassembles a codestream from frame_assembly's globals and head plus the
 // oracle's group bodies, and checks it equals the oracle's full codestream.
 void check_reassembly(const FrameCoefficients& fc) {
@@ -122,15 +113,19 @@ void check_reassembly(const FrameCoefficients& fc) {
     const AcReference ac{reference_ac_encode(fc)};
 
     const std::vector<std::uint8_t> dc_global{build_dc_global(params_of(fc))};
-    const AcGlobalResult ac_global{
-        build_ac_global(ac.histogram.data(), ac_group_count(fc.width, fc.height))};
+    TokenCode code{};
+    AcGlobalBuilder builder{ac.histogram.data(), ac_group_count(fc.width, fc.height), code};
+    for (std::size_t c{0}; c < AC_NUM_CLUSTERS; ++c) {
+        builder.build_cluster(c);
+    }
+    const std::vector<std::uint8_t> ac_global{builder.finish()};
 
     std::vector<std::uint32_t> sizes{};
     sizes.push_back(static_cast<std::uint32_t>(dc_global.size()));
     for (const DcGroupReference& r : dc.groups) {
         sizes.push_back(static_cast<std::uint32_t>(r.section.size()));
     }
-    sizes.push_back(static_cast<std::uint32_t>(ac_global.section.size()));
+    sizes.push_back(static_cast<std::uint32_t>(ac_global.size()));
     for (const std::vector<std::uint8_t>& s : ac.group_streams) {
         sizes.push_back(static_cast<std::uint32_t>(s.size()));
     }
@@ -141,7 +136,7 @@ void check_reassembly(const FrameCoefficients& fc) {
     for (const DcGroupReference& r : dc.groups) {
         got.insert(got.end(), r.section.begin(), r.section.end());
     }
-    got.insert(got.end(), ac_global.section.begin(), ac_global.section.end());
+    got.insert(got.end(), ac_global.begin(), ac_global.end());
     for (const std::vector<std::uint8_t>& s : ac.group_streams) {
         got.insert(got.end(), s.begin(), s.end());
     }

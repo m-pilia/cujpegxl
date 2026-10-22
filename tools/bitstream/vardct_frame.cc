@@ -11,8 +11,11 @@
 #include "src/bitstream/bit_writer.h"
 #include "src/bitstream/codestream.h"
 #include "src/bitstream/field_coder.h"
+#include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/histogram_writer.h"
 #include "src/bitstream/hybrid_uint.h"
+#include "src/bitstream/token_stream.h"
+#include "src/bitstream/token_stream_reference.h"
 #include "src/coeff_order.h"
 #include "src/vardct_layout.h"
 
@@ -384,23 +387,63 @@ std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients&
     return w.bytes();
 }
 
+// The AC groups' token streams as the device packs them and their sections,
+// coded with the AcGlobal code of the frame's cluster histograms.
+AcReference build_ac_reference(const FrameCoefficients& fc, std::size_t bw, std::size_t bh) {
+    AcReference ref{};
+    ref.histogram.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
+    std::vector<AcTok> toks{};
+    const std::vector<std::pair<std::size_t, std::size_t>> ranges{
+        tokenize_all_ac_groups(fc, bw, bh, ref.histogram, toks)};
+    for (const auto& range : ranges) {
+        std::vector<std::uint16_t> entries{};
+        std::vector<std::uint64_t> raw(1, 0);
+        std::uint64_t raw_bits{0};
+        for (std::size_t i{range.first}; i < range.second; ++i) {
+            const AcTok& t{toks[i]};
+            entries.push_back(
+                static_cast<std::uint16_t>(t.cluster << TOKEN_CLUSTER_SHIFT | t.symbol));
+            for (std::uint32_t b{0}; b < t.nbits; ++b) {
+                if (raw_bits / 64 + 1 >= raw.size()) {
+                    raw.push_back(0);
+                }
+                raw[raw_bits / 64] |= static_cast<std::uint64_t>((t.bits >> b) & 1)
+                                      << (raw_bits % 64);
+                ++raw_bits;
+            }
+        }
+        ref.group_entries.push_back(std::move(entries));
+        ref.group_raw.push_back(std::move(raw));
+        ref.group_raw_bits.push_back(raw_bits);
+    }
+    TokenCode code{};
+    AcGlobalBuilder builder{ref.histogram.data(), ranges.size(), code};
+    for (std::size_t c{0}; c < AC_NUM_CLUSTERS; ++c) {
+        builder.build_cluster(c);
+    }
+    ref.ac_global = builder.finish();
+    for (std::size_t g{0}; g < ranges.size(); ++g) {
+        const TokenStream stream{ref.group_entries[g].data(), ref.group_entries[g].size(),
+                                 ref.group_raw[g].data(), ref.group_raw_bits[g]};
+        ref.group_streams.push_back(code_token_stream_reference(code, stream));
+    }
+    return ref;
+}
+
 std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& fc, std::size_t bw,
                                                        std::size_t bh) {
     const std::size_t xdg{ceil_div(bw, DC_GROUP_BLOCKS)};
     const std::size_t ydg{ceil_div(bh, DC_GROUP_BLOCKS)};
     const std::size_t num_dc_groups{xdg * ydg};
-    const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
-    const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
-    const std::size_t num_groups{xg * yg};
 
     // Sections in codestream (TOC id) order: DcGlobal, DcGroups, AcGlobal,
     // AcGroups.
-    std::vector<BitWriter> sections{};
+    std::vector<std::vector<std::uint8_t>> sections{};
 
     BitWriter dc_global{};
     write_dc_global(dc_global, fc);
     dc_global.zero_pad_to_byte();
-    sections.push_back(std::move(dc_global));
+    sections.push_back(dc_global.bytes());
 
     for (std::size_t i{0}; i < num_dc_groups; ++i) {
         const std::size_t gx{i % xdg};
@@ -412,38 +455,19 @@ std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& 
         BitWriter dc_group{};
         write_dc_group(dc_group, fc, bw, bx0, by0, dgw, dgh);
         dc_group.zero_pad_to_byte();
-        sections.push_back(std::move(dc_group));
+        sections.push_back(dc_group.bytes());
     }
 
-    BitWriter ac_global{};
-    write_bool(ac_global, true);                              // DequantMatrices::Decode all_default
-    write_bits(ac_global, ceil_log2_nonzero(num_groups), 0);  // num_histograms - 1
-    write_u32(ac_global, ORDER_ENC, 0);                       // used_orders = 0
-
-    std::vector<std::uint32_t> cluster_hist(AC_NUM_CLUSTERS * AC_STRIDE, 0);
-    std::vector<AcTok> toks{};
-    const std::vector<std::pair<std::size_t, std::size_t>> ranges{
-        tokenize_all_ac_groups(fc, bw, bh, cluster_hist, toks)};
-    std::vector<std::uint8_t> depth{};
-    std::vector<std::uint16_t> bits{};
-    write_ac_histograms(ac_global, cluster_hist, depth, bits);
-    std::vector<BitWriter> ac_groups{};
-    for (const auto& range : ranges) {
-        BitWriter ac_group{};
-        emit_ac_tokens(ac_group, toks, range.first, range.second, depth, bits);
-        ac_group.zero_pad_to_byte();
-        ac_groups.push_back(std::move(ac_group));
-    }
-    ac_global.zero_pad_to_byte();
-    sections.push_back(std::move(ac_global));
-    for (BitWriter& ac_group : ac_groups) {
-        sections.push_back(std::move(ac_group));
+    AcReference ac{build_ac_reference(fc, bw, bh)};
+    sections.push_back(std::move(ac.ac_global));
+    for (std::vector<std::uint8_t>& group : ac.group_streams) {
+        sections.push_back(std::move(group));
     }
 
     std::vector<std::uint32_t> section_sizes{};
     section_sizes.reserve(sections.size());
-    for (const BitWriter& s : sections) {
-        section_sizes.push_back(static_cast<std::uint32_t>(s.size_bytes()));
+    for (const std::vector<std::uint8_t>& section : sections) {
+        section_sizes.push_back(static_cast<std::uint32_t>(section.size()));
     }
 
     BitWriter w{};
@@ -451,10 +475,11 @@ std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& 
                              static_cast<std::uint32_t>(fc.height));
     write_frame_header(w);
     write_toc_multi_section(w, section_sizes);
-    for (const BitWriter& s : sections) {
-        w.append_aligned(s);
+    std::vector<std::uint8_t> out{w.bytes()};
+    for (const std::vector<std::uint8_t>& section : sections) {
+        out.insert(out.end(), section.begin(), section.end());
     }
-    return w.bytes();
+    return out;
 }
 
 }  // namespace
@@ -466,21 +491,7 @@ const std::array<std::uint32_t, 64>& dct8_natural_order() {
 
 AcReference reference_ac_encode(const FrameCoefficients& fc) {
     assert(fc.width % 8 == 0 && fc.height % 8 == 0);
-    AcReference ref{};
-    ref.histogram.assign(AC_NUM_CLUSTERS * AC_STRIDE, 0);
-    std::vector<AcTok> toks{};
-    const std::vector<std::pair<std::size_t, std::size_t>> ranges{
-        tokenize_all_ac_groups(fc, fc.width / 8, fc.height / 8, ref.histogram, toks)};
-    BitWriter histograms{};
-    write_ac_histograms(histograms, ref.histogram, ref.depth, ref.bits);
-    ref.group_streams.reserve(ranges.size());
-    for (const auto& range : ranges) {
-        BitWriter group{};
-        emit_ac_tokens(group, toks, range.first, range.second, ref.depth, ref.bits);
-        group.zero_pad_to_byte();
-        ref.group_streams.push_back(group.bytes());
-    }
-    return ref;
+    return build_ac_reference(fc, fc.width / 8, fc.height / 8);
 }
 
 DcReference reference_dc_encode(const FrameCoefficients& fc) {

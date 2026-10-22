@@ -10,29 +10,9 @@
 #include "histogram_writer.h"
 #include "hybrid_uint.h"
 #include "serialize_impl.h"
-#include "src/ac_context.h"
 #include "src/vardct_layout.h"
 
 namespace cujpegxl::bitstream {
-
-AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t num_ac_groups) {
-    std::vector<std::uint8_t> context_map(AC_NUM_CONTEXTS);
-    for (std::size_t i{0}; i < AC_NUM_CONTEXTS; ++i) {
-        context_map[i] = static_cast<std::uint8_t>(ac_cluster(static_cast<std::uint32_t>(i)));
-    }
-    AcGlobalResult out{};
-    out.depth.assign(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE, 0);
-    out.bits.assign(AC_NUM_CLUSTERS * HISTOGRAM_STRIDE, 0);
-
-    BitWriter w{};
-    detail::serialize_ac_global_head(w, num_ac_groups);
-    write_clustered_prefix_histograms(w, context_map.data(), AC_NUM_CONTEXTS, AC_NUM_CLUSTERS,
-                                      ac_histogram, HISTOGRAM_STRIDE, HybridUintConfig{},
-                                      out.depth.data(), out.bits.data());
-    w.zero_pad_to_byte();
-    out.section = w.bytes();
-    return out;
-}
 
 DcGroupBlobs build_dc_group_blobs(std::size_t width, std::size_t height,
                                   const std::uint32_t* dc_histograms,

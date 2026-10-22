@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Host builds of the AcGlobal section and the DcGroup header blobs with their
-// prefix codes, the byte-exact reference for the on-device prefix build.
+// Host build of the DcGroup header blobs with their prefix codes, the byte-exact
+// reference for the on-device prefix build.
 
 #ifndef CUJPEGXL_SRC_BITSTREAM_PREFIX_BUILD_REFERENCE_H_
 #define CUJPEGXL_SRC_BITSTREAM_PREFIX_BUILD_REFERENCE_H_
@@ -12,15 +12,6 @@
 #include <vector>
 
 namespace cujpegxl::bitstream {
-
-// `ac_histogram` is the pooled AC cluster histogram
-// (AC_NUM_CLUSTERS * HISTOGRAM_STRIDE entries); `depth`/`bits` share its layout.
-struct AcGlobalResult {
-    std::vector<std::uint8_t> section{};
-    std::vector<std::uint8_t> depth{};
-    std::vector<std::uint16_t> bits{};
-};
-AcGlobalResult build_ac_global(const std::uint32_t* ac_histogram, std::size_t num_ac_groups);
 
 // `dc_histograms` and `acmeta_histograms` are per-DcGroup token histograms (each
 // num_dc_groups * HISTOGRAM_STRIDE); the depth/bits members share that layout.

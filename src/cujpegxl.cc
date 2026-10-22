@@ -10,9 +10,11 @@
 #include "cujpegxl/capability.h"
 #include "frame_encoder.h"
 #include "src/bitstream/frame_assembly.h"
+#include "worker_pool.h"
 
 struct cujpegxl_encoder {
     cujpegxl_config config;
+    cujpegxl::FrameEncoder frame_encoder;
 };
 
 namespace {
@@ -124,7 +126,8 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config,
     if (!cujpegxl::query_device_capability(config->device_ordinal, &capability)) {
         return CUJPEGXL_NO_DEVICE;
     }
-    auto* encoder{new (std::nothrow) cujpegxl_encoder{*config}};
+    auto* encoder{new (std::nothrow) cujpegxl_encoder{
+        *config, cujpegxl::FrameEncoder{cujpegxl::default_worker_threads()}}};
     if (encoder == nullptr) {
         return CUJPEGXL_INTERNAL_ERROR;
     }
@@ -157,7 +160,7 @@ cujpegxl_status cujpegxl_encoder_encode(cujpegxl_encoder* encoder, const cujpegx
         return status;
     }
 
-    const cujpegxl::EncodeResult result{cujpegxl::encode_nv12(
+    const cujpegxl::EncodeResult result{encoder->frame_encoder.encode_nv12(
         reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
         reinterpret_cast<const std::uint8_t*>(input->chroma), input->chroma_pitch, config.width,
         config.height, config.device_ordinal, config.distance,

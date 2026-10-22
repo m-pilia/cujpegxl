@@ -12,7 +12,10 @@ cuda_library(
     srcs = ["nv12_host_encode.cu"],
     hdrs = ["nv12_host_encode.h"],
     visibility = ["//visibility:public"],
-    deps = ["//src:frame_encoder"],
+    deps = [
+        "//src:frame_encoder",
+        "//src:worker_pool",
+    ],
 )
 
 pybind_extension(

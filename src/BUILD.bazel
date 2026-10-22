@@ -262,6 +262,7 @@ cuda_library(
         ":dc_predict",
         ":vardct_layout",
         ":warp_scan",
+        "//src/bitstream",
     ],
 )
 
@@ -295,7 +296,6 @@ cuda_library(
     hdrs = ["prefix_build.h"],
     copts = RUNTIME_COPTS,
     deps = [
-        ":ac_context",
         ":dc_predict",
         ":vardct_layout",
         ":warp_scan",
@@ -308,13 +308,20 @@ cc_test(
     srcs = ["prefix_build_gpu_test.cc"],
     tags = ["gpu"],
     deps = [
-        ":ac_context",
         ":entropy",
         ":prefix_build",
         "//src/bitstream:frame_assembly",
         "//src/bitstream:prefix_build_reference",
         "@googletest//:gtest_main",
     ],
+)
+
+cc_library(
+    name = "worker_pool",
+    srcs = ["worker_pool.cc"],
+    hdrs = ["worker_pool.h"],
+    copts = RUNTIME_COPTS,
+    linkopts = ["-lpthread"],
 )
 
 cuda_library(
@@ -334,6 +341,7 @@ cuda_library(
         ":prefix_build",
         ":quant_consts",
         ":vardct_layout",
+        ":worker_pool",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",
     ],
@@ -383,6 +391,7 @@ cc_library(
         ":capability",
         ":capability_cuda",
         ":frame_encoder",
+        ":worker_pool",
         "//:cujpegxl_headers",
         "//src/bitstream:frame_assembly",
     ],

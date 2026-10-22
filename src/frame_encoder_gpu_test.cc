@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Martino Pilia
 // SPDX-License-Identifier: BSD-3-Clause
 
-// GPU validation of the encode path (encode_nv12): mixed {8,16,32} blocks
-// + chroma-from-luma. Encodes a device NV12 image and decodes the result through
-// libjxl's public decoder, and checks per-device determinism.
+// GPU validation of the encode path (FrameEncoder::encode_nv12): mixed
+// {8,16,32} blocks + chroma-from-luma. Encodes a device NV12 image and decodes
+// the result through libjxl's public decoder, and checks per-device determinism
+// across encodes and worker thread counts.
 
 #include <cstdint>
 #include <vector>
@@ -31,8 +32,9 @@ struct DeviceNv12 {
 };
 
 // A photo-like NV12: smooth luma gradient with a textured band, so selection
-// produces a genuine mix of block sizes and CfL has correlated chroma.
-bool upload_nv12(std::size_t width, std::size_t height, DeviceNv12& out) {
+// produces a genuine mix of block sizes and CfL has correlated chroma. A flat
+// image instead quantizes every AC coefficient to zero.
+bool upload_nv12(std::size_t width, std::size_t height, DeviceNv12& out, bool flat = false) {
     std::vector<std::uint8_t> luma(width * height, 0);
     std::vector<std::uint8_t> chroma(width * (height / 2), 0);
     for (std::size_t y{0}; y < height; ++y) {
@@ -40,13 +42,16 @@ bool upload_nv12(std::size_t width, std::size_t height, DeviceNv12& out) {
             const bool textured{x > width / 2};
             const int v{textured ? 96 + (((x + y) & 1) ? 48 : -48)
                                  : static_cast<int>(40 + 160 * x / width)};
-            luma[y * width + x] = static_cast<std::uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+            luma[y * width + x] =
+                flat ? 100 : static_cast<std::uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
         }
     }
     for (std::size_t y{0}; y < height / 2; ++y) {
         for (std::size_t x{0}; x < width; x += 2) {
-            chroma[y * width + x] = static_cast<std::uint8_t>(128 + 40 * y / (height / 2));  // Cb
-            chroma[y * width + x + 1] = static_cast<std::uint8_t>(128 - 30 * x / width);     // Cr
+            chroma[y * width + x] =
+                flat ? 128 : static_cast<std::uint8_t>(128 + 40 * y / (height / 2));  // Cb
+            chroma[y * width + x + 1] =
+                flat ? 128 : static_cast<std::uint8_t>(128 - 30 * x / width);  // Cr
         }
     }
     out.luma_pitch = width;
@@ -97,12 +102,13 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
     return testing::AssertionSuccess();
 }
 
-std::vector<std::uint8_t> encode(const DeviceNv12& nv12, std::size_t w, std::size_t h) {
+std::vector<std::uint8_t> encode(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w,
+                                 std::size_t h) {
     const bitstream::QuantParams qp{quant_params_for_distance(1.0f)};
     std::vector<std::uint8_t> file(max_encoded_size(w, h));
-    const EncodeResult result{encode_nv12(nv12.luma, nv12.luma_pitch, nv12.chroma,
-                                          nv12.chroma_pitch, w, h, 0, 1.0f, qp, file.data(),
-                                          file.size(), nullptr)};
+    const EncodeResult result{encoder.encode_nv12(nv12.luma, nv12.luma_pitch, nv12.chroma,
+                                                  nv12.chroma_pitch, w, h, 0, 1.0f, qp, file.data(),
+                                                  file.size(), nullptr)};
     EXPECT_EQ(result.status, EncodeStatus::OK);
     file.resize(result.file_size);
     return file;
@@ -115,7 +121,8 @@ TEST_P(EncodeLadder, DecodesWithLibjxl) {
     const std::size_t h{GetParam().second};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    const std::vector<std::uint8_t> file{encode(nv12, w, h)};
+    FrameEncoder encoder{4};
+    const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
     ASSERT_GT(file.size(), 0u);
     std::uint32_t xs{0};
     std::uint32_t ys{0};
@@ -137,9 +144,39 @@ TEST(Encode, Deterministic) {
     const std::size_t h{720};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    const std::vector<std::uint8_t> a{encode(nv12, w, h)};
-    const std::vector<std::uint8_t> b{encode(nv12, w, h)};
+    FrameEncoder encoder{4};
+    const std::vector<std::uint8_t> a{encode(encoder, nv12, w, h)};
+    const std::vector<std::uint8_t> b{encode(encoder, nv12, w, h)};
     EXPECT_EQ(a, b);
+}
+
+TEST(Encode, IndependentOfWorkerThreads) {
+    const std::size_t w{1920};
+    const std::size_t h{1080};
+    DeviceNv12 nv12{};
+    ASSERT_TRUE(upload_nv12(w, h, nv12));
+    FrameEncoder single{1};
+    const std::vector<std::uint8_t> expected{encode(single, nv12, w, h)};
+    for (std::size_t threads : {2, 3, 8}) {
+        FrameEncoder encoder{threads};
+        EXPECT_EQ(encode(encoder, nv12, w, h), expected) << threads << " threads";
+    }
+}
+
+// All AC tokens are zero counts, one symbol per cluster: the AC groups take
+// prefix codes, as libjxl codes such sets.
+TEST(Encode, FlatImageDecodes) {
+    const std::size_t w{640};
+    const std::size_t h{384};
+    DeviceNv12 nv12{};
+    ASSERT_TRUE(upload_nv12(w, h, nv12, true));
+    FrameEncoder encoder{4};
+    const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
+    std::uint32_t xs{0};
+    std::uint32_t ys{0};
+    ASSERT_TRUE(decode_dims(file, xs, ys));
+    EXPECT_EQ(xs, w);
+    EXPECT_EQ(ys, h);
 }
 
 }  // namespace

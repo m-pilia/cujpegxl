@@ -44,6 +44,15 @@ public:
 
     bool byte_aligned() const { return bit_pos_ == 0; }
 
+    // Appends the bits written to `other`, at any alignment of either writer.
+    void append(const BitWriter& other) {
+        const std::size_t n_bits{other.bits_written()};
+        for (std::size_t i{0}; i < n_bits; i += 8) {
+            const std::size_t n{n_bits - i < 8 ? n_bits - i : 8};
+            write(n, other.bytes_[i / 8] & ((1u << n) - 1));
+        }
+    }
+
     // Appends another byte-aligned writer's bytes. Both must be byte aligned.
     void append_aligned(const BitWriter& other) {
         assert(byte_aligned());
