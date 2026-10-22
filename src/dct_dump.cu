@@ -17,38 +17,50 @@
 
 namespace {
 
+// One thread per pixel row (horizontal pass), then per frequency fx (vertical
+// pass).
 template <int N>
 __global__ void forward_dct_kernel(const float* __restrict__ xyb, std::size_t width,
                                    std::size_t height, float* __restrict__ coeffs) {
-    __shared__ float basis[N * (N + 1)];
-    __shared__ float tile[N * N];
+    __shared__ float magnitudes[N];
     __shared__ float rows[N * N];
 
     const std::size_t bx{blockIdx.x};
     const std::size_t by{blockIdx.y};
     const std::size_t plane{width * height};
     const float* src{xyb + blockIdx.z * plane};
-    const int e{static_cast<int>(threadIdx.x)};
-    const int hi{e / N};
-    const int lo{e % N};
+    const int i{static_cast<int>(threadIdx.x)};
 
-    basis[hi * (N + 1) + lo] = cujpegxl::dct_basis_entry(N, hi, lo);
-    tile[hi * N + lo] = src[(by * N + hi) * width + bx * N + lo];
+    magnitudes[i] = cujpegxl::dct_basis_entry(N, i, 0);
     __syncthreads();
-    float row[1];
-    cujpegxl::dct_dots<1>(N, {cujpegxl::dct_basis_row(basis, N, hi)}, {tile + lo * N}, row);
-    rows[e] = row[0];
+    float in[N];
+    float out[N];
+#pragma unroll
+    for (int t{0}; t < N; ++t) {
+        in[t] = src[(by * N + i) * width + bx * N + t];
+    }
+    cujpegxl::dct_outputs<N, N, 0>(magnitudes, in, out);
+#pragma unroll
+    for (int fx{0}; fx < N; ++fx) {
+        rows[fx * N + i] = out[fx];
+    }
     __syncthreads();
-    float coeff[1];
-    cujpegxl::dct_dots<1>(N, {cujpegxl::dct_basis_row(basis, N, lo)}, {rows + hi * N}, coeff);
+#pragma unroll
+    for (int t{0}; t < N; ++t) {
+        in[t] = rows[i * N + t];
+    }
+    cujpegxl::dct_outputs<N, N, 0>(magnitudes, in, out);
     const std::size_t block_index{by * (width / N) + bx};
-    coeffs[blockIdx.z * plane + block_index * (N * N) + e] = coeff[0];
+#pragma unroll
+    for (int fy{0}; fy < N; ++fy) {
+        coeffs[blockIdx.z * plane + block_index * (N * N) + i * N + fy] = out[fy];
+    }
 }
 
 template <int N>
 bool forward_dct(const float* xyb, std::size_t width, std::size_t height, float* coeffs) {
     const dim3 grid{static_cast<unsigned int>(width / N), static_cast<unsigned int>(height / N), 3};
-    forward_dct_kernel<N><<<grid, N * N>>>(xyb, width, height, coeffs);
+    forward_dct_kernel<N><<<grid, N>>>(xyb, width, height, coeffs);
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};
     return launch == cudaSuccess && sync == cudaSuccess;

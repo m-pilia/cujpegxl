@@ -44,26 +44,33 @@ static_assert(FRONTEND_THREADS == 4 * CELLS * CELLS);
 // RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
     TILE_FLOATS + PAD_SAMPLES + 2 * CELLS * CELLS + 6 * TB * TB;
-// From the selection to the X/B DCT, the 8-, 16- and 32-point bases stay
-// resident above two tile planes. The selection and the Y pass read sharp Y
-// from the first and keep their horizontal-pass rows in the second, followed by
-// the selection costs; the X/B pass holds sharp X and B there.
+// From the selection to the Y coefficient stores, the 8-, 16- and 32-point
+// bases stay resident above two tile planes: sharp Y and the horizontal-pass
+// rows, followed by the selection words.
 constexpr int BASIS16_OFFSET = 8 * (8 + 1);
 constexpr int BASIS32_OFFSET = BASIS16_OFFSET + 16 * (16 + 1);
 constexpr std::size_t BASES_OFFSET = 2 * TILE_FLOATS;
 constexpr std::size_t REGION_LOCAL_PEAK = BASES_OFFSET + BASIS32_OFFSET + 32 * (32 + 1);
-// The selection costs are followed by one word for the region layout.
-constexpr std::size_t SELECT_COST_FLOATS = 16 + 4 + 1;
-static_assert(TILE_SAMPLES + SELECT_COST_FLOATS + 1 <= TILE_FLOATS);
+// The selection words: the 8x8, 16x16 and 32x32 costs, the split cost, the
+// split layout and the region layout.
+constexpr std::size_t SELECT_WORDS = 16 + 4 + 1 + 3;
+static_assert(TILE_SAMPLES + SELECT_WORDS <= TILE_FLOATS);
 // The selection's partial cost sums reuse its horizontal-pass rows.
 static_assert(2 * FRONTEND_THREADS <= TILE_SAMPLES);
-// The region DCT's horizontal-pass rows, padded by region_row_index.
+// The X/B horizontal-pass rows, padded by region_row_index.
 constexpr int REGION_ROWS_FLOATS = TILE_SAMPLES + TILE_SAMPLES / 32;
-static_assert(REGION_ROWS_FLOATS <= TILE_FLOATS);
-// The X/B horizontal-pass rows reuse the raw X and B planes once gaborish has
-// consumed them.
-static_assert(REGION_ROWS_FLOATS <= PAD_SAMPLES);
 constexpr std::size_t RESIDENT_X_B_OFFSET = std::max(LOAD_AQ_LOCAL_PEAK, REGION_LOCAL_PEAK);
+// The X/B pass holds sharp X and B below the raw planes and its
+// horizontal-pass rows in the raw planes, once gaborish has consumed them.
+// Warps that pair X and B lanes read distinct banks: the horizontal pass reads
+// 16 consecutive rows per channel, so sharp B starts 16 banks after sharp X;
+// the DCT16 vertical pass reads 16 columns per channel on 16 banks with a gap
+// of 8 after each 8, so the B rows start 8 (mod 16) banks after the X rows.
+constexpr std::size_t SHARP_B_OFFSET = TILE_FLOATS + 16;
+static_assert(SHARP_B_OFFSET % 32 == 16 && SHARP_B_OFFSET + TILE_FLOATS <= RESIDENT_X_B_OFFSET);
+constexpr int ROWS_B_SKEW = 8;
+static_assert((PAD_SAMPLES + ROWS_B_SKEW) % 16 == 8);
+static_assert(REGION_ROWS_FLOATS + ROWS_B_SKEW <= PAD_SAMPLES);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 // Four resident blocks per SM: sm_61 has 96 KB of shared memory per SM, and
@@ -71,35 +78,59 @@ constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 constexpr int FRONTEND_BLOCKS_PER_SM = 4;
 static_assert(FRONTEND_BLOCKS_PER_SM * WORKSPACE_BYTES <= 96 * 1024);
 
-__device__ float g_basis8[8 * 8];
-__device__ float g_basis16[16 * 16];
-__device__ float g_basis32[32 * 32];
+// The 8-, 16- and 32-point basis magnitudes (see dct_basis_ref), computed on
+// the device into g_dct_magnitudes and copied to constant memory once.
+constexpr int MAGNITUDES16_OFFSET = 8;
+constexpr int MAGNITUDES32_OFFSET = MAGNITUDES16_OFFSET + 16;
+constexpr int MAGNITUDE_FLOATS = MAGNITUDES32_OFFSET + 32;
+__device__ float g_dct_magnitudes[MAGNITUDE_FLOATS];
+__constant__ float c_dct_magnitudes[MAGNITUDE_FLOATS];
 
-__device__ void fill_basis(float* basis, int n, int i) {
-    if (i < n * n) {
-        basis[i] = dct_basis_entry(n, i / n, i % n);
+__global__ void init_dct_magnitudes_kernel() {
+    const int m{static_cast<int>(threadIdx.x)};
+    if (m < 8) {
+        g_dct_magnitudes[m] = dct_basis_entry(8, m, 0);
     }
+    if (m < 16) {
+        g_dct_magnitudes[MAGNITUDES16_OFFSET + m] = dct_basis_entry(16, m, 0);
+    }
+    g_dct_magnitudes[MAGNITUDES32_OFFSET + m] = dct_basis_entry(32, m, 0);
 }
 
-__global__ void init_frontend_basis_kernel() {
-    const int i{static_cast<int>(threadIdx.x)};
-    fill_basis(g_basis8, 8, i);
-    fill_basis(g_basis16, 16, i);
-    fill_basis(g_basis32, 32, i);
-}
-
-void ensure_frontend_basis() {
+void ensure_dct_magnitudes() {
     static std::once_flag flag;
     std::call_once(flag, [] {
-        init_frontend_basis_kernel<<<1, 32 * 32>>>();
+        init_dct_magnitudes_kernel<<<1, 32>>>();
+        void* computed{nullptr};
+        cudaGetSymbolAddress(&computed, g_dct_magnitudes);
+        cudaMemcpyToSymbol(c_dct_magnitudes, computed, sizeof(c_dct_magnitudes), 0,
+                           cudaMemcpyDeviceToDevice);
         cudaDeviceSynchronize();
     });
 }
 
+template <int N>
+__device__ inline const float* dct_magnitudes() {
+    return c_dct_magnitudes + (N == 32 ? MAGNITUDES32_OFFSET : (N == 16 ? MAGNITUDES16_OFFSET : 0));
+}
+
 __device__ void load_bases(float* bases, int tid) {
-    load_dct_basis(g_basis8, bases, 8, tid, FRONTEND_THREADS);
-    load_dct_basis(g_basis16, bases + BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
-    load_dct_basis(g_basis32, bases + BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
+    expand_dct_basis(dct_magnitudes<8>(), bases, 8, tid, FRONTEND_THREADS);
+    expand_dct_basis(dct_magnitudes<16>(), bases + BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
+    expand_dct_basis(dct_magnitudes<32>(), bases + BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
+}
+
+// Loads the N floats at `src` and computes frequency part `part` (F
+// frequencies) of their 1D DCT.
+template <int N, int F>
+__device__ __forceinline__ void dct_vector(const float* __restrict__ src, int part,
+                                           float (&out)[F]) {
+    float in[N];
+#pragma unroll
+    for (int t{0}; t < N; ++t) {
+        in[t] = src[t];
+    }
+    dct_part<N, F>(part, dct_magnitudes<N>(), in, out);
 }
 
 __device__ inline const float* region_basis(const float* bases, int n) {
@@ -292,6 +323,10 @@ __device__ void candidate_coeffs(const float* basis, const float* rows_fx, int r
 
 constexpr std::uint32_t WHOLE32_LAYOUT{0x20202020u};
 
+__device__ inline int quadrant_side(std::uint32_t layout, int q) {
+    return static_cast<int>((layout >> (8 * q)) & 0xffu);
+}
+
 // A candidate's distortion and rate are sums over 256 slots in the pairing of
 // the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
 // accumulates into slot e % 256 in increasing e. Each candidate size spreads its
@@ -299,22 +334,25 @@ constexpr std::uint32_t WHOLE32_LAYOUT{0x20202020u};
 //
 // Returns the region layout: byte q holds the side (8, 16 or 32) of the
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
-// A region that fits a DCT32 gets its DCT32 Y coefficients written to y_plane
-// speculatively; if it splits, the Y pass overwrites the same slots.
+// The region's Y coefficients are stored to y_plane as the decisions are made:
+// all 8x8 candidates inside the image, then the 16x16 candidates of the
+// quadrants that keep them, then the DCT32 if the region keeps it.
 __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::size_t rbx,
                                            std::size_t rby, std::size_t bw, std::size_t bh,
                                            float qgsf, float lambda, const float* bases,
-                                           float* rows, float* costs, std::int8_t* __restrict__ acs,
+                                           float* rows, float* words, std::int8_t* __restrict__ acs,
                                            __half* __restrict__ y_plane, int tid) {
     const float* basis8{region_basis(bases, 8)};
     const float* basis16{region_basis(bases, 16)};
     const float* basis32{region_basis(bases, 32)};
     float* pd{rows};
     float* pr{rows + FRONTEND_THREADS};
-    float* cost8{costs};
+    float* cost8{words};
     float* cost16{cost8 + 16};
     float* cost32{cost16 + 4};
-    std::uint32_t* layout_word{reinterpret_cast<std::uint32_t*>(cost32 + 1)};
+    float* split_cost{cost32 + 1};
+    std::uint32_t* split_layout{reinterpret_cast<std::uint32_t*>(split_cost + 1)};
+    std::uint32_t* layout_word{split_layout + 1};
     constexpr float INF{1.0e30f};
     const int lane{tid % 32};
     const int warp{tid / 32};
@@ -338,12 +376,16 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
             accumulate_coeff_cost(coeffs[2 * j + 1], fx + 4, fy, 8, qgsf, d1, r1);
             const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
             const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
+            const std::size_t bbx{rbx + static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
+            const std::size_t bby{rby + static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
+            const bool inside{bbx < bw && bby < bh};
             if (lane == 0) {
-                const std::size_t bbx{rbx +
-                                      static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
-                const std::size_t bby{rby +
-                                      static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
-                cost8[idx] = bbx < bw && bby < bh ? candidate_cost(8, dist, rate, lambda) : INF;
+                cost8[idx] = inside ? candidate_cost(8, dist, rate, lambda) : INF;
+            }
+            if (inside) {
+                __half* block{y_plane + covered_plane_slot(8, bbx, bby, bw, 0)};
+                block[lane] = __float2half_rn(coeffs[2 * j]);
+                block[lane + 32] = __float2half_rn(coeffs[2 * j + 1]);
             }
         }
     }
@@ -352,18 +394,18 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     // 16x16: warps 2q and 2q + 1 own candidate q; local lane j holds
     // coefficients j + 64 * h and folds strides 128 and 64.
     candidate_rows<16>(y, basis16, rows, tid);
+    const int q{warp / 2};
+    const int j{tid % 64};
+    float coeffs16[SELECT_ENTRIES_PER_THREAD];
     {
-        const int q{warp / 2};
-        const int j{tid % 64};
         const int fx{j / 16};
         const int fy{j % 16};
-        float coeffs[SELECT_ENTRIES_PER_THREAD];
-        candidate_coeffs<16>(basis16, rows + q * 256 + fx * 16, 64, fy, coeffs);
+        candidate_coeffs<16>(basis16, rows + q * 256 + fx * 16, 64, fy, coeffs16);
         float d[4]{};
         float r[4]{};
 #pragma unroll
         for (int h{0}; h < 4; ++h) {
-            accumulate_coeff_cost(coeffs[h], fx + 4 * h, fy, 16, qgsf, d[h], r[h]);
+            accumulate_coeff_cost(coeffs16[h], fx + 4 * h, fy, 16, qgsf, d[h], r[h]);
         }
         const float dist{__fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]))};
         const float rate{__fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]))};
@@ -373,7 +415,6 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
     }
     __syncthreads();
     if (warp % 2 == 0) {
-        const int q{warp / 2};
         const float dist{warp_reduce_sum(__fadd_rn(pd[tid], pd[tid + 32]))};
         const float rate{warp_reduce_sum(__fadd_rn(pr[tid], pr[tid + 32]))};
         if (lane == 0) {
@@ -383,45 +424,11 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
             cost16[q] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
         }
     }
-
-    // 32x32: thread t holds coefficients t + 256 * h; warp 0 reduces. The
-    // barrier keeps the 16x16 reduction's reads of pd/pr ahead of the rows.
     __syncthreads();
-    candidate_rows<32>(y, basis32, rows, tid);
-    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
-    float dist32{0.0f};
-    float rate32{0.0f};
-    {
-        const int fx{tid / 32};
-        const int fy{tid % 32};
-        float coeffs[SELECT_ENTRIES_PER_THREAD];
-        candidate_coeffs<32>(basis32, rows + fx * 32, 256, fy, coeffs);
-#pragma unroll
-        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
-            accumulate_coeff_cost(coeffs[h], fx + 8 * h, fy, 32, qgsf, dist32, rate32);
-            if (fit32) {
-                const int e{tid + FRONTEND_THREADS * h};
-                y_plane[covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(e))] =
-                    __float2half_rn(coeffs[h]);
-            }
-        }
-    }
-    __syncthreads();
-    pd[tid] = dist32;
-    pr[tid] = rate32;
-    __syncthreads();
-    if (warp == 0) {
-        const float dist{warp_tree_sum_256(pd, lane)};
-        const float rate{warp_tree_sum_256(pr, lane)};
-        if (lane == 0) {
-            *cost32 = fit32 ? candidate_cost(32, dist, rate, lambda) : INF;
-        }
-    }
 
     if (tid == 0) {
-        float split_cost{0.0f};
-        std::uint32_t split_layout{0};
-        int quad_choice[2][2];
+        float cost{0.0f};
+        std::uint32_t layout{0};
         for (int qy{0}; qy < 2; ++qy) {
             for (int qx{0}; qx < 2; ++qx) {
                 const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
@@ -439,168 +446,217 @@ __device__ std::uint32_t select_transforms(const float* __restrict__ y, std::siz
                     }
                 }
                 if (!any8) {
-                    quad_choice[qy][qx] = -1;
                     continue;
                 }
                 const bool fit16{bx + 2 <= bw && by + 2 <= bh};
                 const float c16{cost16[qy * 2 + qx]};
+                int choice{8};
                 if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
-                    quad_choice[qy][qx] = 16;
-                    split_cost += c16;
+                    choice = 16;
+                    cost += c16;
                 } else {
-                    quad_choice[qy][qx] = 8;
-                    split_cost += sum8;
+                    cost += sum8;
                 }
-                split_layout |= static_cast<std::uint32_t>(quad_choice[qy][qx])
-                                << (8 * (qy * 2 + qx));
+                layout |= static_cast<std::uint32_t>(choice) << (8 * (qy * 2 + qx));
             }
         }
+        *split_cost = cost;
+        *split_layout = layout;
+    }
+    __syncthreads();
+    if (quadrant_side(*split_layout, q) == 16) {
+        const std::size_t bx{rbx + 2 * static_cast<std::size_t>(q % 2)};
+        const std::size_t by{rby + 2 * static_cast<std::size_t>(q / 2)};
+#pragma unroll
+        for (int h{0}; h < 4; ++h) {
+            y_plane[covered_plane_slot(16, bx, by, bw, static_cast<std::size_t>(j + 64 * h))] =
+                __float2half_rn(coeffs16[h]);
+        }
+    }
 
-        const bool whole32{fit32 && *cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS};
+    // 32x32: thread t holds coefficients t + 256 * h; warp 0 reduces.
+    candidate_rows<32>(y, basis32, rows, tid);
+    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
+    float coeffs32[SELECT_ENTRIES_PER_THREAD];
+    float dist32{0.0f};
+    float rate32{0.0f};
+    {
+        const int fx{tid / 32};
+        const int fy{tid % 32};
+        candidate_coeffs<32>(basis32, rows + fx * 32, 256, fy, coeffs32);
+#pragma unroll
+        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
+            accumulate_coeff_cost(coeffs32[h], fx + 8 * h, fy, 32, qgsf, dist32, rate32);
+        }
+    }
+    __syncthreads();
+    pd[tid] = dist32;
+    pr[tid] = rate32;
+    __syncthreads();
+    if (warp == 0) {
+        const float dist{warp_tree_sum_256(pd, lane)};
+        const float rate{warp_tree_sum_256(pr, lane)};
+        if (lane == 0) {
+            *cost32 = fit32 ? candidate_cost(32, dist, rate, lambda) : INF;
+        }
+    }
+
+    if (tid == 0) {
+        const std::uint32_t split_l{*split_layout};
+        const bool whole32{fit32 && *cost32 <= *split_cost + TRANSFORM_SELECT_SPLIT_EPS};
         if (whole32) {
             write_first_block(acs, bw, rbx, rby, 32);
         } else {
-            for (int qy{0}; qy < 2; ++qy) {
-                for (int qx{0}; qx < 2; ++qx) {
-                    const int choice{quad_choice[qy][qx]};
-                    if (choice < 0) {
-                        continue;
-                    }
-                    const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
-                    const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
-                    if (choice == 16) {
-                        write_first_block(acs, bw, bx, by, 16);
-                        continue;
-                    }
-                    for (int dy{0}; dy < 2; ++dy) {
-                        for (int dx{0}; dx < 2; ++dx) {
-                            const std::size_t bbx{bx + dx};
-                            const std::size_t bby{by + dy};
-                            if (bbx < bw && bby < bh) {
-                                acs[bby * bw + bbx] = 8;
-                            }
+            for (int qi{0}; qi < 4; ++qi) {
+                const int choice{quadrant_side(split_l, qi)};
+                const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qi % 2)};
+                const std::size_t by{rby + 2 * static_cast<std::size_t>(qi / 2)};
+                if (choice == 16) {
+                    write_first_block(acs, bw, bx, by, 16);
+                    continue;
+                }
+                if (choice != 8) {
+                    continue;
+                }
+                for (int dy{0}; dy < 2; ++dy) {
+                    for (int dx{0}; dx < 2; ++dx) {
+                        const std::size_t bbx{bx + dx};
+                        const std::size_t bby{by + dy};
+                        if (bbx < bw && bby < bh) {
+                            acs[bby * bw + bbx] = 8;
                         }
                     }
                 }
             }
         }
-        *layout_word = whole32 ? WHOLE32_LAYOUT : split_layout;
+        *layout_word = whole32 ? WHOLE32_LAYOUT : split_l;
     }
     __syncthreads();
-    return *layout_word;
+    const std::uint32_t layout{*layout_word};
+    if (layout == WHOLE32_LAYOUT) {
+#pragma unroll
+        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
+            const std::size_t e{static_cast<std::size_t>(tid + FRONTEND_THREADS * h)};
+            y_plane[covered_plane_slot(32, rbx, rby, bw, e)] = __float2half_rn(coeffs32[h]);
+        }
+    }
+    return layout;
 }
 
-// Transform of a region (one CUDA block's TB x TB blocks) that owns region
-// coefficient k. The region coefficients concatenate the transforms in quadrant
-// order, so quadrant q holds k in [256 q, 256 q + 256) unless the region is one
-// DCT32; within a quadrant split into 8x8 transforms, sub-block (dx, dy) holds
-// the 64 entries from 64 * (2 dy + dx). n == 0 marks a k outside the image.
-// `layout` is the region layout returned by select_transforms.
-struct RegionTransform {
-    int n;
-    int first_k;
-    int px0;
-    int py0;
-    std::size_t bx;
-    std::size_t by;
-};
-
-__device__ RegionTransform region_transform(int k, std::uint32_t layout, std::size_t rbx,
-                                            std::size_t rby, std::size_t bw, std::size_t bh) {
-    const int q{k / 256};
-    const int n{static_cast<int>((layout >> (8 * q)) & 0xffu)};
-    if (n == 32) {
-        return {32, 0, 0, 0, rbx, rby};
-    }
-    if (n == 0) {
-        return {};
-    }
-    const int qpx{16 * (q % 2)};
-    const int qpy{16 * (q / 2)};
-    const std::size_t qbx{rbx + static_cast<std::size_t>(qpx / 8)};
-    const std::size_t qby{rby + static_cast<std::size_t>(qpy / 8)};
-    if (n == 16) {
-        return {16, 256 * q, qpx, qpy, qbx, qby};
-    }
-    const int sub{(k % 256) / 64};
-    const std::size_t bx{qbx + static_cast<std::size_t>(sub % 2)};
-    const std::size_t by{qby + static_cast<std::size_t>(sub / 2)};
-    if (bx >= bw || by >= bh) {
-        return {};
-    }
-    return {8, k - k % 64, qpx + 8 * (sub % 2), qpy + 8 * (sub / 2), bx, by};
-}
-
-// Shared-memory index of region DCT horizontal-pass entry k: one padding float
-// after every 32 entries. In the vertical pass the lanes of a warp read the rows
-// of up to 16 frequencies fx at the same index; the padding maps them to
-// distinct banks.
+// Shared-memory index of region entry k (a horizontal-pass row entry or a
+// coefficient): one padding float after every 32 entries. A pass's N-vectors
+// stay contiguous, and the lanes of a warp reading 32 consecutive vectors at
+// the same position hit distinct banks.
 __device__ inline int region_row_index(int k) {
     return k + k / 32;
 }
 
-// DCT of all transforms of the region for CHANNELS planes at once; the channels
-// share each basis load. Each warp's consecutive k fall within one transform.
-// The vertical pass gives each thread four consecutive k from a multiple of
-// four: they share fx and land in consecutive plane slots.
-template <int CHANNELS>
-__device__ void forward_region(const float* const (&sharp)[CHANNELS], const float* bases,
-                               float* const (&rows)[CHANNELS], std::uint32_t layout,
-                               std::size_t rbx, std::size_t rby, std::size_t bw, std::size_t bh,
-                               __half* const (&dst)[CHANNELS], int tid) {
-    for (int k{tid}; k < TILE_SAMPLES; k += FRONTEND_THREADS) {
-        const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
-        if (t.n == 0) {
-            continue;
-        }
-        const int e{k - t.first_k};
-        const float* basis_row{dct_basis_row(region_basis(bases, t.n), t.n, e / t.n)};
-        const int pixel_row{(t.py0 + e % t.n) * TILE_STRIDE + t.px0};
-        const float* basis_rows[CHANNELS];
-        const float* pixel_rows[CHANNELS];
+constexpr int REGION_OUTPUTS{8};
+// The X/B passes give each warp one task: a channel and a frequency part of a
+// whole DCT32, or a quadrant (warps 2 q and 2 q + 1); a DCT8 vector gets all
+// its frequencies. The frequency part is w % 4 or w % 2, so the warps sharing
+// a scheduler (w % 4) run the same unrolled part: interleaving several
+// unrolled parts per scheduler thrashes the instruction cache.
+static_assert(2 * 32 / REGION_OUTPUTS == FRONTEND_THREADS / 32 && 16 / REGION_OUTPUTS == 2 &&
+              REGION_OUTPUTS == 8);
+
+struct alignas(16) Half8 {
+    __half2 h[4];
+};
+
+__device__ inline void store_half8(__half* dst, const float (&v)[8]) {
+    *reinterpret_cast<Half8*>(dst) =
+        Half8{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3]),
+               __floats2half2_rn(v[4], v[5]), __floats2half2_rn(v[6], v[7])}};
+}
+
+// Horizontal pass of the X and B transforms of the region into
+// rows[c][region_row_index(k)]: the transforms in quadrant order, so quadrant q
+// holds k in [256 q, 256 q + 256) unless the region is one DCT32, DCT8
+// sub-block (dx, dy) of a quadrant holds the 64 entries from 64 (2 dy + dx),
+// and entry fx * N + r of a transform is its frequency fx on row r. A whole DCT32 gives
+// warp w channel w / 4 and frequency part w % 4, one tile row per lane.
+// Otherwise warp w takes quadrant w / 2 with lanes 0-15 on X and 16-31 on B,
+// one quadrant row each, and w % 2 selects the frequency part of a DCT16 or the
+// column of the DCT8s.
+__device__ __forceinline__ void region_rows(const float* const (&sharp)[2], float* const (&rows)[2],
+                                            std::uint32_t layout, std::size_t rbx, std::size_t rby,
+                                            std::size_t bw, std::size_t bh, int warp, int lane) {
+    float out[REGION_OUTPUTS];
+    if (layout == WHOLE32_LAYOUT) {
+        const int c{warp / 4};
+        const int part{warp % 4};
+        dct_vector<32, REGION_OUTPUTS>(sharp[c] + lane * TILE_STRIDE, part, out);
 #pragma unroll
-        for (int c{0}; c < CHANNELS; ++c) {
-            basis_rows[c] = basis_row;
-            pixel_rows[c] = sharp[c] + pixel_row;
+        for (int f{0}; f < REGION_OUTPUTS; ++f) {
+            rows[c][region_row_index((part * REGION_OUTPUTS + f) * 32 + lane)] = out[f];
         }
-        float row[CHANNELS];
-        dct_dots<CHANNELS>(t.n, basis_rows, pixel_rows, row);
+        return;
+    }
+    const int q{warp / 2};
+    const int sub{warp % 2};
+    const int n{quadrant_side(layout, q)};
+    const int c{lane / 16};
+    const int r{lane % 16};
+    const float* src{sharp[c] + (16 * (q / 2) + r) * TILE_STRIDE + 16 * (q % 2)};
+    if (n == 16) {
+        dct_vector<16, REGION_OUTPUTS>(src, sub, out);
 #pragma unroll
-        for (int c{0}; c < CHANNELS; ++c) {
-            rows[c][region_row_index(k)] = row[c];
+        for (int f{0}; f < REGION_OUTPUTS; ++f) {
+            rows[c][region_row_index(256 * q + (sub * REGION_OUTPUTS + f) * 16 + r)] = out[f];
+        }
+    } else if (n == 8) {
+        const std::size_t bx{rbx + static_cast<std::size_t>(2 * (q % 2) + sub)};
+        const std::size_t by{rby + static_cast<std::size_t>(2 * (q / 2) + r / 8)};
+        if (bx < bw && by < bh) {
+            dct_vector<8, 8>(src + 8 * sub, 0, out);
+            const int k0{256 * q + 64 * (2 * (r / 8) + sub) + r % 8};
+#pragma unroll
+            for (int f{0}; f < 8; ++f) {
+                rows[c][region_row_index(k0 + 8 * f)] = out[f];
+            }
         }
     }
-    __syncthreads();
-    constexpr int RUN{4};
-    for (int k{RUN * tid}; k < TILE_SAMPLES; k += RUN * FRONTEND_THREADS) {
-        const RegionTransform t{region_transform(k, layout, rbx, rby, bw, bh)};
-        if (t.n == 0) {
-            continue;
-        }
-        const float* basis{region_basis(bases, t.n)};
-        const int e{k - t.first_k};
-        const int rows_fx{region_row_index(t.first_k + (e / t.n) * t.n)};
-        const float* basis_rows[RUN * CHANNELS];
-        const float* vectors[RUN * CHANNELS];
-#pragma unroll
-        for (int c{0}; c < CHANNELS; ++c) {
-#pragma unroll
-            for (int i{0}; i < RUN; ++i) {
-                basis_rows[RUN * c + i] = dct_basis_row(basis, t.n, e % t.n + i);
-                vectors[RUN * c + i] = rows[c] + rows_fx;
-            }
-        }
-        float coeffs[RUN * CHANNELS];
-        dct_dots<RUN * CHANNELS>(t.n, basis_rows, vectors, coeffs);
-        const std::size_t slot{
-            covered_plane_slot(t.n, t.bx, t.by, bw, static_cast<std::size_t>(e))};
-#pragma unroll
-        for (int c{0}; c < CHANNELS; ++c) {
-#pragma unroll
-            for (int i{0}; i < RUN; i += 2) {
-                *reinterpret_cast<__half2*>(dst[c] + slot + i) =
-                    __floats2half2_rn(coeffs[RUN * c + i], coeffs[RUN * c + i + 1]);
-            }
+}
+
+// Vertical pass of the X and B transforms of the region from the rows of
+// region_rows into the covered-block planes, eight consecutive coefficients per
+// lane. A whole DCT32 gives warp w channel w / 4 and frequency part w % 4, the
+// rows of one fx per lane. Otherwise warp w takes quadrant w / 2: a DCT16 puts
+// X on lanes 0-15 and B on 16-31 with w % 2 as the frequency part, the DCT8s
+// put channel w % 2 on all lanes.
+__device__ __forceinline__ void region_coeffs(const float* const (&rows)[2], std::uint32_t layout,
+                                              std::size_t rbx, std::size_t rby, std::size_t bw,
+                                              std::size_t bh, __half* const (&dst)[2], int warp,
+                                              int lane) {
+    float out[REGION_OUTPUTS];
+    if (layout == WHOLE32_LAYOUT) {
+        const int c{warp / 4};
+        const int part{warp % 4};
+        dct_vector<32, REGION_OUTPUTS>(rows[c] + region_row_index(32 * lane), part, out);
+        const std::size_t e{static_cast<std::size_t>(32 * lane + REGION_OUTPUTS * part)};
+        store_half8(dst[c] + covered_plane_slot(32, rbx, rby, bw, e), out);
+        return;
+    }
+    const int q{warp / 2};
+    const int sub{warp % 2};
+    const int n{quadrant_side(layout, q)};
+    const std::size_t qbx{rbx + 2 * static_cast<std::size_t>(q % 2)};
+    const std::size_t qby{rby + 2 * static_cast<std::size_t>(q / 2)};
+    if (n == 16) {
+        const int c{lane / 16};
+        const int fx{lane % 16};
+        dct_vector<16, REGION_OUTPUTS>(rows[c] + region_row_index(256 * q + 16 * fx), sub, out);
+        const std::size_t e{static_cast<std::size_t>(16 * fx + REGION_OUTPUTS * sub)};
+        store_half8(dst[c] + covered_plane_slot(16, qbx, qby, bw, e), out);
+    } else if (n == 8) {
+        const int block{lane / 8};
+        const std::size_t bx{qbx + static_cast<std::size_t>(block % 2)};
+        const std::size_t by{qby + static_cast<std::size_t>(block / 2)};
+        if (bx < bw && by < bh) {
+            dct_vector<8, 8>(rows[sub] + region_row_index(256 * q + 8 * lane), 0, out);
+            const std::size_t e{static_cast<std::size_t>(8 * (lane % 8))};
+            store_half8(dst[sub] + covered_plane_slot(8, bx, by, bw, e), out);
         }
     }
 }
@@ -652,8 +708,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     // Warp w takes cell row w, and lane x sums the four terms of tile column x;
     // the four lanes of a cell then combine their column sums.
     const int lane{tid % 32};
+    const int warp{tid / 32};
     {
-        const int warp{tid / 32};
         const int lx{lane + HALO};
         float sum{0.0f};
         for (int dy{0}; dy < 4; ++dy) {
@@ -765,29 +821,27 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     __syncthreads();
 
     float* rows{sharp_y + TILE_FLOATS};
-    float* costs{rows + TILE_SAMPLES};
+    float* words{rows + TILE_SAMPLES};
     float* bases{workspace + BASES_OFFSET};
     load_bases(bases, tid);
     __syncthreads();
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
     const std::uint32_t layout{select_transforms(sharp_y, tbx0, tby0, bw, bh, qgsf,
-                                                 TRANSFORM_SELECT_LAMBDA, bases, rows, costs, acs,
+                                                 TRANSFORM_SELECT_LAMBDA, bases, rows, words, acs,
                                                  coeffs + cplane, tid)};
-    if (layout != WHOLE32_LAYOUT) {
-        // The padded Y rows overlap the selection costs and the layout word.
-        __syncthreads();
-        forward_region<1>({sharp_y}, bases, {rows}, layout, tbx0, tby0, bw, bh, {coeffs + cplane},
-                          tid);
-    }
+    // Sharp B overlaps the selection words.
     __syncthreads();
 
     float* sharp_x{workspace};
-    float* sharp_b{sharp_x + TILE_FLOATS};
+    float* sharp_b{workspace + SHARP_B_OFFSET};
+    float* rows_b{raw_b + ROWS_B_SKEW};
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    forward_region<2>({sharp_x, sharp_b}, bases, {raw_x, raw_b}, layout, tbx0, tby0, bw, bh,
-                      {coeffs, coeffs + 2 * cplane}, tid);
+    region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tbx0, tby0, bw, bh, warp, lane);
+    __syncthreads();
+    region_coeffs({raw_x, rows_b}, layout, tbx0, tby0, bw, bh, {coeffs, coeffs + 2 * cplane}, warp,
+                  lane);
 }
 
 }  // namespace
@@ -857,7 +911,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
         return false;
     }
 
-    ensure_frontend_basis();
+    ensure_dct_magnitudes();
     const dim3 block{FRONTEND_THREADS};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
