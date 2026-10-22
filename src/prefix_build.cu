@@ -349,16 +349,23 @@ __device__ void warp_build_and_store_huffman_code(HistogramCode& code, std::uint
     }
 }
 
+// The code half of detail::write_prefix_histograms, warp-cooperative.
+__device__ void warp_write_prefix_code(HistogramCode& code, std::uint32_t length,
+                                       SharedBitWriter& w, CodeLengthCode& cl, TreeScratch& t,
+                                       unsigned int lane) {
+    if (length > 1) {
+        const HistogramSummary s{summarize_histogram(code.hist, length, lane)};
+        warp_build_and_store_huffman_code(code, length, s, w, cl, t, lane);
+    }
+}
+
 // Warp-cooperative detail::write_prefix_histograms.
 __device__ void warp_write_prefix_histograms(HistogramCode& code, std::uint32_t length,
                                              std::size_t num_contexts, SharedBitWriter& w,
                                              CodeLengthCode& cl, TreeScratch& t,
                                              unsigned int lane) {
     detail::write_prefix_histogram_head(w, length, num_contexts, HybridUintConfig{});
-    if (length > 1) {
-        const HistogramSummary s{summarize_histogram(code.hist, length, lane)};
-        warp_build_and_store_huffman_code(code, length, s, w, cl, t, lane);
-    }
+    warp_write_prefix_code(code, length, w, cl, t, lane);
 }
 
 struct DcBlobScratch {
@@ -367,20 +374,17 @@ struct DcBlobScratch {
     unsigned int words[DC_BLOB_STRIDE / 4];
 };
 
-// Warp-cooperative detail::write_modular_header over the staged data histogram.
-__device__ void warp_write_modular_header(SharedBitWriter& w, int predictor, DcBlobScratch& s,
-                                          unsigned int lane) {
-    w.write(1, 0);  // use_global_tree = false
-    w.write(1, 1);  // weighted::Header all_default = true
-    w.write(2, 0);  // num_transforms = 0
+static_assert(detail::TREE_ALPHABET <= CODE_THREADS);
 
-    const std::uint32_t tree_tokens[detail::NUM_TREE_CONTEXTS - 1]{
-        0, static_cast<std::uint32_t>(predictor), 0, 0, 0};
+// Warp-cooperative detail::write_modular_tree.
+__device__ void warp_write_modular_tree(SharedBitWriter& w, const detail::TreeTokens& tree,
+                                        DcBlobScratch& s, unsigned int lane) {
+    detail::write_group_header(w);
     std::uint32_t tree_count{0};
     std::uint32_t tree_len{1};
-    for (std::uint32_t token : tree_tokens) {
-        tree_count += token == lane;
-        tree_len = max(tree_len, token + 1);
+    for (std::size_t i{0}; i < tree.count; ++i) {
+        tree_count += tree.values[i] == lane;
+        tree_len = max(tree_len, tree.values[i] + 1);
     }
     s.tree.hist[lane] = tree_count;
     s.tree.depth[lane] = 0;
@@ -388,17 +392,14 @@ __device__ void warp_write_modular_header(SharedBitWriter& w, int predictor, DcB
     __syncwarp();
     warp_write_prefix_histograms(s.tree, tree_len, detail::NUM_TREE_CONTEXTS, w, s.data.code_length,
                                  s.data.tree, lane);
-    for (std::uint32_t token : tree_tokens) {
-        w.write(s.tree.depth[token], s.tree.bits[token]);
+    for (std::size_t i{0}; i < tree.count; ++i) {
+        w.write(s.tree.depth[tree.values[i]], s.tree.bits[tree.values[i]]);
     }
-
-    const HistogramSummary data{summarize_histogram(s.data.code.hist, HISTOGRAM_STRIDE, lane)};
-    warp_write_prefix_histograms(s.data.code, data.alphabet, 1, w, s.data.code_length, s.data.tree,
-                                 lane);
 }
 
 // One warp per (Dc group, blob): even blocks build the group's pre blob (DC
-// prefix code), odd blocks its mid blob (AcMetadata prefix code).
+// prefix code), odd blocks its mid blob (AcMetadata prefix code). Mirrors
+// detail::serialize_dc_pre / serialize_dc_mid.
 __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_t xdg,
                                       const std::uint32_t* dc_hist, const std::uint32_t* am_hist,
                                       const std::size_t* fbc, std::uint8_t* dc_depth,
@@ -431,10 +432,17 @@ __global__ void dc_group_blobs_kernel(std::size_t bw, std::size_t bh, std::size_
         // AcMetadata `count` field.
         bitstream::write_bits(w, detail::ceil_log2_nonzero(dgw * dgh),
                               static_cast<std::uint32_t>(fbc[g] - 1));
-        warp_write_modular_header(w, DC_PREDICTOR_ZERO, s, lane);
+        warp_write_modular_tree(w, detail::acmeta_tree(), s, lane);
+        const HistogramSummary data{summarize_histogram(s.data.code.hist, HISTOGRAM_STRIDE, lane)};
+        detail::write_acmeta_histograms_head(w, data.alphabet);
+        warp_write_prefix_code(s.data.code, data.alphabet, w, s.data.code_length, s.data.tree,
+                               lane);
     } else {
         bitstream::write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-        warp_write_modular_header(w, DC_PREDICTOR_GRADIENT, s, lane);
+        warp_write_modular_tree(w, detail::single_leaf_tree(DC_PREDICTOR_GRADIENT), s, lane);
+        const HistogramSummary data{summarize_histogram(s.data.code.hist, HISTOGRAM_STRIDE, lane)};
+        warp_write_prefix_histograms(s.data.code, data.alphabet, 1, w, s.data.code_length,
+                                     s.data.tree, lane);
     }
     assert(w.pos <= DC_BLOB_STRIDE * 8);
     __syncwarp();

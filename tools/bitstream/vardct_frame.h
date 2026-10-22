@@ -95,8 +95,13 @@ const std::array<std::uint32_t, 64>& dct8_natural_order();
 //   DC tokens = the 3 DC channels (physical order Y, X, B), row-major,
 //               PackSigned, prefix-coded with dc_depth/dc_bits  [device]
 //   blob_mid  = AcMetadata count-1 + AcMetadata modular header
-//   AcMetadata tokens = YtoX, YtoB, ACS+QF, EPF channels, row-major, PackSigned,
-//               prefix-coded with acmeta_depth/acmeta_bits      [device]
+//   AcMetadata tokens = YtoX, YtoB, ACS+QF channels, row-major, PackSigned,
+//               prefix-coded with acmeta_depth/acmeta_bits      [device];
+//               the EPF channel's leaf has a single symbol and codes no bits
+//
+// The DC members are the histogram and code of the DC tree's leaf; the
+// AcMetadata members those of the leaf shared by YtoX, YtoB and ACS+QF. Each
+// holds HISTOGRAM_STRIDE entries.
 struct DcGroupReference {
     std::vector<std::uint8_t> section{};
 

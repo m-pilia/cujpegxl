@@ -31,7 +31,6 @@ cc_library(
     hdrs = ["vardct_frame.h"],
     testonly = True,
     deps = [
-        ":entropy_encoder",
         ":modular",
         "//src:ac_context",
         "//src:coeff_order",

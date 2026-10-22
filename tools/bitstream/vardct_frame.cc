@@ -19,7 +19,6 @@
 #include "src/coeff_order.h"
 #include "src/vardct_layout.h"
 
-#include "entropy_encoder.h"
 #include "modular.h"
 
 namespace cujpegxl::bitstream {
@@ -29,6 +28,13 @@ constexpr U32Enc GLOBAL_SCALE_ENC{
     {BitsOffset(11, 1), BitsOffset(11, 2049), BitsOffset(12, 4097), BitsOffset(16, 8193)}};
 constexpr U32Enc QUANT_DC_ENC{{Val(16), BitsOffset(5, 1), BitsOffset(8, 1), BitsOffset(16, 1)}};
 constexpr U32Enc ORDER_ENC{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
+
+constexpr ModularTree DC_TREE{.predictor = DC_PREDICTOR_GRADIENT};
+
+// The all-zero EPF channel (index 3) takes the first leaf, so its samples cost
+// no bits; YtoX, YtoB and ACS+QF share the second.
+constexpr ModularTree ACMETA_TREE{.predictor = DC_PREDICTOR_ZERO, .split_channel = 2};
+constexpr std::size_t ACMETA_DATA_LEAF{1};
 
 std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
@@ -350,14 +356,13 @@ void write_dc_global(BitWriter& w, const FrameCoefficients& fc) {
 void write_dc_group(BitWriter& w, const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
                     std::size_t by0, std::size_t dgw, std::size_t dgh) {
     write_bits(w, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-    write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh),
-                        DC_PREDICTOR_GRADIENT);
+    write_modular_image(w, make_vardct_dc_channels(fc, bw, bx0, by0, dgw, dgh), DC_TREE);
     // DecodeGroup(ModularDC): VarDCT full image has no channels -> nothing.
     const std::vector<ModularChannel> meta{make_ac_metadata_channels(fc, bw, bx0, by0, dgw, dgh)};
     const std::size_t count{meta[2].w};  // ACS+QF width = number of first-blocks
     // AcMetadata count - 1, width fixed by the block-count upper bound.
     write_bits(w, ceil_log2_nonzero(dgw * dgh), static_cast<std::uint32_t>(count - 1));
-    write_modular_image(w, meta);
+    write_modular_image(w, meta, ACMETA_TREE);
 }
 
 std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients& fc, std::size_t bw,
@@ -482,6 +487,12 @@ std::vector<std::uint8_t> write_multi_group_codestream(const FrameCoefficients& 
     return out;
 }
 
+template <typename T>
+std::vector<T> leaf_row(const std::vector<T>& rows, std::size_t leaf) {
+    return std::vector<T>(rows.begin() + leaf * HISTOGRAM_STRIDE,
+                          rows.begin() + (leaf + 1) * HISTOGRAM_STRIDE);
+}
+
 }  // namespace
 
 const std::array<std::uint32_t, 64>& dct8_natural_order() {
@@ -524,24 +535,22 @@ DcReference reference_dc_encode(const FrameCoefficients& fc) {
 
         BitWriter pre{};
         write_bits(pre, 2, 0);  // DecodeVarDCTDC extra_precision = 0
-        EntropyEncoder dc_data{1};
-        write_modular_header(pre, dc_ch, dc_data, DC_PREDICTOR_GRADIENT);
+        const ModularData dc_data{write_modular_header(pre, dc_ch, DC_TREE)};
         g.blob_pre = pre.bytes();
         g.blob_pre_bits = pre.bits_written();
-        g.dc_depth = dc_data.code_depth();
-        g.dc_bits = dc_data.code_bits();
-        g.dc_histogram = dc_data.histogram();
+        g.dc_depth = leaf_row(dc_data.depth, 0);
+        g.dc_bits = leaf_row(dc_data.bits, 0);
+        g.dc_histogram = leaf_row(dc_data.histograms, 0);
 
         BitWriter mid{};
         write_bits(mid, ceil_log2_nonzero(dgw * dgh),
                    static_cast<std::uint32_t>(meta_ch[2].w - 1));  // AcMetadata count - 1
-        EntropyEncoder meta_data{1};
-        write_modular_header(mid, meta_ch, meta_data);
+        const ModularData meta_data{write_modular_header(mid, meta_ch, ACMETA_TREE)};
         g.blob_mid = mid.bytes();
         g.blob_mid_bits = mid.bits_written();
-        g.acmeta_depth = meta_data.code_depth();
-        g.acmeta_bits = meta_data.code_bits();
-        g.acmeta_histogram = meta_data.histogram();
+        g.acmeta_depth = leaf_row(meta_data.depth, ACMETA_DATA_LEAF);
+        g.acmeta_bits = leaf_row(meta_data.bits, ACMETA_DATA_LEAF);
+        g.acmeta_histogram = leaf_row(meta_data.histograms, ACMETA_DATA_LEAF);
 
         BitWriter sec{};
         write_dc_group(sec, fc, bw, bx0, by0, dgw, dgh);

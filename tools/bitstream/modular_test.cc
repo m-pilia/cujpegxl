@@ -31,9 +31,9 @@ void test_free(void*, void* p) {
     std::free(p);
 }
 
-void round_trip(const std::vector<ModularChannel>& channels, int predictor = DC_PREDICTOR_ZERO) {
+void round_trip(const std::vector<ModularChannel>& channels, const ModularTree& tree = {}) {
     BitWriter bw{};
-    write_modular_image(bw, channels, predictor);
+    write_modular_image(bw, channels, tree);
     bw.zero_pad_to_byte();
 
     JxlMemoryManager mm{nullptr, &test_alloc, &test_free};
@@ -114,7 +114,7 @@ TEST(Modular, GradientSmoothChannel) {
                              [](std::size_t x, std::size_t y) {
                                  return static_cast<std::int32_t>(3 * x + 5 * y);
                              })},
-               DC_PREDICTOR_GRADIENT);
+               ModularTree{.predictor = DC_PREDICTOR_GRADIENT});
 }
 
 TEST(Modular, GradientMixedSignChannels) {
@@ -129,7 +129,7 @@ TEST(Modular, GradientMixedSignChannels) {
                          }),
             make_channel(32, 32, [](std::size_t, std::size_t) { return 0; }),
         },
-        DC_PREDICTOR_GRADIENT);
+        ModularTree{.predictor = DC_PREDICTOR_GRADIENT});
 }
 
 TEST(Modular, GradientLargeMagnitudeAndEdges) {
@@ -138,7 +138,46 @@ TEST(Modular, GradientLargeMagnitudeAndEdges) {
                                  return 1000 * (static_cast<std::int32_t>(x) - 3) -
                                         500 * static_cast<std::int32_t>(y);
                              })},
-               DC_PREDICTOR_GRADIENT);
+               ModularTree{.predictor = DC_PREDICTOR_GRADIENT});
+}
+
+// The AcMetadata layout: the last channel is constant and has a leaf of its own.
+TEST(Modular, ChannelSplitConstantLastChannel) {
+    round_trip(
+        {
+            make_channel(4, 4, [](std::size_t x, std::size_t y) { return (x + 3 * y) % 7 - 3; }),
+            make_channel(4, 4,
+                         [](std::size_t x, std::size_t) { return -static_cast<std::int32_t>(x); }),
+            make_channel(9, 2,
+                         [](std::size_t x, std::size_t y) { return y == 0 ? std::size_t{8} : x; }),
+            make_channel(32, 32, [](std::size_t, std::size_t) { return 0; }),
+        },
+        ModularTree{.predictor = DC_PREDICTOR_ZERO, .split_channel = 2});
+}
+
+TEST(Modular, ChannelSplitGradientBothLeavesCoded) {
+    round_trip(
+        {
+            make_channel(16, 16, [](std::size_t x, std::size_t y) { return 3 * x + 5 * y; }),
+            make_channel(16, 16,
+                         [](std::size_t x, std::size_t y) { return (x * 7 + y * 3) % 41 - 20; }),
+            make_channel(8, 4, [](std::size_t x, std::size_t y) { return 100 * x - 7 * y; }),
+        },
+        ModularTree{.predictor = DC_PREDICTOR_GRADIENT, .split_channel = 0});
+}
+
+// A constant channel alone on its leaf codes no data bits, whatever its size.
+TEST(Modular, ChannelSplitConstantChannelCodesNoBits) {
+    const auto coded_bits{[](std::size_t side) {
+        BitWriter bw{};
+        write_modular_image(
+            bw,
+            {make_channel(8, 8, [](std::size_t x, std::size_t y) { return (x ^ y) % 5; }),
+             make_channel(side, side, [](std::size_t, std::size_t) { return 0; })},
+            ModularTree{.predictor = DC_PREDICTOR_ZERO, .split_channel = 0});
+        return bw.bits_written();
+    }};
+    EXPECT_EQ(coded_bits(1), coded_bits(64));
 }
 
 }  // namespace

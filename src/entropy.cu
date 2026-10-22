@@ -270,7 +270,9 @@ constexpr int DC_CHUNKS = 128;
 // runs that share a byte compose without a race. DcCtx caches the per-group
 // geometry and the AcMetadata channel-sample structure: YtoX (cw*ch), YtoB
 // (cw*ch), ACS+QF row 0 (count strategy samples), row 1 (count quant-field
-// samples), then EPF (n zeros), matching the host reference. `acs`/`ytox_map`/
+// samples), matching the host reference. The EPF channel that follows has a
+// single-symbol leaf of its own and codes no bits, so it has no items.
+// `acs`/`ytox_map`/
 // `ytob_map` are null for an all-DCT8 base-correlation frame; `fb_pos` lists this
 // group's first-block block indices in raster order.
 struct DcCtx {
@@ -292,14 +294,14 @@ struct DcCtx {
     const std::int8_t* ytob_map;
     std::size_t cmw;
     const std::size_t* fb_pos;  // this group's first-block block indices
-    std::size_t n;              // DC samples per channel = gbw*gbh (and EPF count)
+    std::size_t n;              // DC samples per channel = gbw*gbh
     std::size_t cw, ch;         // CfL color-tile grid within the group
     std::size_t count;          // first-blocks (ACS+QF columns)
     std::size_t m;              // total items
 };
 
 // (symbol, extra bits) of the group's `j`-th AcMetadata sample, in channel/row
-// order: YtoX, YtoB, ACS row 0, QF row 1, EPF. Predictor::Zero, so each sample is
+// order: YtoX, YtoB, ACS row 0, QF row 1. Predictor::Zero, so each sample is
 // pack_signed of its raw value.
 __device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sym,
                                 std::uint32_t& rn, std::uint32_t& rw) {
@@ -315,7 +317,7 @@ __device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sy
     } else if (j < 2 * cwch + c.count) {
         const std::size_t block{c.fb_pos[j - 2 * cwch]};
         v = raw_strategy_dev(c.acs == nullptr ? 8 : c.acs[block]);
-    } else if (j < 2 * cwch + 2 * c.count) {
+    } else {
         const std::size_t block{c.fb_pos[j - (2 * cwch + c.count)]};
         v = c.qf[block] - 1;
     }
@@ -360,7 +362,7 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t
     c.cw = (e.gbw + 7) / 8;
     c.ch = (e.gbh + 7) / 8;
     c.count = fb_count[g];
-    c.m = 3 * c.n + 2 + 2 * c.cw * c.ch + 2 * c.count + c.n;
+    c.m = 3 * c.n + 2 + 2 * c.cw * c.ch + 2 * c.count;
     return c;
 }
 
@@ -613,10 +615,10 @@ __global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, 
     flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
 }
 
-// Counts the strip's AcMetadata samples: each first-block's ACS strategy token
-// (row 0) and quant-field token (row 1), each color tile's YtoX and YtoB tokens
-// (null maps are the base correlation, symbol 0), and one EPF structural zero
-// per block.
+// Counts the strip's AcMetadata samples outside the EPF channel: each
+// first-block's ACS strategy token (row 0) and quant-field token (row 1), and
+// each color tile's YtoX and YtoB tokens (null maps are the base correlation,
+// symbol 0).
 __global__ void acmeta_histogram_kernel(const std::int32_t* quant_field, const std::int8_t* acs,
                                         const std::int8_t* ytox_map, const std::int8_t* ytob_map,
                                         std::size_t bw, std::size_t bh, std::size_t cmw,
@@ -639,10 +641,6 @@ __global__ void acmeta_histogram_kernel(const std::int32_t* quant_field, const s
         const std::size_t tile{blockIdx.x * cmw + ctx};
         count_signed_token(ytox_map == nullptr ? 0 : ytox_map[tile], sh);
         count_signed_token(ytob_map == nullptr ? 0 : ytob_map[tile], sh);
-    }
-    if (threadIdx.x == 0) {
-        const std::size_t strip_width{min(bw - s.bx0, DC_GROUP_BLOCKS)};
-        atomicAdd(&sh[0], static_cast<unsigned int>(strip_width * (s.row_hi - s.row_lo)));
     }
     flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
 }

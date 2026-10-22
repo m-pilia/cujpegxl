@@ -773,39 +773,118 @@ CUJPEGXL_BS_HD void write_clustered_prefix_histograms(
 
 // --- VarDCT DC / AcMetadata modular headers ---------------------------------
 
-// GroupHeader + single-leaf MA tree (with `predictor`) + the data histogram
-// description, filling depth/bits with the data prefix code. Mirrors the oracle
-// modular.cc write_modular_header (which then emits the data tokens).
+// MA tree tokens in libjxl DecodeTree order. All NUM_TREE_CONTEXTS contexts
+// share one histogram, so only the token values are kept.
+constexpr std::size_t MAX_TREE_TOKENS = 12;
+constexpr std::size_t TREE_ALPHABET = 16;
+
+struct TreeTokens {
+    std::uint32_t values[MAX_TREE_TOKENS];
+    std::size_t count;
+};
+
+// Property 0 (leaf), `predictor`, offset 0, multiplier 1 (log 0, bits 0).
+CUJPEGXL_BS_HD inline void append_leaf(TreeTokens& tree, int predictor) {
+    const std::uint32_t leaf[]{0, static_cast<std::uint32_t>(predictor), 0, 0, 0};
+    for (std::uint32_t t : leaf) {
+        assert(tree.count < MAX_TREE_TOKENS);
+        tree.values[tree.count] = t;
+        ++tree.count;
+    }
+}
+
+CUJPEGXL_BS_HD inline TreeTokens single_leaf_tree(int predictor) {
+    TreeTokens tree{{}, 0};
+    append_leaf(tree, predictor);
+    return tree;
+}
+
+// The AcMetadata channels are YtoX, YtoB, ACS+QF and EPF. The root splits on the
+// channel index (property 0, token 1): libjxl takes the first child, decoded
+// first, when the property exceeds the split value, so the all-zero EPF channel
+// gets the first leaf (data context 0) and the other channels the second
+// (context 1). Both leaves use the Zero predictor.
+constexpr std::int32_t ACMETA_EPF_CHANNEL = 3;
+
+CUJPEGXL_BS_HD inline TreeTokens acmeta_tree() {
+    TreeTokens tree{{1, pack_signed(ACMETA_EPF_CHANNEL - 1)}, 2};
+    append_leaf(tree, DC_PREDICTOR_ZERO);
+    append_leaf(tree, DC_PREDICTOR_ZERO);
+    return tree;
+}
+
 template <typename W>
-CUJPEGXL_BS_HD void write_modular_header(W& w, const std::uint32_t* data_hist, std::size_t data_len,
-                                         int predictor, std::uint8_t* depth, std::uint16_t* bits) {
+CUJPEGXL_BS_HD void write_group_header(W& w) {
     w.write(1, 0);  // use_global_tree = false
     w.write(1, 1);  // weighted::Header all_default = true
     w.write(2, 0);  // num_transforms = 0
+}
 
-    const std::uint32_t tree_tokens[NUM_TREE_CONTEXTS - 1]{0, static_cast<std::uint32_t>(predictor),
-                                                           0, 0, 0};
-    std::uint32_t tree_hist[16]{};
+// GroupHeader + the MA tree. Mirrors the oracle modular.cc.
+template <typename W>
+CUJPEGXL_BS_HD void write_modular_tree(W& w, const TreeTokens& tree) {
+    write_group_header(w);
+    std::uint32_t tree_hist[TREE_ALPHABET]{};
     std::size_t tree_len{1};
-    for (std::uint32_t t : tree_tokens) {
+    for (std::size_t i{0}; i < tree.count; ++i) {
+        const std::uint32_t t{tree.values[i]};
+        assert(t < TREE_ALPHABET);
         ++tree_hist[t];
         if (static_cast<std::size_t>(t) + 1 > tree_len) {
             tree_len = static_cast<std::size_t>(t) + 1;
         }
     }
-    std::uint8_t tree_depth[16]{};
-    std::uint16_t tree_bits[16]{};
+    std::uint8_t tree_depth[TREE_ALPHABET]{};
+    std::uint16_t tree_bits[TREE_ALPHABET]{};
     write_prefix_histograms(w, tree_hist, tree_len, NUM_TREE_CONTEXTS, HybridUintConfig{},
                             tree_depth, tree_bits);
-    for (std::uint32_t t : tree_tokens) {
-        w.write(tree_depth[t], tree_bits[t]);
+    for (std::size_t i{0}; i < tree.count; ++i) {
+        w.write(tree_depth[tree.values[i]], tree_bits[tree.values[i]]);
     }
+}
 
+// GroupHeader + single-leaf MA tree (with `predictor`) + the data histogram
+// description, filling depth/bits with the data prefix code.
+template <typename W>
+CUJPEGXL_BS_HD void write_modular_header(W& w, const std::uint32_t* data_hist, std::size_t data_len,
+                                         int predictor, std::uint8_t* depth, std::uint16_t* bits) {
+    write_modular_tree(w, single_leaf_tree(predictor));
+    write_prefix_histograms(w, data_hist, data_len, 1, HybridUintConfig{}, depth, bits);
+}
+
+// The data histogram description of acmeta_tree() up to the prefix code of its
+// second leaf (`data_len` symbols): context map {0, 1}, then the codes' uint
+// configs and alphabet sizes. The EPF leaf only codes symbol 0, so its
+// alphabet size is 1 and it has no code.
+template <typename W>
+CUJPEGXL_BS_HD void write_acmeta_histograms_head(W& w, std::size_t data_len) {
+    constexpr std::size_t NUM_LEAVES{2};
+    const std::uint8_t context_map[NUM_LEAVES]{0, 1};
+    w.write(1, 0);  // lz77.enabled = false
+    write_simple_context_map(w, context_map, NUM_LEAVES, NUM_LEAVES);
+    w.write(1, 1);  // use_prefix_code
+    for (std::size_t l{0}; l < NUM_LEAVES; ++l) {
+        encode_uint_config(w, HybridUintConfig{}, PREFIX_MAX_BITS);
+    }
+    store_var_len_uint16(w, 0);
+    store_var_len_uint16(w, data_len - 1);
+}
+
+// GroupHeader + acmeta_tree() + its data histogram description, filling
+// depth/bits with the prefix code of the non-EPF leaf over `data_hist`.
+template <typename W>
+CUJPEGXL_BS_HD void write_acmeta_modular_header(W& w, const std::uint32_t* data_hist,
+                                                std::size_t data_len, std::uint8_t* depth,
+                                                std::uint16_t* bits) {
+    write_modular_tree(w, acmeta_tree());
+    write_acmeta_histograms_head(w, data_len);
     for (std::size_t i{0}; i < data_len; ++i) {
         depth[i] = 0;
         bits[i] = 0;
     }
-    write_prefix_histograms(w, data_hist, data_len, 1, HybridUintConfig{}, depth, bits);
+    if (data_len > 1) {
+        build_and_store_huffman_tree(data_hist, data_len, depth, bits, w);
+    }
 }
 
 // Leading AcGlobal fields: DequantMatrices all_default, num_histograms,
@@ -827,16 +906,16 @@ CUJPEGXL_BS_HD void serialize_dc_pre(W& w, const std::uint32_t* dc_hist, std::ui
                          DC_PREDICTOR_GRADIENT, dc_depth, dc_bits);
 }
 
-// DcGroup mid-blob: AcMetadata `count` field + the AcMetadata modular header
-// (Zero predictor). `total_blocks` sizes the count field, `count` is the group's
-// first-block count.
+// DcGroup mid-blob: AcMetadata `count` field + the AcMetadata modular header.
+// `total_blocks` sizes the count field, `count` is the group's first-block
+// count, `meta_hist` the histogram of the non-EPF channels.
 template <typename W>
 CUJPEGXL_BS_HD void serialize_dc_mid(W& w, const std::uint32_t* meta_hist, std::size_t total_blocks,
                                      std::size_t count, std::uint8_t* meta_depth,
                                      std::uint16_t* meta_bits) {
     write_bits(w, ceil_log2_nonzero(total_blocks), static_cast<std::uint32_t>(count - 1));
-    write_modular_header(w, meta_hist, alphabet_size(meta_hist, HISTOGRAM_STRIDE),
-                         DC_PREDICTOR_ZERO, meta_depth, meta_bits);
+    write_acmeta_modular_header(w, meta_hist, alphabet_size(meta_hist, HISTOGRAM_STRIDE),
+                                meta_depth, meta_bits);
 }
 
 }  // namespace cujpegxl::bitstream::detail

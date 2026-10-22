@@ -115,16 +115,16 @@ std::size_t dc_first_blocks_scratch_bytes(std::size_t width, std::size_t height)
 bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
                          std::uint32_t* histograms, cudaStream_t stream);
 
-// Per-DcGroup AcMetadata token histogram, pooled over the metadata samples of
-// that group: the structural zero samples (YtoX, YtoB, ACS row 0, EPF) plus the
-// per-block quant-field tokens (ACS+QF row 1). `quant_field` is the per-block
-// quant integer buffer (device; bw*bh, block raster order). `histograms` is a
-// device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32 (zeroed by the call).
-// Deterministic (integer atomics). Returns false on a CUDA error.
-// `acs` (per-8x8 transform signal, nullptr = all DCT8) and `ytox_map`/`ytob_map`
-// (per-64x64-tile CfL factors, nullptr = base) extend the AcMetadata histogram to
-// mixed blocks: the per-first-block ACS strategy tokens, the per-tile CfL tokens,
-// and the per-first-block quant-field tokens (plus the structural EPF zeros).
+// Per-DcGroup AcMetadata token histogram, pooled over the samples of that
+// group's YtoX, YtoB and ACS+QF channels: the per-tile CfL tokens, the
+// per-first-block ACS strategy tokens (row 0) and quant-field tokens (row 1).
+// The all-zero EPF channel has a leaf of its own in the AcMetadata MA tree and
+// is not counted. `quant_field` is the per-block quant integer buffer (device;
+// bw*bh, block raster order), `acs` the per-8x8 transform signal (nullptr = all
+// DCT8), `ytox_map`/`ytob_map` the per-64x64-tile CfL factors (nullptr = base).
+// `histograms` is a device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32
+// (zeroed by the call). Deterministic (integer atomics). Returns false on a CUDA
+// error.
 bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
                              const std::int8_t* ytox_map, const std::int8_t* ytob_map,
                              std::size_t width, std::size_t height, std::uint32_t* histograms,
