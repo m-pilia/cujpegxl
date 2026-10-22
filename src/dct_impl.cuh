@@ -14,129 +14,80 @@
 //
 // The transform runs as a horizontal pass producing rows[fx * N + r] followed
 // by a vertical pass over those rows. Both passes are 1D DCTs of N-vectors:
-// pixel row r, then the rows of frequency fx. Every output accumulates its N
-// products in increasing t, whichever of the two evaluations below computes
-// it, so both give bit-identical results.
+// pixel row r, then the rows of frequency fx. The 1D DCT is libjxl's recursive
+// butterfly (DCT1DImpl in dct-inl.h) without its 1/N factor: the even
+// frequencies of an N-point DCT are the N/2-point DCT of v[i] + v[N-1-i], the
+// odd ones the N/2-point DCT of (v[i] - v[N-1-i]) / (2 cos(pi (i + 0.5) / N))
+// with adjacent outputs added. The two halves are independent, so they can be
+// computed by different threads with the same result.
 
 namespace cujpegxl {
 
-__device__ inline float dct_basis_entry(int n, int k, int t) {
-    const double g{k == 0 ? 1.0 / n : 1.4142135623730950488 / n};
-    return static_cast<float>(g * cos(3.14159265358979323846 * (t + 0.5) * k / n));
-}
+constexpr float DCT_SQRT2{1.41421356237309504880f};
 
-// A[k][t] = +-g(k) cos(pi m / (2N)) with m = (2t + 1) k mod 4N folded into
-// [0, N), so the basis has only N distinct magnitudes
-// A[m][0] = dct_basis_entry(N, m, 0), m = 0..N-1. This is the index of A[k][t]
-// among them and whether A[k][t] is the negated magnitude.
-struct DctBasisRef {
-    int index;
-    bool negate;
+// 1 / (2 cos(pi (i + 0.5) / N)), i < N/2, for N = 4, 8, 16, 32 at offset N/2 - 2.
+constexpr float DCT_ODD_MULTIPLIERS[30]{
+    0.54119610014619701f, 1.3065629648763764f,  0.50979557910415918f, 0.60134488693504529f,
+    0.89997622313641557f, 2.5629154477415055f,  0.50241928618815568f, 0.52249861493968885f,
+    0.56694403481635769f, 0.64682178335999008f, 0.7881546234512502f,  1.0606776859903471f,
+    1.7224470982383342f,  5.1011486186891553f,  0.50060299823519627f, 0.50547095989754365f,
+    0.51544730992262455f, 0.53104259108978413f, 0.55310389603444454f, 0.58293496820613389f,
+    0.62250412303566482f, 0.67480834145500568f, 0.74453627100229858f, 0.83934964541552681f,
+    0.97256823786196078f, 1.1694399334328847f,  1.4841646163141662f,  2.0577810099534108f,
+    3.407608418468719f,   10.190008123548033f,
 };
 
-__host__ __device__ constexpr DctBasisRef dct_basis_ref(int n, int k, int t) {
-    int m{((2 * t + 1) * k) % (4 * n)};
-    if (m > 2 * n) {
-        m = 4 * n - m;
-    }
-    if (m > n) {
-        return {2 * n - m, true};
-    }
-    return {m, false};
-}
+// dct1d computes N times A, so the 2D transform is scaled by 1/N^2, a power of
+// two.
+template <int N>
+constexpr float DCT2D_SCALE{1.0f / static_cast<float>(N * N)};
 
-// Shared-memory evaluation: the basis is expanded from its magnitudes with rows
-// padded to N + 1 floats. When the lanes of a warp read different basis rows at
-// the same column, the odd stride maps them to distinct banks.
-__device__ inline void expand_dct_basis(const float* __restrict__ magnitudes,
-                                        float* __restrict__ dst, int n, int tid, int threads) {
-    for (int e{tid}; e < n * n; e += threads) {
-        const DctBasisRef ref{dct_basis_ref(n, e / n, e % n)};
-        dst[(e / n) * (n + 1) + e % n] =
-            ref.negate ? -magnitudes[ref.index] : magnitudes[ref.index];
-    }
-}
+template <int N>
+__device__ __forceinline__ void dct1d(float (&v)[N]);
 
-__device__ inline const float* dct_basis_row(const float* basis, int n, int k) {
-    return basis + k * (n + 1);
-}
-
-// W dot products out[w] = sum_i basis_rows[w][i] * vectors[w][i], accumulated
-// in increasing i. Both passes are such dot products: frequency fx with a
-// pixel row (horizontal), frequency fy with the horizontal-pass rows of
-// frequency fx (vertical). Outputs that share a basis row or a vector are
-// passed the same pointer, so the shared operand is loaded once per i.
-//
-// Of the two evaluations, this one has the smaller code: a short loop over i
-// that every warp of every resident block runs, so it stays in the
-// instruction cache. Its cost is about one shared-memory load per
-// multiply-add (more when the W outputs share few operands). It is the faster
-// one where that load rate is moderate and each warp's work per pass is small,
-// as in the front end's transform selection, which evaluates every candidate
-// size of Y; there, the unrolled code of dct_outputs costs more in
-// instruction fetch than it saves in loads.
-template <int W>
-__device__ inline void dct_dots(int n, const float* const (&basis_rows)[W],
-                                const float* const (&vectors)[W], float (&out)[W]) {
+// even[m] = N * (A v)[2 m].
+template <int N>
+__device__ __forceinline__ void dct1d_even(const float (&v)[N], float (&even)[N / 2]) {
 #pragma unroll
-    for (int w{0}; w < W; ++w) {
-        out[w] = 0.0f;
+    for (int i{0}; i < N / 2; ++i) {
+        even[i] = v[i] + v[N - 1 - i];
     }
-    for (int i{0}; i < n; ++i) {
+    dct1d(even);
+}
+
+// odd[m] = N * (A v)[2 m + 1].
+template <int N>
+__device__ __forceinline__ void dct1d_odd(const float (&v)[N], float (&odd)[N / 2]) {
+    if constexpr (N == 2) {
+        odd[0] = v[0] - v[1];
+    } else {
 #pragma unroll
-        for (int w{0}; w < W; ++w) {
-            out[w] += basis_rows[w][i] * vectors[w][i];
+        for (int i{0}; i < N / 2; ++i) {
+            odd[i] = (v[i] - v[N - 1 - i]) * DCT_ODD_MULTIPLIERS[N / 2 - 2 + i];
+        }
+        dct1d(odd);
+        odd[0] = fmaf(odd[0], DCT_SQRT2, odd[1]);
+#pragma unroll
+        for (int i{1}; i + 1 < N / 2; ++i) {
+            odd[i] += odd[i + 1];
         }
     }
 }
 
-// Register evaluation: frequencies [FIRST, FIRST + F) of the 1D DCT of `in`;
-// `magnitudes` holds the N entries A[m][0]. The loops unroll fully, so with
-// `magnitudes` in constant memory every multiply-add reads its basis entry at a
-// compile-time offset straight from the constant cache, with the sign folded
-// into the operand.
-//
-// Of the two evaluations, this one needs the fewest shared-memory loads: N per
-// vector for F * N multiply-adds, against about one per multiply-add for
-// dct_dots. The price is code size: the unrolled code runs once per vector and
-// pays its instruction fetch each time, and warps of one scheduler running
-// different unrolled parts thrash the instruction cache. It is the faster one
-// where dct_dots would be strongly load-bound, as in the front end's X and B
-// region DCT, which pairs two channels per thread.
-template <int N, int F, int FIRST>
-__device__ __forceinline__ void dct_outputs(const float* __restrict__ magnitudes,
-                                            const float (&in)[N], float (&out)[F]) {
+// In place: v <- N * A v.
+template <int N>
+__device__ __forceinline__ void dct1d(float (&v)[N]) {
+    if constexpr (N > 1) {
+        float even[N / 2];
+        float odd[N / 2];
+        dct1d_even(v, even);
+        dct1d_odd(v, odd);
 #pragma unroll
-    for (int f{0}; f < F; ++f) {
-        out[f] = 0.0f;
-    }
-#pragma unroll
-    for (int t{0}; t < N; ++t) {
-#pragma unroll
-        for (int f{0}; f < F; ++f) {
-            const DctBasisRef ref{dct_basis_ref(N, FIRST + f, t)};
-            const float a{ref.negate ? -magnitudes[ref.index] : magnitudes[ref.index]};
-            out[f] += a * in[t];
+        for (int i{0}; i < N / 2; ++i) {
+            v[2 * i] = even[i];
+            v[2 * i + 1] = odd[i];
         }
     }
-}
-
-// dct_outputs for frequency part `part`, i.e. FIRST = part * F. Each part is a
-// separate unrolled branch; `part` should be warp-uniform.
-template <int N, int F, int PART = 0>
-__device__ __forceinline__ void dct_part(int part, const float* __restrict__ magnitudes,
-                                         const float (&in)[N], float (&out)[F]) {
-    static_assert(N % F == 0);
-    if constexpr (PART + 1 < N / F) {
-        if (part != PART) {
-            dct_part<N, F, PART + 1>(part, magnitudes, in, out);
-            return;
-        }
-    }
-    dct_outputs<N, F, PART * F>(magnitudes, in, out);
-    // Distinct per part, so that LLVM cannot merge the parts' branches into
-    // one with register-indexed basis entries.
-    asm volatile("// dct part %0" ::"n"(PART));
 }
 
 }  // namespace cujpegxl

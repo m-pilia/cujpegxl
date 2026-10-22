@@ -22,7 +22,6 @@ namespace {
 template <int N>
 __global__ void forward_dct_kernel(const float* __restrict__ xyb, std::size_t width,
                                    std::size_t height, float* __restrict__ coeffs) {
-    __shared__ float magnitudes[N];
     __shared__ float rows[N * N];
 
     const std::size_t bx{blockIdx.x};
@@ -31,29 +30,27 @@ __global__ void forward_dct_kernel(const float* __restrict__ xyb, std::size_t wi
     const float* src{xyb + blockIdx.z * plane};
     const int i{static_cast<int>(threadIdx.x)};
 
-    magnitudes[i] = cujpegxl::dct_basis_entry(N, i, 0);
-    __syncthreads();
-    float in[N];
-    float out[N];
+    float v[N];
 #pragma unroll
     for (int t{0}; t < N; ++t) {
-        in[t] = src[(by * N + i) * width + bx * N + t];
+        v[t] = src[(by * N + i) * width + bx * N + t];
     }
-    cujpegxl::dct_outputs<N, N, 0>(magnitudes, in, out);
+    cujpegxl::dct1d(v);
 #pragma unroll
     for (int fx{0}; fx < N; ++fx) {
-        rows[fx * N + i] = out[fx];
+        rows[fx * N + i] = v[fx];
     }
     __syncthreads();
 #pragma unroll
     for (int t{0}; t < N; ++t) {
-        in[t] = rows[i * N + t];
+        v[t] = rows[i * N + t];
     }
-    cujpegxl::dct_outputs<N, N, 0>(magnitudes, in, out);
+    cujpegxl::dct1d(v);
     const std::size_t block_index{by * (width / N) + bx};
 #pragma unroll
     for (int fy{0}; fy < N; ++fy) {
-        coeffs[blockIdx.z * plane + block_index * (N * N) + i * N + fy] = out[fy];
+        coeffs[blockIdx.z * plane + block_index * (N * N) + i * N + fy] =
+            v[fy] * cujpegxl::DCT2D_SCALE<N>;
     }
 }
 

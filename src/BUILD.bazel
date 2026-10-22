@@ -95,7 +95,6 @@ cc_test(
 cc_library(
     name = "transform_select_impl",
     hdrs = ["transform_select_impl.cuh"],
-    deps = [":vardct_layout"],
 )
 
 cc_library(

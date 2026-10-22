@@ -4,7 +4,6 @@
 #include "frontend_fused.h"
 
 #include <algorithm>
-#include <mutex>
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -44,33 +43,38 @@ static_assert(FRONTEND_THREADS == 4 * CELLS * CELLS);
 // RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
     TILE_FLOATS + PAD_SAMPLES + 2 * CELLS * CELLS + 6 * TB * TB;
-// From the selection to the Y coefficient stores, the 8-, 16- and 32-point
-// bases stay resident above two tile planes: sharp Y and the horizontal-pass
-// rows, followed by the selection words.
-constexpr int BASIS16_OFFSET = 8 * (8 + 1);
-constexpr int BASIS32_OFFSET = BASIS16_OFFSET + 16 * (16 + 1);
-constexpr std::size_t BASES_OFFSET = 2 * TILE_FLOATS;
-constexpr std::size_t REGION_LOCAL_PEAK = BASES_OFFSET + BASIS32_OFFSET + 32 * (32 + 1);
-// The selection words: the 8x8, 16x16 and 32x32 costs, the split cost, the
-// split layout and the region layout.
-constexpr std::size_t SELECT_WORDS = 16 + 4 + 1 + 3;
-static_assert(TILE_SAMPLES + SELECT_WORDS <= TILE_FLOATS);
-// The selection's partial cost sums reuse its horizontal-pass rows.
-static_assert(2 * FRONTEND_THREADS <= TILE_SAMPLES);
-// The X/B horizontal-pass rows, padded by region_row_index.
+// The selection's horizontal-pass rows of each candidate size N start at sharp
+// Y, which they overlap, with vector v at v * (N + 1): the lanes of a warp
+// reading consecutive vectors hit distinct banks. The selection words follow:
+// the 8x8 and 16x16 costs, the 32x32 partial distortions and rates, and the
+// region layout. Then the rate terms of the quantized magnitudes below
+// RATE_TERMS (see accumulate_coeff_cost).
+constexpr int SELECT_ROWS16_OFFSET = 32 * (32 + 1);
+constexpr int SELECT_ROWS8_OFFSET = SELECT_ROWS16_OFFSET + 64 * (16 + 1);
+constexpr int SELECT_WORDS_OFFSET = SELECT_ROWS8_OFFSET + 128 * (8 + 1);
+constexpr std::size_t SELECT_WORDS = 16 + 4 + 2 * 2 + 1;
+constexpr int RATE_TERMS = 128;
+constexpr std::size_t RATE_TERMS_OFFSET = SELECT_WORDS_OFFSET + SELECT_WORDS;
+constexpr std::size_t REGION_LOCAL_PEAK = RATE_TERMS_OFFSET + RATE_TERMS;
+// The X/B horizontal-pass rows and coefficients, padded by region_row_index.
 constexpr int REGION_ROWS_FLOATS = TILE_SAMPLES + TILE_SAMPLES / 32;
 constexpr std::size_t RESIDENT_X_B_OFFSET = std::max(LOAD_AQ_LOCAL_PEAK, REGION_LOCAL_PEAK);
-// The X/B pass holds sharp X and B below the raw planes and its
-// horizontal-pass rows in the raw planes, once gaborish has consumed them.
+// The X/B pass holds sharp X and B below the raw planes, its horizontal-pass
+// rows in the raw planes once gaborish has consumed them, and its coefficients
+// in the sharp planes once the horizontal pass has consumed those.
 // Warps that pair X and B lanes read distinct banks: the horizontal pass reads
 // 16 consecutive rows per channel, so sharp B starts 16 banks after sharp X;
-// the DCT16 vertical pass reads 16 columns per channel on 16 banks with a gap
-// of 8 after each 8, so the B rows start 8 (mod 16) banks after the X rows.
+// the DCT16 vertical pass reads and writes 16 vectors per channel on 16 banks
+// with a gap of 8 after each 8, so the B rows and coefficients start 8 (mod 16)
+// banks after the X ones.
 constexpr std::size_t SHARP_B_OFFSET = TILE_FLOATS + 16;
 static_assert(SHARP_B_OFFSET % 32 == 16 && SHARP_B_OFFSET + TILE_FLOATS <= RESIDENT_X_B_OFFSET);
 constexpr int ROWS_B_SKEW = 8;
 static_assert((PAD_SAMPLES + ROWS_B_SKEW) % 16 == 8);
 static_assert(REGION_ROWS_FLOATS + ROWS_B_SKEW <= PAD_SAMPLES);
+constexpr std::size_t COEFFS_B_OFFSET = SHARP_B_OFFSET + 8;
+static_assert(COEFFS_B_OFFSET % 16 == 8 && REGION_ROWS_FLOATS <= SHARP_B_OFFSET &&
+              COEFFS_B_OFFSET + REGION_ROWS_FLOATS <= RESIDENT_X_B_OFFSET);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 // Four resident blocks per SM: sm_61 has 96 KB of shared memory per SM, and
@@ -78,63 +82,44 @@ constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
 constexpr int FRONTEND_BLOCKS_PER_SM = 4;
 static_assert(FRONTEND_BLOCKS_PER_SM * WORKSPACE_BYTES <= 96 * 1024);
 
-// The 8-, 16- and 32-point basis magnitudes (see dct_basis_ref), computed on
-// the device into g_dct_magnitudes and copied to constant memory once.
-constexpr int MAGNITUDES16_OFFSET = 8;
-constexpr int MAGNITUDES32_OFFSET = MAGNITUDES16_OFFSET + 16;
-constexpr int MAGNITUDE_FLOATS = MAGNITUDES32_OFFSET + 32;
-__device__ float g_dct_magnitudes[MAGNITUDE_FLOATS];
-__constant__ float c_dct_magnitudes[MAGNITUDE_FLOATS];
-
-__global__ void init_dct_magnitudes_kernel() {
-    const int m{static_cast<int>(threadIdx.x)};
-    if (m < 8) {
-        g_dct_magnitudes[m] = dct_basis_entry(8, m, 0);
-    }
-    if (m < 16) {
-        g_dct_magnitudes[MAGNITUDES16_OFFSET + m] = dct_basis_entry(16, m, 0);
-    }
-    g_dct_magnitudes[MAGNITUDES32_OFFSET + m] = dct_basis_entry(32, m, 0);
-}
-
-void ensure_dct_magnitudes() {
-    static std::once_flag flag;
-    std::call_once(flag, [] {
-        init_dct_magnitudes_kernel<<<1, 32>>>();
-        void* computed{nullptr};
-        cudaGetSymbolAddress(&computed, g_dct_magnitudes);
-        cudaMemcpyToSymbol(c_dct_magnitudes, computed, sizeof(c_dct_magnitudes), 0,
-                           cudaMemcpyDeviceToDevice);
-        cudaDeviceSynchronize();
-    });
-}
-
-template <int N>
-__device__ inline const float* dct_magnitudes() {
-    return c_dct_magnitudes + (N == 32 ? MAGNITUDES32_OFFSET : (N == 16 ? MAGNITUDES16_OFFSET : 0));
-}
-
-__device__ void load_bases(float* bases, int tid) {
-    expand_dct_basis(dct_magnitudes<8>(), bases, 8, tid, FRONTEND_THREADS);
-    expand_dct_basis(dct_magnitudes<16>(), bases + BASIS16_OFFSET, 16, tid, FRONTEND_THREADS);
-    expand_dct_basis(dct_magnitudes<32>(), bases + BASIS32_OFFSET, 32, tid, FRONTEND_THREADS);
-}
-
-// Loads the N floats at `src` and computes frequency part `part` (F
-// frequencies) of their 1D DCT.
-template <int N, int F>
+// Loads the N floats at `src` and computes F of their 1D DCT frequencies (N
+// times A, see dct_impl.cuh) into out[i], frequency i * N / F + part: all of
+// them, or for F = N / 2 the even (part 0) or odd (part 1) ones.
+template <int N, int F, int SIZE>
 __device__ __forceinline__ void dct_vector(const float* __restrict__ src, int part,
-                                           float (&out)[F]) {
+                                           float (&out)[SIZE]) {
+    static_assert((F == N || 2 * F == N) && F <= SIZE);
     float in[N];
 #pragma unroll
     for (int t{0}; t < N; ++t) {
         in[t] = src[t];
     }
-    dct_part<N, F>(part, dct_magnitudes<N>(), in, out);
+    float freqs[F];
+    if constexpr (F == N) {
+        dct1d(in);
+#pragma unroll
+        for (int i{0}; i < F; ++i) {
+            freqs[i] = in[i];
+        }
+    } else if (part == 0) {
+        dct1d_even(in, freqs);
+    } else {
+        dct1d_odd(in, freqs);
+    }
+#pragma unroll
+    for (int i{0}; i < F; ++i) {
+        out[i] = freqs[i];
+    }
 }
 
-__device__ inline const float* region_basis(const float* bases, int n) {
-    return bases + (n == 32 ? BASIS32_OFFSET : (n == 16 ? BASIS16_OFFSET : 0));
+// Sum over aligned groups of G lanes, valid on every lane.
+template <int G>
+__device__ inline float lane_group_sum(float v) {
+#pragma unroll
+    for (int off{1}; off < G; off <<= 1) {
+        v += __shfl_xor_sync(0xffffffffu, v, off);
+    }
+    return v;
 }
 
 // Full-mask warp sum, valid on lane 0. Pairs lanes like a halving tree
@@ -145,17 +130,6 @@ __device__ inline float warp_reduce_sum(float v) {
         v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, off));
     }
     return v;
-}
-
-// Sum of the 256 partials v[0..255] in the pairing of the halving tree
-// v[i] += v[i + s] for s = 128..1, evaluated by one warp; valid on lane 0.
-// Lane l folds strides 128, 64 and 32 over v[l + 32 * k] locally.
-__device__ float warp_tree_sum_256(const float* __restrict__ v, int lane) {
-    const float w0{__fadd_rn(v[lane], v[lane + 128])};
-    const float w1{__fadd_rn(v[lane + 32], v[lane + 160])};
-    const float w2{__fadd_rn(v[lane + 64], v[lane + 192])};
-    const float w3{__fadd_rn(v[lane + 96], v[lane + 224])};
-    return warp_reduce_sum(__fadd_rn(__fadd_rn(w0, w2), __fadd_rn(w1, w3)));
 }
 
 // Neighbour k (row-major in the 3x3 neighbourhood) of pre-erosion cell (cx, cy),
@@ -223,9 +197,49 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
     }
 }
 
+// a / b correctly rounded given inv_b = 1 / b correctly rounded, without the
+// slow-path branch of the IEEE division. q is faithful after one residual step,
+// so the second step yields the correctly rounded quotient (Markstein) unless
+// the residual underflows, which needs |a| close to the smallest normal: the
+// quotients here are then far below 0.5 and only feed rintf.
+__device__ inline float div_rn(float a, float b, float inv_b) {
+    float q{a * inv_b};
+    float r{fmaf(-b, q, a)};
+    q = fmaf(r, inv_b, q);
+    r = fmaf(-b, q, a);
+    return fmaf(r, inv_b, q);
+}
+
+struct YWeight {
+    float weight;
+    float inv_weight;
+};
+
+struct YWeights {
+    YWeight w[64];
+};
+
+constexpr YWeights make_y_weights() {
+    YWeights weights{};
+    for (int i{0}; i < 64; ++i) {
+        weights.w[i] = {DCT8_DEQUANT_WEIGHTS[1][i], 1.0f / DCT8_DEQUANT_WEIGHTS[1][i]};
+    }
+    return weights;
+}
+
+constexpr YWeights Y_WEIGHTS{make_y_weights()};
+
+// rate_terms[i] = 1 + log2f(1 + i) for 0 < i < RATE_TERMS, and 0 for i = 0.
+__device__ inline void init_rate_terms(float* __restrict__ rate_terms, int tid) {
+    if (tid < RATE_TERMS) {
+        rate_terms[tid] = tid == 0 ? 0.0f : 1.0f + log2f(1.0f + static_cast<float>(tid));
+    }
+}
+
 // Rate-distortion contribution of one Y candidate coefficient quantized with the
 // nearest DCT8 weight; the LLF corner is excluded.
 __device__ inline void accumulate_coeff_cost(float coeff, int fx, int fy, int n, float qgsf,
+                                             float inv_qgsf, const float* __restrict__ rate_terms,
                                              float& dist, float& rate) {
     const int m{n / 8};
     if (fx < m && fy < m) {
@@ -236,89 +250,20 @@ __device__ inline void accumulate_coeff_cost(float coeff, int fx, int fy, int n,
     int sy{(fy * 8 + n / 2) / n};
     sx = sx > 7 ? 7 : sx;
     sy = sy > 7 ? 7 : sy;
-    const float w{static_cast<float>(DCT8_DEQUANT_WEIGHTS[1][sx * 8 + sy])};
-    const float q{rintf(coeff * qgsf / w)};
-    const float err{q * w / qgsf - coeff};
+    const YWeight w{Y_WEIGHTS.w[sx * 8 + sy]};
+    const float q{rintf(div_rn(coeff * qgsf, w.weight, w.inv_weight))};
+    const float err{div_rn(q * w.weight, qgsf, inv_qgsf) - coeff};
     dist += err * err;
-    if (q != 0.0f) {
-        rate += 1.0f + log2f(1.0f + fabsf(q));
+    const float mag{fabsf(q)};
+    if (mag < static_cast<float>(RATE_TERMS)) {
+        rate += rate_terms[static_cast<int>(mag)];
+    } else {
+        rate += 1.0f + log2f(1.0f + mag);
     }
 }
 
 __device__ inline float candidate_cost(int n, float dist, float rate, float lambda) {
     return static_cast<float>(n * n) * dist + lambda * rate;
-}
-
-// Tile pixel origin of candidate idx of size N. The sixteen 8x8 candidates are
-// ordered by 16x16 quadrant, then by position within the quadrant.
-template <int N>
-__device__ inline void candidate_origin(int idx, int& px0, int& py0) {
-    if (N == 8) {
-        px0 = 16 * ((idx / 4) % 2) + 8 * (idx % 2);
-        py0 = 16 * (idx / 8) + 8 * ((idx / 2) % 2);
-    } else if (N == 16) {
-        px0 = 16 * (idx % 2);
-        py0 = 16 * (idx / 2);
-    } else {
-        px0 = 0;
-        py0 = 0;
-    }
-}
-
-constexpr int SELECT_ENTRIES_PER_THREAD{32 * 32 / FRONTEND_THREADS};
-
-// Horizontal pass of all 1024 / (N * N) candidates of size N into
-// rows[idx * N * N + fx * N + r]. Thread t computes the entries
-// k = t + 256 j: for N = 32 they share the pixel row, otherwise they share fx
-// across four candidates.
-template <int N>
-__device__ void candidate_rows(const float* __restrict__ y, const float* basis, float* rows,
-                               int tid) {
-    const float* basis_rows[SELECT_ENTRIES_PER_THREAD];
-    const float* pixel_rows[SELECT_ENTRIES_PER_THREAD];
-#pragma unroll
-    for (int j{0}; j < SELECT_ENTRIES_PER_THREAD; ++j) {
-        int fx{};
-        int r{};
-        int idx{};
-        if (N == 32) {
-            fx = tid / 32 + 8 * j;
-            r = tid % 32;
-        } else {
-            const int e{tid % (N * N)};
-            fx = e / N;
-            r = e % N;
-            idx = tid / (N * N) + j * (FRONTEND_THREADS / (N * N));
-        }
-        int px0{};
-        int py0{};
-        candidate_origin<N>(idx, px0, py0);
-        basis_rows[j] = dct_basis_row(basis, N, fx);
-        pixel_rows[j] = y + (py0 + r) * TILE_STRIDE + px0;
-    }
-    float entries[SELECT_ENTRIES_PER_THREAD];
-    dct_dots<SELECT_ENTRIES_PER_THREAD>(N, basis_rows, pixel_rows, entries);
-#pragma unroll
-    for (int j{0}; j < SELECT_ENTRIES_PER_THREAD; ++j) {
-        rows[tid + FRONTEND_THREADS * j] = entries[j];
-    }
-    __syncthreads();
-}
-
-// Vertical pass of the coefficients (fx + h * rows_step / N, fy) of one thread,
-// h = 0..3, from the horizontal-pass rows rows_fx of frequency fx. They share
-// the basis row of fy.
-template <int N>
-__device__ void candidate_coeffs(const float* basis, const float* rows_fx, int rows_step, int fy,
-                                 float (&coeffs)[SELECT_ENTRIES_PER_THREAD]) {
-    const float* basis_rows[SELECT_ENTRIES_PER_THREAD];
-    const float* vectors[SELECT_ENTRIES_PER_THREAD];
-#pragma unroll
-    for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
-        basis_rows[h] = dct_basis_row(basis, N, fy);
-        vectors[h] = rows_fx + h * rows_step;
-    }
-    dct_dots<SELECT_ENTRIES_PER_THREAD>(N, basis_rows, vectors, coeffs);
 }
 
 constexpr std::uint32_t WHOLE32_LAYOUT{0x20202020u};
@@ -327,217 +272,238 @@ __device__ inline int quadrant_side(std::uint32_t layout, int q) {
     return static_cast<int>((layout >> (8 * q)) & 0xffu);
 }
 
-// A candidate's distortion and rate are sums over 256 slots in the pairing of
-// the halving tree slot[i] += slot[i + s], s = 128..1, where coefficient e
-// accumulates into slot e % 256 in increasing e. Each candidate size spreads its
-// coefficients over the warps so that the leading strides fold locally.
+struct alignas(16) Half8 {
+    __half2 h[4];
+};
+
+struct alignas(8) Half4 {
+    __half2 h[2];
+};
+
+__device__ inline void store_half8(__half* dst, const float* v) {
+    *reinterpret_cast<Half8*>(dst) =
+        Half8{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3]),
+               __floats2half2_rn(v[4], v[5]), __floats2half2_rn(v[6], v[7])}};
+}
+
+__device__ inline void store_half4(__half* dst, const float* v) {
+    *reinterpret_cast<Half4*>(dst) =
+        Half4{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3])}};
+}
+
+// Each warp takes one candidate size: warps 0-3 the 8x8 candidates of tile
+// column block w, warps 4-5 the 16x16 candidates of tile column half w - 4,
+// warps 6-7 the even and odd frequencies of the 32x32 candidate. A lane
+// transforms one N-vector per pass: a tile row, then the rows of one fx.
 //
 // Returns the region layout: byte q holds the side (8, 16 or 32) of the
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
-// The region's Y coefficients are stored to y_plane as the decisions are made:
-// all 8x8 candidates inside the image, then the 16x16 candidates of the
-// quadrants that keep them, then the DCT32 if the region keeps it.
-__device__ std::uint32_t select_transforms(const float* __restrict__ y, std::size_t rbx,
+// Only the chosen transforms' Y coefficients are stored to y_plane.
+__device__ std::uint32_t select_transforms(float* __restrict__ select, std::size_t rbx,
                                            std::size_t rby, std::size_t bw, std::size_t bh,
-                                           float qgsf, float lambda, const float* bases,
-                                           float* rows, float* words, std::int8_t* __restrict__ acs,
+                                           float qgsf, float lambda, std::int8_t* __restrict__ acs,
                                            __half* __restrict__ y_plane, int tid) {
-    const float* basis8{region_basis(bases, 8)};
-    const float* basis16{region_basis(bases, 16)};
-    const float* basis32{region_basis(bases, 32)};
-    float* pd{rows};
-    float* pr{rows + FRONTEND_THREADS};
-    float* cost8{words};
+    const float* sharp_y{select};
+    float* rows32{select};
+    float* rows16{select + SELECT_ROWS16_OFFSET};
+    float* rows8{select + SELECT_ROWS8_OFFSET};
+    float* cost8{select + SELECT_WORDS_OFFSET};
     float* cost16{cost8 + 16};
-    float* cost32{cost16 + 4};
-    float* split_cost{cost32 + 1};
-    std::uint32_t* split_layout{reinterpret_cast<std::uint32_t*>(split_cost + 1)};
-    std::uint32_t* layout_word{split_layout + 1};
+    float* dist32{cost16 + 4};
+    float* rate32{dist32 + 2};
+    std::uint32_t* layout_word{reinterpret_cast<std::uint32_t*>(rate32 + 2)};
+    float* rate_terms{select + RATE_TERMS_OFFSET};
+    init_rate_terms(rate_terms, tid);
+    const float inv_qgsf{1.0f / qgsf};
     constexpr float INF{1.0e30f};
     const int lane{tid % 32};
     const int warp{tid / 32};
+    const int part32{warp - 6};
 
-    // 8x8: each warp owns two candidates; lane l holds coefficients l and l + 32
-    // of each (slots 64..255 are empty).
-    candidate_rows<8>(y, basis8, rows, tid);
-    {
-        const int fx{lane / 8};
-        const int fy{lane % 8};
-        float coeffs[SELECT_ENTRIES_PER_THREAD];
-        candidate_coeffs<8>(basis8, rows + 2 * warp * 64 + fx * 8, 32, fy, coeffs);
+    // Horizontal pass, lane r on tile row r. Rows32 overlaps sharp Y, so the
+    // rows are stored once every warp has loaded its pixels.
+    float h[16];
+    const float* pixel_row{sharp_y + lane * TILE_STRIDE};
+    if (warp < 4) {
+        dct_vector<8, 8>(pixel_row + 8 * warp, 0, h);
+    } else if (warp < 6) {
+        dct_vector<16, 16>(pixel_row + 16 * (warp - 4), 0, h);
+    } else {
+        dct_vector<32, 16>(pixel_row, part32, h);
+    }
+    __syncthreads();
+    // Vector (4 cb + rb) * 8 + fx of rows8 holds frequency fx of the rows of
+    // 8x8 block (cb, rb), vector (2 ch + rb) * 16 + fx of rows16 that of 16x16
+    // block (ch, rb), and vector fx of rows32 that of the tile.
+    if (warp < 4) {
+        float* dst{rows8 + (4 * warp + lane / 8) * 8 * 9 + lane % 8};
 #pragma unroll
-        for (int j{0}; j < 2; ++j) {
-            const int idx{2 * warp + j};
-            float d0{0.0f};
-            float r0{0.0f};
-            float d1{0.0f};
-            float r1{0.0f};
-            accumulate_coeff_cost(coeffs[2 * j], fx, fy, 8, qgsf, d0, r0);
-            accumulate_coeff_cost(coeffs[2 * j + 1], fx + 4, fy, 8, qgsf, d1, r1);
-            const float dist{warp_reduce_sum(__fadd_rn(d0, d1))};
-            const float rate{warp_reduce_sum(__fadd_rn(r0, r1))};
-            const std::size_t bbx{rbx + static_cast<std::size_t>(2 * ((idx / 4) % 2) + idx % 2)};
-            const std::size_t bby{rby + static_cast<std::size_t>(2 * (idx / 8) + (idx / 2) % 2)};
-            const bool inside{bbx < bw && bby < bh};
-            if (lane == 0) {
-                cost8[idx] = inside ? candidate_cost(8, dist, rate, lambda) : INF;
-            }
-            if (inside) {
-                __half* block{y_plane + covered_plane_slot(8, bbx, bby, bw, 0)};
-                block[lane] = __float2half_rn(coeffs[2 * j]);
-                block[lane + 32] = __float2half_rn(coeffs[2 * j + 1]);
-            }
+        for (int fx{0}; fx < 8; ++fx) {
+            dst[fx * 9] = h[fx];
+        }
+    } else if (warp < 6) {
+        float* dst{rows16 + (2 * (warp - 4) + lane / 16) * 16 * 17 + lane % 16};
+#pragma unroll
+        for (int fx{0}; fx < 16; ++fx) {
+            dst[fx * 17] = h[fx];
+        }
+    } else {
+#pragma unroll
+        for (int m{0}; m < 16; ++m) {
+            rows32[(2 * m + part32) * 33 + lane] = h[m];
         }
     }
     __syncthreads();
 
-    // 16x16: warps 2q and 2q + 1 own candidate q; local lane j holds
-    // coefficients j + 64 * h and folds strides 128 and 64.
-    candidate_rows<16>(y, basis16, rows, tid);
-    const int q{warp / 2};
-    const int j{tid % 64};
-    float coeffs16[SELECT_ENTRIES_PER_THREAD];
-    {
-        const int fx{j / 16};
-        const int fy{j % 16};
-        candidate_coeffs<16>(basis16, rows + q * 256 + fx * 16, 64, fy, coeffs16);
-        float d[4]{};
-        float r[4]{};
+    // Vertical pass, lane v on vector 32 w + v of its size (w relative to the
+    // first warp of that size), and the candidates' costs.
+    float c[16];
+    if (warp < 4) {
+        const int rb{lane / 8};
+        const int fx{lane % 8};
+        dct_vector<8, 8>(rows8 + (32 * warp + lane) * 9, 0, c);
+        float dist{0.0f};
+        float rate{0.0f};
 #pragma unroll
-        for (int h{0}; h < 4; ++h) {
-            accumulate_coeff_cost(coeffs16[h], fx + 4 * h, fy, 16, qgsf, d[h], r[h]);
+        for (int fy{0}; fy < 8; ++fy) {
+            c[fy] *= DCT2D_SCALE<8>;
+            accumulate_coeff_cost(c[fy], fx, fy, 8, qgsf, inv_qgsf, rate_terms, dist, rate);
         }
-        const float dist{__fadd_rn(__fadd_rn(d[0], d[2]), __fadd_rn(d[1], d[3]))};
-        const float rate{__fadd_rn(__fadd_rn(r[0], r[2]), __fadd_rn(r[1], r[3]))};
-        __syncthreads();
-        pd[tid] = dist;
-        pr[tid] = rate;
-    }
-    __syncthreads();
-    if (warp % 2 == 0) {
-        const float dist{warp_reduce_sum(__fadd_rn(pd[tid], pd[tid + 32]))};
-        const float rate{warp_reduce_sum(__fadd_rn(pr[tid], pr[tid + 32]))};
+        dist = lane_group_sum<8>(dist);
+        rate = lane_group_sum<8>(rate);
+        const bool inside{rbx + warp < bw && rby + rb < bh};
+        if (fx == 0) {
+            cost8[8 * (rb / 2) + 4 * (warp / 2) + 2 * (rb % 2) + warp % 2] =
+                inside ? candidate_cost(8, dist, rate, lambda) : INF;
+        }
+    } else if (warp < 6) {
+        const int ch{warp - 4};
+        const int rb{lane / 16};
+        const int fx{lane % 16};
+        dct_vector<16, 16>(rows16 + (32 * ch + lane) * 17, 0, c);
+        float dist{0.0f};
+        float rate{0.0f};
+#pragma unroll
+        for (int fy{0}; fy < 16; ++fy) {
+            c[fy] *= DCT2D_SCALE<16>;
+            accumulate_coeff_cost(c[fy], fx, fy, 16, qgsf, inv_qgsf, rate_terms, dist, rate);
+        }
+        dist = lane_group_sum<16>(dist);
+        rate = lane_group_sum<16>(rate);
+        const bool fit16{rbx + 2 * ch + 2 <= bw && rby + 2 * rb + 2 <= bh};
+        if (fx == 0) {
+            cost16[2 * rb + ch] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
+        }
+    } else {
+        dct_vector<32, 16>(rows32 + lane * 33, part32, c);
+        float dist{0.0f};
+        float rate{0.0f};
+#pragma unroll
+        for (int m{0}; m < 16; ++m) {
+            c[m] *= DCT2D_SCALE<32>;
+            accumulate_coeff_cost(c[m], lane, 2 * m + part32, 32, qgsf, inv_qgsf, rate_terms, dist,
+                                  rate);
+        }
+        dist = lane_group_sum<32>(dist);
+        rate = lane_group_sum<32>(rate);
         if (lane == 0) {
-            const std::size_t bx{rbx + 2 * static_cast<std::size_t>(q % 2)};
-            const std::size_t by{rby + 2 * static_cast<std::size_t>(q / 2)};
-            const bool fit16{bx + 2 <= bw && by + 2 <= bh};
-            cost16[q] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
+            dist32[part32] = dist;
+            rate32[part32] = rate;
         }
     }
     __syncthreads();
 
-    if (tid == 0) {
-        float cost{0.0f};
-        std::uint32_t layout{0};
-        for (int qy{0}; qy < 2; ++qy) {
-            for (int qx{0}; qx < 2; ++qx) {
-                const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qx)};
-                const std::size_t by{rby + 2 * static_cast<std::size_t>(qy)};
-                float sum8{0.0f};
-                bool any8{false};
-                for (int dy{0}; dy < 2; ++dy) {
-                    for (int dx{0}; dx < 2; ++dx) {
-                        const std::size_t bbx{bx + dx};
-                        const std::size_t bby{by + dy};
-                        if (bbx < bw && bby < bh) {
-                            sum8 += cost8[qy * 8 + qx * 4 + dy * 2 + dx];
-                            any8 = true;
-                        }
-                    }
+    // Lane q < 4 of warp 0 decides quadrant q, whose 8x8 costs are cost8[4 q +
+    // 2 dy + dx]; lane l < 16 then writes the signal of block (l % 4, l / 4).
+    if (warp == 0 && lane < 16) {
+        const int q{lane % 4};
+        const std::size_t qbx{rbx + 2 * static_cast<std::size_t>(q % 2)};
+        const std::size_t qby{rby + 2 * static_cast<std::size_t>(q / 2)};
+        float sum8{0.0f};
+        bool any8{false};
+        for (int dy{0}; dy < 2; ++dy) {
+            for (int dx{0}; dx < 2; ++dx) {
+                if (qbx + dx < bw && qby + dy < bh) {
+                    sum8 += cost8[4 * q + 2 * dy + dx];
+                    any8 = true;
                 }
-                if (!any8) {
-                    continue;
-                }
-                const bool fit16{bx + 2 <= bw && by + 2 <= bh};
-                const float c16{cost16[qy * 2 + qx]};
-                int choice{8};
-                if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
-                    choice = 16;
-                    cost += c16;
-                } else {
-                    cost += sum8;
-                }
-                layout |= static_cast<std::uint32_t>(choice) << (8 * (qy * 2 + qx));
             }
         }
-        *split_cost = cost;
-        *split_layout = layout;
-    }
-    __syncthreads();
-    if (quadrant_side(*split_layout, q) == 16) {
-        const std::size_t bx{rbx + 2 * static_cast<std::size_t>(q % 2)};
-        const std::size_t by{rby + 2 * static_cast<std::size_t>(q / 2)};
-#pragma unroll
-        for (int h{0}; h < 4; ++h) {
-            y_plane[covered_plane_slot(16, bx, by, bw, static_cast<std::size_t>(j + 64 * h))] =
-                __float2half_rn(coeffs16[h]);
+        const bool fit16{qbx + 2 <= bw && qby + 2 <= bh};
+        const float c16{cost16[q]};
+        int choice{0};
+        float quadrant_cost{0.0f};
+        if (any8) {
+            if (fit16 && c16 <= sum8 + TRANSFORM_SELECT_SPLIT_EPS) {
+                choice = 16;
+                quadrant_cost = c16;
+            } else {
+                choice = 8;
+                quadrant_cost = sum8;
+            }
         }
-    }
-
-    // 32x32: thread t holds coefficients t + 256 * h; warp 0 reduces.
-    candidate_rows<32>(y, basis32, rows, tid);
-    const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
-    float coeffs32[SELECT_ENTRIES_PER_THREAD];
-    float dist32{0.0f};
-    float rate32{0.0f};
-    {
-        const int fx{tid / 32};
-        const int fy{tid % 32};
-        candidate_coeffs<32>(basis32, rows + fx * 32, 256, fy, coeffs32);
+        float split_cost{0.0f};
+        std::uint32_t split_layout{0};
 #pragma unroll
-        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
-            accumulate_coeff_cost(coeffs32[h], fx + 8 * h, fy, 32, qgsf, dist32, rate32);
+        for (int i{0}; i < 4; ++i) {
+            split_cost += __shfl_sync(0xffffu, quadrant_cost, i);
+            split_layout |= static_cast<std::uint32_t>(__shfl_sync(0xffffu, choice, i)) << (8 * i);
         }
-    }
-    __syncthreads();
-    pd[tid] = dist32;
-    pr[tid] = rate32;
-    __syncthreads();
-    if (warp == 0) {
-        const float dist{warp_tree_sum_256(pd, lane)};
-        const float rate{warp_tree_sum_256(pr, lane)};
+        const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
+        const float cost32{
+            candidate_cost(32, dist32[0] + dist32[1], rate32[0] + rate32[1], lambda)};
+        const bool whole32{fit32 && cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS};
+        const int dx{lane % 4};
+        const int dy{lane / 4};
+        const std::size_t bx{rbx + static_cast<std::size_t>(dx)};
+        const std::size_t by{rby + static_cast<std::size_t>(dy)};
+        const int side{whole32 ? 32 : quadrant_side(split_layout, 2 * (dy / 2) + dx / 2)};
+        // The top-left block of a transform carries its side, the rest of its
+        // footprint ACS_COVERED.
+        if (side != 0 && bx < bw && by < bh) {
+            const int footprint_mask{side / 8 - 1};
+            acs[by * bw + bx] = (dx & footprint_mask) == 0 && (dy & footprint_mask) == 0
+                                    ? static_cast<std::int8_t>(side)
+                                    : ACS_COVERED;
+        }
         if (lane == 0) {
-            *cost32 = fit32 ? candidate_cost(32, dist, rate, lambda) : INF;
+            *layout_word = whole32 ? WHOLE32_LAYOUT : split_layout;
         }
-    }
-
-    if (tid == 0) {
-        const std::uint32_t split_l{*split_layout};
-        const bool whole32{fit32 && *cost32 <= *split_cost + TRANSFORM_SELECT_SPLIT_EPS};
-        if (whole32) {
-            write_first_block(acs, bw, rbx, rby, 32);
-        } else {
-            for (int qi{0}; qi < 4; ++qi) {
-                const int choice{quadrant_side(split_l, qi)};
-                const std::size_t bx{rbx + 2 * static_cast<std::size_t>(qi % 2)};
-                const std::size_t by{rby + 2 * static_cast<std::size_t>(qi / 2)};
-                if (choice == 16) {
-                    write_first_block(acs, bw, bx, by, 16);
-                    continue;
-                }
-                if (choice != 8) {
-                    continue;
-                }
-                for (int dy{0}; dy < 2; ++dy) {
-                    for (int dx{0}; dx < 2; ++dx) {
-                        const std::size_t bbx{bx + dx};
-                        const std::size_t bby{by + dy};
-                        if (bbx < bw && bby < bh) {
-                            acs[bby * bw + bbx] = 8;
-                        }
-                    }
-                }
-            }
-        }
-        *layout_word = whole32 ? WHOLE32_LAYOUT : split_l;
     }
     __syncthreads();
     const std::uint32_t layout{*layout_word};
+
     if (layout == WHOLE32_LAYOUT) {
+        // Gathered in rows32 for coalesced stores, four per thread.
+        if (warp >= 6) {
 #pragma unroll
-        for (int h{0}; h < SELECT_ENTRIES_PER_THREAD; ++h) {
-            const std::size_t e{static_cast<std::size_t>(tid + FRONTEND_THREADS * h)};
-            y_plane[covered_plane_slot(32, rbx, rby, bw, e)] = __float2half_rn(coeffs32[h]);
+            for (int m{0}; m < 16; ++m) {
+                rows32[lane * 33 + 2 * m + part32] = c[m];
+            }
+        }
+        __syncthreads();
+        const int e{4 * tid};
+        store_half4(y_plane + covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(e)),
+                    rows32 + (e / 32) * 33 + e % 32);
+    } else if (warp < 4) {
+        const int rb{lane / 8};
+        const int fx{lane % 8};
+        const std::size_t bbx{rbx + static_cast<std::size_t>(warp)};
+        const std::size_t bby{rby + static_cast<std::size_t>(rb)};
+        if (quadrant_side(layout, 2 * (rb / 2) + warp / 2) == 8 && bbx < bw && bby < bh) {
+            store_half8(
+                y_plane + covered_plane_slot(8, bbx, bby, bw, static_cast<std::size_t>(8 * fx)), c);
+        }
+    } else if (warp < 6) {
+        const int ch{warp - 4};
+        const int rb{lane / 16};
+        const int fx{lane % 16};
+        if (quadrant_side(layout, 2 * rb + ch) == 16) {
+            __half* dst{y_plane + covered_plane_slot(16, rbx + 2 * static_cast<std::size_t>(ch),
+                                                     rby + 2 * static_cast<std::size_t>(rb), bw,
+                                                     static_cast<std::size_t>(16 * fx))};
+            store_half8(dst, c);
+            store_half8(dst + 8, c + 8);
         }
     }
     return layout;
@@ -551,45 +517,32 @@ __device__ inline int region_row_index(int k) {
     return k + k / 32;
 }
 
-constexpr int REGION_OUTPUTS{8};
-// The X/B passes give each warp one task: a channel and a frequency part of a
-// whole DCT32, or a quadrant (warps 2 q and 2 q + 1); a DCT8 vector gets all
-// its frequencies. The frequency part is w % 4 or w % 2, so the warps sharing
-// a scheduler (w % 4) run the same unrolled part: interleaving several
-// unrolled parts per scheduler thrashes the instruction cache.
-static_assert(2 * 32 / REGION_OUTPUTS == FRONTEND_THREADS / 32 && 16 / REGION_OUTPUTS == 2 &&
-              REGION_OUTPUTS == 8);
+// Entry k of a region's X or B rows and coefficients: the transforms in
+// quadrant order, so quadrant q holds k in [256 q, 256 q + 256) unless the
+// region is one DCT32, DCT8 sub-block (dx, dy) of a quadrant holds the 64
+// entries from 64 (2 dy + dx), and entry fx * N + i of a transform is its
+// frequency fx on row i (rows) or its coefficient (fx, i).
+//
+// Both passes give each warp one task. A whole DCT32 gives warp w < 4 channel
+// w / 2 and the even or odd frequencies (w % 2), one vector per lane. Otherwise
+// warp w takes quadrant w / 2: a DCT16 puts X on lanes 0-15 and B on 16-31
+// with the even or odd frequencies (w % 2); the DCT8s put column w % 2 (rows)
+// or channel w % 2 (coefficients) on all lanes.
 
-struct alignas(16) Half8 {
-    __half2 h[4];
-};
-
-__device__ inline void store_half8(__half* dst, const float (&v)[8]) {
-    *reinterpret_cast<Half8*>(dst) =
-        Half8{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3]),
-               __floats2half2_rn(v[4], v[5]), __floats2half2_rn(v[6], v[7])}};
-}
-
-// Horizontal pass of the X and B transforms of the region into
-// rows[c][region_row_index(k)]: the transforms in quadrant order, so quadrant q
-// holds k in [256 q, 256 q + 256) unless the region is one DCT32, DCT8
-// sub-block (dx, dy) of a quadrant holds the 64 entries from 64 (2 dy + dx),
-// and entry fx * N + r of a transform is its frequency fx on row r. A whole DCT32 gives
-// warp w channel w / 4 and frequency part w % 4, one tile row per lane.
-// Otherwise warp w takes quadrant w / 2 with lanes 0-15 on X and 16-31 on B,
-// one quadrant row each, and w % 2 selects the frequency part of a DCT16 or the
-// column of the DCT8s.
+// Horizontal pass of the X and B transforms of the region into rows.
 __device__ __forceinline__ void region_rows(const float* const (&sharp)[2], float* const (&rows)[2],
                                             std::uint32_t layout, std::size_t rbx, std::size_t rby,
                                             std::size_t bw, std::size_t bh, int warp, int lane) {
-    float out[REGION_OUTPUTS];
     if (layout == WHOLE32_LAYOUT) {
-        const int c{warp / 4};
-        const int part{warp % 4};
-        dct_vector<32, REGION_OUTPUTS>(sharp[c] + lane * TILE_STRIDE, part, out);
+        if (warp < 4) {
+            const int c{warp / 2};
+            const int part{warp % 2};
+            float out[16];
+            dct_vector<32, 16>(sharp[c] + lane * TILE_STRIDE, part, out);
 #pragma unroll
-        for (int f{0}; f < REGION_OUTPUTS; ++f) {
-            rows[c][region_row_index((part * REGION_OUTPUTS + f) * 32 + lane)] = out[f];
+            for (int m{0}; m < 16; ++m) {
+                rows[c][region_row_index((2 * m + part) * 32 + lane)] = out[m];
+            }
         }
         return;
     }
@@ -600,15 +553,17 @@ __device__ __forceinline__ void region_rows(const float* const (&sharp)[2], floa
     const int r{lane % 16};
     const float* src{sharp[c] + (16 * (q / 2) + r) * TILE_STRIDE + 16 * (q % 2)};
     if (n == 16) {
-        dct_vector<16, REGION_OUTPUTS>(src, sub, out);
+        float out[8];
+        dct_vector<16, 8>(src, sub, out);
 #pragma unroll
-        for (int f{0}; f < REGION_OUTPUTS; ++f) {
-            rows[c][region_row_index(256 * q + (sub * REGION_OUTPUTS + f) * 16 + r)] = out[f];
+        for (int m{0}; m < 8; ++m) {
+            rows[c][region_row_index(256 * q + (2 * m + sub) * 16 + r)] = out[m];
         }
     } else if (n == 8) {
         const std::size_t bx{rbx + static_cast<std::size_t>(2 * (q % 2) + sub)};
         const std::size_t by{rby + static_cast<std::size_t>(2 * (q / 2) + r / 8)};
         if (bx < bw && by < bh) {
+            float out[8];
             dct_vector<8, 8>(src + 8 * sub, 0, out);
             const int k0{256 * q + 64 * (2 * (r / 8) + sub) + r % 8};
 #pragma unroll
@@ -619,44 +574,82 @@ __device__ __forceinline__ void region_rows(const float* const (&sharp)[2], floa
     }
 }
 
-// Vertical pass of the X and B transforms of the region from the rows of
-// region_rows into the covered-block planes, eight consecutive coefficients per
-// lane. A whole DCT32 gives warp w channel w / 4 and frequency part w % 4, the
-// rows of one fx per lane. Otherwise warp w takes quadrant w / 2: a DCT16 puts
-// X on lanes 0-15 and B on 16-31 with w % 2 as the frequency part, the DCT8s
-// put channel w % 2 on all lanes.
+// Vertical pass of the X and B transforms of the region from rows into
+// coefficients.
 __device__ __forceinline__ void region_coeffs(const float* const (&rows)[2], std::uint32_t layout,
                                               std::size_t rbx, std::size_t rby, std::size_t bw,
-                                              std::size_t bh, __half* const (&dst)[2], int warp,
+                                              std::size_t bh, float* const (&coeffs)[2], int warp,
                                               int lane) {
-    float out[REGION_OUTPUTS];
     if (layout == WHOLE32_LAYOUT) {
-        const int c{warp / 4};
-        const int part{warp % 4};
-        dct_vector<32, REGION_OUTPUTS>(rows[c] + region_row_index(32 * lane), part, out);
-        const std::size_t e{static_cast<std::size_t>(32 * lane + REGION_OUTPUTS * part)};
-        store_half8(dst[c] + covered_plane_slot(32, rbx, rby, bw, e), out);
+        if (warp < 4) {
+            const int c{warp / 2};
+            const int part{warp % 2};
+            float out[16];
+            dct_vector<32, 16>(rows[c] + region_row_index(32 * lane), part, out);
+#pragma unroll
+            for (int m{0}; m < 16; ++m) {
+                coeffs[c][region_row_index(32 * lane + 2 * m + part)] = out[m] * DCT2D_SCALE<32>;
+            }
+        }
         return;
     }
     const int q{warp / 2};
     const int sub{warp % 2};
     const int n{quadrant_side(layout, q)};
+    if (n == 16) {
+        const int c{lane / 16};
+        const int k0{256 * q + 16 * (lane % 16)};
+        float out[8];
+        dct_vector<16, 8>(rows[c] + region_row_index(k0), sub, out);
+#pragma unroll
+        for (int m{0}; m < 8; ++m) {
+            coeffs[c][region_row_index(k0 + 2 * m + sub)] = out[m] * DCT2D_SCALE<16>;
+        }
+    } else if (n == 8) {
+        const int block{lane / 8};
+        const std::size_t bx{rbx + static_cast<std::size_t>(2 * (q % 2) + block % 2)};
+        const std::size_t by{rby + static_cast<std::size_t>(2 * (q / 2) + block / 2)};
+        if (bx < bw && by < bh) {
+            const int k0{256 * q + 8 * lane};
+            float out[8];
+            dct_vector<8, 8>(rows[sub] + region_row_index(k0), 0, out);
+#pragma unroll
+            for (int f{0}; f < 8; ++f) {
+                coeffs[sub][region_row_index(k0 + f)] = out[f] * DCT2D_SCALE<8>;
+            }
+        }
+    }
+}
+
+// Stores the region's X and B coefficients to the covered-block planes, eight
+// consecutive entries per thread: channel tid / 128, entries from
+// 8 (tid % 128).
+__device__ __forceinline__ void store_region_coeffs(const float* const (&coeffs)[2],
+                                                    std::uint32_t layout, std::size_t rbx,
+                                                    std::size_t rby, std::size_t bw, std::size_t bh,
+                                                    __half* const (&dst)[2], int tid) {
+    const int c{tid / 128};
+    const int k{8 * (tid % 128)};
+    const float* src{coeffs[c] + region_row_index(k)};
+    if (layout == WHOLE32_LAYOUT) {
+        store_half8(dst[c] + covered_plane_slot(32, rbx, rby, bw, static_cast<std::size_t>(k)),
+                    src);
+        return;
+    }
+    const int q{k / 256};
+    const int n{quadrant_side(layout, q)};
     const std::size_t qbx{rbx + 2 * static_cast<std::size_t>(q % 2)};
     const std::size_t qby{rby + 2 * static_cast<std::size_t>(q / 2)};
     if (n == 16) {
-        const int c{lane / 16};
-        const int fx{lane % 16};
-        dct_vector<16, REGION_OUTPUTS>(rows[c] + region_row_index(256 * q + 16 * fx), sub, out);
-        const std::size_t e{static_cast<std::size_t>(16 * fx + REGION_OUTPUTS * sub)};
-        store_half8(dst[c] + covered_plane_slot(16, qbx, qby, bw, e), out);
+        store_half8(
+            dst[c] + covered_plane_slot(16, qbx, qby, bw, static_cast<std::size_t>(k % 256)), src);
     } else if (n == 8) {
-        const int block{lane / 8};
+        const int block{(k % 256) / 64};
         const std::size_t bx{qbx + static_cast<std::size_t>(block % 2)};
         const std::size_t by{qby + static_cast<std::size_t>(block / 2)};
         if (bx < bw && by < bh) {
-            dct_vector<8, 8>(rows[sub] + region_row_index(256 * q + 8 * lane), 0, out);
-            const std::size_t e{static_cast<std::size_t>(8 * (lane % 8))};
-            store_half8(dst[sub] + covered_plane_slot(8, bx, by, bw, e), out);
+            store_half8(
+                dst[c] + covered_plane_slot(8, bx, by, bw, static_cast<std::size_t>(k % 64)), src);
         }
     }
 }
@@ -820,28 +813,25 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     gaborish_tile(sh_y, sharp_y, tid);
     __syncthreads();
 
-    float* rows{sharp_y + TILE_FLOATS};
-    float* words{rows + TILE_SAMPLES};
-    float* bases{workspace + BASES_OFFSET};
-    load_bases(bases, tid);
-    __syncthreads();
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    const std::uint32_t layout{select_transforms(sharp_y, tbx0, tby0, bw, bh, qgsf,
-                                                 TRANSFORM_SELECT_LAMBDA, bases, rows, words, acs,
-                                                 coeffs + cplane, tid)};
-    // Sharp B overlaps the selection words.
+    const std::uint32_t layout{select_transforms(
+        workspace, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, acs, coeffs + cplane, tid)};
+    // Sharp B overlaps the selection rows.
     __syncthreads();
 
     float* sharp_x{workspace};
     float* sharp_b{workspace + SHARP_B_OFFSET};
     float* rows_b{raw_b + ROWS_B_SKEW};
+    float* coeffs_b{workspace + COEFFS_B_OFFSET};
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
     region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tbx0, tby0, bw, bh, warp, lane);
     __syncthreads();
-    region_coeffs({raw_x, rows_b}, layout, tbx0, tby0, bw, bh, {coeffs, coeffs + 2 * cplane}, warp,
-                  lane);
+    region_coeffs({raw_x, rows_b}, layout, tbx0, tby0, bw, bh, {sharp_x, coeffs_b}, warp, lane);
+    __syncthreads();
+    store_region_coeffs({sharp_x, coeffs_b}, layout, tbx0, tby0, bw, bh,
+                        {coeffs, coeffs + 2 * cplane}, tid);
 }
 
 }  // namespace
@@ -911,7 +901,6 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
         return false;
     }
 
-    ensure_dct_magnitudes();
     const dim3 block{FRONTEND_THREADS};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
