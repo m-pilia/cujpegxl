@@ -8,8 +8,6 @@ build --host_cxxopt=-std=c++17
 
 build --copt=-O3
 build --host_copt=-O3
-build --copt=-march=native
-build --host_copt=-march=native
 
 build --@rules_cuda//cuda:compiler=clang
 build --@rules_cuda//cuda:archs=sm_61;sm_87
