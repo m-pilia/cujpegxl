@@ -15,8 +15,8 @@ This project is a CUDA port of a JPEG XL encoder, implementing a GPU- and real-t
 
 The project is still in an early development stage, and further iterations are required to improve compression quality, runtime performance, feature support, and general robustness.
 
-- Current quality/size ratio is somewhat halfway between JPEG and the reference JPEG XL. Generally better than JPEG, especially at medium compression settings (5-15% better compression at comparable quality), but inferior to a full JPEG XL implementation (up to 40-50% higher bits per pixel at comparable quality).
-- Performance is currently limited (it achieves sustained 270 fps at 4K resolution on a GTX 1080Ti + Ryzen 7 2700X). The future ambition would be to sustain 15 fps at 4K resolution using a limited slice (ideally <10%) of an embedded/constrained device (e.g. a Jetson Orin Nano).
+- Current quality/size ratio is close to the reference JPEG XL at mid compression rate, but it falls off a bit at high or low compression settings. Substantially better than JPEG, with 40-60% better compression rate at equal quality, and 5-50% better quality (SSIMULACRA2) at equal compression rate (especially better at higher compression rates), but inferior to the libjxl JPEG XL implementation (on average 15% worse compression rate at comparable quality).
+- Performance is currently limited (it achieves sustained 270 fps at 4K resolution on a GTX 1080Ti + Ryzen 7 2700X). The future ambition would be to sustain 15 fps at 4K resolution using a limited slice (ideally <10%) of an embedded/constrained device (e.g. a Jetson Orin Nano). Tegra- and RTX-specific optimizations (FP16 calculations, tensor core usage, etc.) are not implemented yet.
 - Only 3840x2160, 1920x1080, and 1280x720 input resolutions are currently supported.
 
 ## Usage
@@ -30,7 +30,7 @@ Python bindings are provided in [//python:pycujpegxl](https://github.com/m-pilia
 Quality and compression rate are lower compared to the reference libjxl implementation. This is expected, as cujpegxl only implements a subset of the JPEG XL algorithm, excluding some parts of it (in particular, some GPU-unfriendly steps are intentionally omitted for performance reasons).
 
 Notable exclusions include:
-- Entropy coding is prefix-only. [ANS coding](https://en.wikipedia.org/wiki/Asymmetric_numeral_systems) is not implemented.
+- rANS+Huffman coding used only for AC coefficients; DC and AcMetadata use Huffman coding only.
 - LZ77 pre-pass is omitted.
 - No non-square, <8 and >32 transforms.
 - No iterative Butteraugli rate control.
@@ -40,7 +40,7 @@ Some numerical approximations are made for performance reasons, trading a bit of
 - Huffman codes limited to 15 bit.
 - Transform selection uses a simpler heuristic.
 - Fuzzy erosion is local (clamped to a 32px tile) as opposed to global.
-- Fixed-size 32-cluster map, with one histogram per group, as opposed to the full greedy cost-driven clustering of 7425 contexts performed by libjxl.
+- Context clustering uses <=32 clusters (as opposed to libjxl's 128) and a simplified cost model.
 - DCT coefficients stored as FP16.
 - Uniform field quant calibration.
 - Fixed-strength inverse Gaborish pre-sharpening.
@@ -59,9 +59,9 @@ A small development set of freely licensed images is bundled in [//data:frames](
 
 The `//eval_dataset` package implements tooling to generate a reproducible evaluation dataset using high-quality and free-license images, while `//tools/quality_benchmark` implements comparative compression quality benchmarking, see [eval_dataset/README.md](https://github.com/m-pilia/cujpegxl/blob/master/eval_dataset/README.md) for information.
 
-Evaluation results using a 100 image subset of the evaluation dataset at 1080p resolution (`bazelisk run //eval_dataset:prepare_dataset -- --resolution 1080p --limit 100 ...`):
+Evaluation results using a 100 image subset of the evaluation dataset at 2160p resolution (`bazelisk run //eval_dataset:prepare_dataset -- --resolution 2160p --limit 100 ...`):
 
-![ssimulacra2](doc/2026-08-19_ssimulacra2.png)
+![ssimulacra2](doc/2026-10-23_ssimulacra2.png)
 
 ## Code checks
 
@@ -91,7 +91,7 @@ bazelisk run //tools/format
 
 The implementation is a derivative work of libjxl, see the License section below for details.
 
-The source code of this project is almost entirely LLM-generated, using a mix of GLM-5.3, GLM-5.2, GPT-5.6 Sol, and Claude Opus 4.8.
+The source code of this project is almost entirely LLM-generated, using a mix of GLM-5.3, GLM-5.2, Qwen 3.8, GPT-5.6 Sol, and Claude Opus 4.8.
 
 ## Disclaimer
 
