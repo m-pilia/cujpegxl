@@ -2,10 +2,28 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 load("@cujpegxl_pip//:requirements.bzl", "requirement")
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_import", "cc_library")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "gjxl_benchmark_enabled",
+    define_values = {"gjxl_benchmark": "true"},
+)
+
+cc_library(
+    name = "benchmark_stats",
+    srcs = ["benchmark_stats.cc"],
+    hdrs = ["benchmark_stats.h"],
+)
+
+cc_library(
+    name = "rgb_bench_driver",
+    srcs = ["rgb_bench_driver.cc"],
+    hdrs = ["rgb_bench_driver.h"],
+    deps = [":benchmark_stats"],
+)
 
 cc_library(
     name = "nvjpeg_encoder",
@@ -22,10 +40,54 @@ cc_binary(
     srcs = ["encode_bench.cc"],
     tags = ["gpu"],
     deps = [
+        ":benchmark_stats",
         ":nvjpeg_encoder",
         "//src:frame_encoder",
         "//src:worker_pool",
         "@cuda//:nvtx3",
+    ],
+)
+
+cc_binary(
+    name = "rgb_bench",
+    srcs = ["libjxl_bench.cc"],
+    deps = [
+        ":rgb_bench_driver",
+        "@libjxl//lib:jpegxl",
+        "@libjxl//lib:jpegxl_threads",
+    ],
+)
+
+# NOTE: non-hermetic build for gjxl due to dependency on the GCC toolchain.
+genrule(
+    name = "gjxl_shared_library",
+    srcs = [
+        "@gjxl//:CMakeLists.txt",
+        "@gjxl//:sources",
+    ],
+    outs = ["libgjxl_benchmark.so"],
+    cmd = "$(location :build_gjxl.sh) $(location @gjxl//:CMakeLists.txt) $(location :libgjxl_benchmark.so) 61",
+    tags = ["manual"],
+    tools = ["build_gjxl.sh"],
+)
+
+cc_import(
+    name = "gjxl_import",
+    shared_library = ":libgjxl_benchmark.so",
+    tags = ["manual"],
+)
+
+cc_binary(
+    name = "gjxl_bench",
+    srcs = ["gjxl_bench.cc"],
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    deps = [
+        ":gjxl_import",
+        ":rgb_bench_driver",
+        "@gjxl//:c_api_headers",
     ],
 )
 
@@ -48,8 +110,12 @@ py_binary(
     srcs = ["benchmark.py"],
     data = [
         ":encode_bench",
+        ":rgb_bench",
         "//data:frames",
-    ],
+    ] + select({
+        ":gjxl_benchmark_enabled": [":gjxl_bench"],
+        "//conditions:default": [],
+    }),
     imports = [
         ".",
         "../corpus",

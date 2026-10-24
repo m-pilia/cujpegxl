@@ -40,18 +40,6 @@ import pynvjpeg
 
 RESOLUTIONS = ("1080p", "2160p")
 
-# BT.709 full-range Y'CbCr->RGB, the exact inverse of corpus_prep.RGB_TO_*.
-_RGB_FROM_YCBCR = np.linalg.inv(
-    np.array(
-        [
-            cp.RGB_TO_Y,
-            cp.RGB_TO_CB,
-            cp.RGB_TO_CR,
-        ],
-        dtype=np.float64,
-    )
-)
-
 DEFAULT_DISTANCES: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 3.0)
 DEFAULT_QUALITIES: tuple[int, ...] = (70, 80, 90, 95)
 
@@ -99,49 +87,8 @@ def compression_ratio(coded_bytes: int, width: int, height: int) -> float:
     return (width * height * 3) / coded_bytes
 
 
-def _linear_upsample_2x(plane: np.ndarray) -> np.ndarray:
-    """Upsample a 2D chroma plane 2x per axis to match cujpegxl's decode path.
-
-    Replicates CUDA `cudaFilterModeLinear` texture sampling with clamp
-    addressing at the coordinate the fused front-end uses ((g+0.5)*0.5), i.e.
-    the half-texel phase B = 0.5*g - 0.25. This is the smooth kernel the decoder
-    reconstructs from, so a lossless codec scores ~0 instead of paying the
-    nearest-replication mismatch floor (butteraugli ~1-2) that biased the
-    perceptual metrics against every GPU codec.
-    """
-    result = plane.astype(np.float64)
-    for axis in (0, 1):
-        n = result.shape[axis]
-        coord = 0.5 * np.arange(2 * n) - 0.25
-        i0 = np.floor(coord).astype(np.intp)
-        alpha = (coord - i0).reshape([2 * n if a == axis else 1 for a in range(result.ndim)])
-        lo = np.take(result, np.clip(i0, 0, n - 1), axis=axis)
-        hi = np.take(result, np.clip(i0 + 1, 0, n - 1), axis=axis)
-        result = (1.0 - alpha) * lo + alpha * hi
-    return result
-
-
-def nv12_to_rgb(nv12: bytes | np.ndarray, width: int, height: int) -> np.ndarray:
-    """Reconstruct RGB from an NV12 byte stream.
-
-    Upsamples the 4:2:0 chroma with the same bilinear kernel cujpegxl's decode
-    path reconstructs (see `_linear_upsample_2x`) and applies the inverse of
-    corpus_prep.rgb_to_nv12's BT.709 full-range matrix.
-    """
-    if isinstance(nv12, np.ndarray):
-        buf = np.asarray(nv12, dtype=np.uint8).ravel()
-    else:
-        buf = np.frombuffer(nv12, dtype=np.uint8)
-    luma = buf[: width * height].reshape(height, width).astype(np.float64)
-    inter = buf[width * height :].reshape(height // 2, width)
-    cb_up = _linear_upsample_2x(inter[:, 0::2])
-    cr_up = _linear_upsample_2x(inter[:, 1::2])
-    ycbcr = np.stack([luma, cb_up - 128.0, cr_up - 128.0], axis=-1)
-    return _ycbcr_to_rgb(ycbcr)
-
-
 def _ycbcr_to_rgb(ycbcr_centered: np.ndarray) -> np.ndarray:
-    return np.clip(np.rint(ycbcr_centered @ _RGB_FROM_YCBCR.T), 0, 255).astype(np.uint8)
+    return np.clip(np.rint(ycbcr_centered @ cp.RGB_FROM_YCBCR.T), 0, 255).astype(np.uint8)
 
 
 def _score(reference: np.ndarray, distorted: np.ndarray) -> dict:
@@ -196,7 +143,7 @@ def bench_image(
     height = rung.height
     nv12 = cp.rgb_to_nv12(cp.box_downscale(rgb, rung.factor))
     nv12_arr = np.frombuffer(nv12, dtype=np.uint8)
-    reference = nv12_to_rgb(nv12, width, height)
+    reference = cp.nv12_to_rgb(nv12, width, height)
 
     rows: list[Row] = []
 

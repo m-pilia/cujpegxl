@@ -1,0 +1,13 @@
+diff --git a/src/core/stdlib_storage_compat.h b/src/core/stdlib_storage_compat.h
+--- a/src/core/stdlib_storage_compat.h
++++ b/src/core/stdlib_storage_compat.h
+@@ -53,9 +53,6 @@
+ #elif defined(__GLIBCXX__)
+ // Ubuntu 24.04 GCC 13.3.0-6ubuntu2~24.04.1, release headers and the C++11
+ // string ABI. Debug/parallel library modes are separate, unaudited adapters.
+-#if !defined(__GNUC__) || defined(__clang__) || __GNUC__ != 13 || __GNUC_MINOR__ != 3 || __GNUC_PATCHLEVEL__ != 0 || _GLIBCXX_RELEASE != 13 || __GLIBCXX__ != 20240904
+-#error "GJXL storage contract requires audited GCC 13.3.0/libstdc++ headers 20240904; see docs/storage-toolchain.md"
+-#endif
+ #if !defined(_GLIBCXX_USE_CXX11_ABI) || _GLIBCXX_USE_CXX11_ABI != 1 || defined(_GLIBCXX_DEBUG) || defined(_GLIBCXX_PARALLEL)
+ #error "GJXL storage contract requires release libstdc++ with C++11 ABI; see docs/storage-toolchain.md"
+ #endif

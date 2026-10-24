@@ -34,7 +34,7 @@ class Nv12ToRgbTest(unittest.TestCase):
     def test_round_trips_luma_and_stays_bounded(self) -> None:
         rgb = _gradient(64, 64)
         nv12 = cp.rgb_to_nv12(rgb)
-        recon = qb.nv12_to_rgb(nv12, 64, 64)
+        recon = cp.nv12_to_rgb(nv12, 64, 64)
         self.assertEqual(recon.shape, (64, 64, 3))
         self.assertEqual(recon.dtype, np.uint8)
         luma = (rgb.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
@@ -46,7 +46,7 @@ class Nv12ToRgbTest(unittest.TestCase):
     def test_half_resolution_frame(self) -> None:
         rgb = _gradient(96, 48)
         nv12 = cp.rgb_to_nv12(rgb)
-        recon = qb.nv12_to_rgb(nv12, 96, 48)
+        recon = cp.nv12_to_rgb(nv12, 96, 48)
         self.assertEqual(recon.shape, (48, 96, 3))
         luma = (rgb.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)
         recon_luma = (recon.astype(np.float64) @ cp.RGB_TO_Y).astype(np.uint8)

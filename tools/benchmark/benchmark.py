@@ -1,14 +1,12 @@
 # Copyright (c) 2026 Martino Pilia
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Benchmark the GPU encode time of the 4K data corpus against cujpegxl or nvJPEG.
+"""Benchmark encode time on the 4K data corpus.
 
-This is the convenience driver for //tools/benchmark:encode_bench. It generates
-the NV12 corpus (BT.709, full range, 4:2:0) from the source PNG frames under
-data/ using tools/corpus/corpus_prep.py, then invokes the C++ encode_bench
-binary with one NV12 file per source frame so the timed loop alternates across
-images. The H2D upload and NV12 deinterleave (for nvJPEG) happen once at
-startup and are excluded from the timed window inside encode_bench.
+The cujpegxl and nvJPEG paths use the NV12 corpus and exclude input upload from
+their timed window. Libjxl and gjxl receive RGB reconstructed from those same
+NV12 frames. Gjxl uses its public C API, so its timed call includes input
+conversion, upload, encoding, and output publication.
 
 Profiling for cujpegxl is exposed via --profile: it forwards to encode_bench's
 --profile flag (single iteration, NVTX ranges, per-stage StageTiming breakdown)
@@ -17,6 +15,8 @@ so a follow-up `nsys profile` or `ncu` capture is clean.
 Usage:
   bazelisk run //tools/benchmark:benchmark -- --codec=cujpegxl
   bazelisk run //tools/benchmark:benchmark -- --codec=nvjpeg --iterations=10
+  bazelisk run //tools/benchmark:benchmark -- --codec=libjxl --effort=7
+  bazelisk run --config=gjxl //tools/benchmark:benchmark -- --codec=gjxl --effort=7
   bazelisk run //tools/benchmark:benchmark -- --codec=cujpegxl --profile \\
       && nsys profile ./bazel-bin/tools/benchmark/encode_bench ...
 """
@@ -39,7 +39,7 @@ class BenchStats:
     """Parsed per-encode timing statistics from one encode_bench invocation."""
 
     codec: str
-    setting: str  # "d=1.0" (cujpegxl) or "q=90" (nvJPEG)
+    setting: str
     width: int
     height: int
     images: int
@@ -81,7 +81,7 @@ def parse_stats(output: str) -> BenchStats:
     codec = field(r"codec:\s+(\S+)").group(1)
     width = int(field(r"dims:\s+(\d+)x\d+").group(1))
     height = int(field(r"dims:\s+\d+x(\d+)").group(1))
-    if codec == "cujpegxl":
+    if codec in ("cujpegxl", "libjxl", "gjxl"):
         setting = f"d={float(field(r'distance:\s+([\d.]+)').group(1))}"
     else:
         setting = f"q={int(field(r'quality:\s+(\d+)').group(1))}"
@@ -106,17 +106,22 @@ def parse_stats(output: str) -> BenchStats:
     )
 
 
-def resolve_encode_bench() -> pathlib.Path:
-    candidate = pathlib.Path(__file__).resolve().parent / "encode_bench"
+def resolve_encode_bench(codec: str = "cujpegxl") -> pathlib.Path:
+    binary = {"libjxl": "rgb_bench", "gjxl": "gjxl_bench"}.get(codec, "encode_bench")
+    candidate = pathlib.Path(__file__).resolve().parent / binary
     if candidate.exists():
         return candidate
-    workspace_root = pathlib.Path(__file__).resolve().parents[2]
-    candidate = workspace_root / "bazel-bin" / "tools" / "benchmark" / "encode_bench"
-    if candidate.exists():
-        return candidate
+    for root in (pathlib.Path.cwd(), pathlib.Path(__file__).resolve().parents[2]):
+        candidate = root / "bazel-bin" / "tools" / "benchmark" / binary
+        if candidate.exists():
+            return candidate
+    if codec == "gjxl":
+        raise FileNotFoundError(
+            f"{binary} binary not found; run the benchmark with `--config=gjxl`"
+        )
     raise FileNotFoundError(
-        "encode_bench binary not found; build it with "
-        "`bazelisk build //tools/benchmark:encode_bench`"
+        f"{binary} binary not found; build it with "
+        f"`bazelisk build //tools/benchmark:{binary}`"
     )
 
 
@@ -127,9 +132,24 @@ def generate_corpus(frames: list[pathlib.Path], rung: cp.Rung,
             for source in frames]
 
 
+def generate_rgb_corpus(nv12_files: list[pathlib.Path], rung: cp.Rung) -> list[pathlib.Path]:
+    rgb_files = []
+    for nv12_file in nv12_files:
+        rgb_file = nv12_file.with_suffix(".rgb")
+        rgb_file.write_bytes(cp.nv12_to_rgb(nv12_file.read_bytes(), rung.width, rung.height).tobytes())
+        rgb_files.append(rgb_file)
+    return rgb_files
+
+
 def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
                   codec: str, iterations: int, warmup: int, device: int, distance: float = 1.0,
-                  quality: int = 90, profile: bool = False) -> list[str]:
+                  quality: int = 90, effort: int = 7, profile: bool = False) -> list[str]:
+    if codec in ("libjxl", "gjxl"):
+        cmd = [str(bench), str(rung.width), str(rung.height), str(iterations), str(warmup),
+               str(distance), str(effort)]
+        if codec == "gjxl":
+            cmd.append(str(device))
+        return [*cmd, *map(str, nv12_files)]
     cmd = [
         str(bench),
         "--codec", codec,
@@ -147,14 +167,14 @@ def build_command(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.
 
 def benchmark_codec(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: cp.Rung, *,
                     codec: str, iterations: int, warmup: int, device: int, distance: float = 1.0,
-                    quality: int = 90) -> BenchStats:
+                    quality: int = 90, effort: int = 7) -> BenchStats:
     """Run one encode_bench invocation and return its parsed timing statistics.
 
     Each call includes its own warmup iterations (excluded from the timed window
     by encode_bench), so a codec is never measured cold.
     """
     cmd = build_command(bench, nv12_files, rung, codec=codec, iterations=iterations, warmup=warmup,
-                        device=device, distance=distance, quality=quality)
+                        device=device, distance=distance, quality=quality, effort=effort)
     print(f"running: {' '.join(cmd)}", file=sys.stderr)
     completed = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
@@ -166,7 +186,8 @@ def benchmark_codec(bench: pathlib.Path, nv12_files: list[pathlib.Path], rung: c
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--codec", required=True, choices=["cujpegxl", "nvjpeg"])
+    parser.add_argument("--codec", required=True,
+                        choices=["cujpegxl", "nvjpeg", "libjxl", "gjxl"])
     parser.add_argument(
         "--rung",
         default="2160p",
@@ -177,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--distance", type=float, default=1.0, help="cujpegxl only.")
     parser.add_argument("--quality", type=int, default=90, help="nvJPEG only.")
+    parser.add_argument("--effort", type=int, default=None,
+                        help="libjxl and gjxl only (1..10; default 7).")
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument(
         "--profile",
@@ -206,9 +229,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.profile and args.codec != "cujpegxl":
         parser.error("--profile is only supported with --codec=cujpegxl")
+    if args.effort is not None and args.codec not in ("libjxl", "gjxl"):
+        parser.error("--effort is only supported with --codec=libjxl or --codec=gjxl")
+    if args.effort is not None and not 1 <= args.effort <= 10:
+        parser.error("--effort must be in [1, 10]")
+    if args.codec == "gjxl" and args.device != 0:
+        parser.error("gjxl uses CUDA device 0; set CUDA_VISIBLE_DEVICES to select another GPU")
 
     rung = cp.rung_by_name(args.rung)
-    bench = args.encode_bench if args.encode_bench is not None else resolve_encode_bench()
+    bench = args.encode_bench if args.encode_bench is not None else resolve_encode_bench(args.codec)
     if not bench.exists():
         parser.error(f"encode_bench binary not found at {bench}")
 
@@ -216,17 +245,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.nv12_dir is not None:
         nv12_files = generate_corpus(frames, rung, args.nv12_dir)
-        return _invoke_bench(bench, nv12_files, args, rung)
+        files = generate_rgb_corpus(nv12_files, rung) if args.codec in ("libjxl", "gjxl") else nv12_files
+        return _invoke_bench(bench, files, args, rung)
     with tempfile.TemporaryDirectory() as tmp:
         nv12_files = generate_corpus(frames, rung, pathlib.Path(tmp))
-        return _invoke_bench(bench, nv12_files, args, rung)
+        files = generate_rgb_corpus(nv12_files, rung) if args.codec in ("libjxl", "gjxl") else nv12_files
+        return _invoke_bench(bench, files, args, rung)
 
 
 def _invoke_bench(bench: pathlib.Path, nv12_files: list[pathlib.Path], args: argparse.Namespace,
                   rung: cp.Rung) -> int:
     cmd = build_command(bench, nv12_files, rung, codec=args.codec, iterations=args.iterations,
                         warmup=args.warmup, device=args.device, distance=args.distance,
-                        quality=args.quality, profile=args.profile)
+                        quality=args.quality, effort=args.effort or 7, profile=args.profile)
     print(f"running: {' '.join(cmd)}", file=sys.stderr)
     completed = subprocess.run(cmd, check=False)
     return completed.returncode

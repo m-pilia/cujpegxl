@@ -1,0 +1,4 @@
+exports_files([
+    "gjxl/gjxl.BUILD.bazel",
+    "gjxl/gcc16-compiler-check.patch",
+])

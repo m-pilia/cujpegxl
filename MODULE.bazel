@@ -87,6 +87,16 @@ http_archive(
     urls = ["https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.2.tar.gz"],
 )
 
+http_archive(
+    name = "gjxl",
+    build_file = "//third_party:gjxl/gjxl.BUILD.bazel",
+    patches = ["//third_party:gjxl/gcc16-compiler-check.patch"],
+    patch_strip = 1,
+    sha256 = "a91f9d789e090c7f3bca285d1f10623bc078e38a862ccc15fe3fddbc198f82a1",
+    strip_prefix = "gjxl-d3734bac27993a6ee939232e36fb1afbc965bfc7",
+    urls = ["https://github.com/yunho-c/gjxl/archive/d3734bac27993a6ee939232e36fb1afbc965bfc7.tar.gz"],
+)
+
 PYTHON_VERSION = "3.12"
 
 python = use_extension(

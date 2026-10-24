@@ -25,7 +25,6 @@
 // fixed vendor baseline and not an optimization target for this project.
 
 #include <algorithm>
-#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -35,7 +34,6 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +44,7 @@
 #include "src/bitstream/frame_assembly.h"
 #include "src/frame_encoder.h"
 #include "src/worker_pool.h"
+#include "tools/benchmark/benchmark_stats.h"
 #include "tools/benchmark/nvjpeg_encoder.h"
 
 namespace {
@@ -257,32 +256,6 @@ void free_image(BenchImage& img) {
     img.planar.reset();
 }
 
-double mean_of(const std::vector<double>& xs) {
-    assert(!xs.empty());
-    return std::accumulate(xs.begin(), xs.end(), 0.0) / static_cast<double>(xs.size());
-}
-
-double stddev_of(const std::vector<double>& xs) {
-    if (xs.size() < 2) {
-        return 0.0;
-    }
-    const double m{mean_of(xs)};
-    double s{0.0};
-    for (const double x : xs) {
-        const double d{x - m};
-        s += d * d;
-    }
-    return std::sqrt(s / static_cast<double>(xs.size() - 1));
-}
-
-double percentile_of(std::vector<double> xs, double p) {
-    assert(!xs.empty());
-    assert(p >= 0.0 && p <= 1.0);
-    std::sort(xs.begin(), xs.end());
-    const auto idx{static_cast<std::size_t>(std::llround(p * (xs.size() - 1)))};
-    return xs[idx];
-}
-
 void print_header(const Args& a, std::size_t image_count) {
     std::printf("encode_bench\n");
     std::printf("  codec:      %s\n", a.codec.c_str());
@@ -298,21 +271,6 @@ void print_header(const Args& a, std::size_t image_count) {
     }
     std::printf("  device:     %d\n", a.device);
     std::printf("  profile:    %s\n", a.profile ? "true" : "false");
-}
-
-void print_stats(const std::vector<double>& times_us, std::string_view codec) {
-    const double total_us{std::accumulate(times_us.begin(), times_us.end(), 0.0)};
-    const double mean_us{mean_of(times_us)};
-    const double fps{mean_us > 0.0 ? 1.0e6 / mean_us : 0.0};
-    std::printf("\nresults (%.*s, microseconds):\n", static_cast<int>(codec.size()), codec.data());
-    std::printf("  n:          %zu\n", times_us.size());
-    std::printf("  total:      %.0f\n", total_us);
-    std::printf("  mean:       %.0f   (%.2f fps)\n", mean_us, fps);
-    std::printf("  stddev:     %.0f\n", stddev_of(times_us));
-    std::printf("  min:        %.0f\n", *std::min_element(times_us.begin(), times_us.end()));
-    std::printf("  p50:        %.0f\n", percentile_of(times_us, 0.50));
-    std::printf("  p99:        %.0f\n", percentile_of(times_us, 0.99));
-    std::printf("  max:        %.0f\n", *std::max_element(times_us.begin(), times_us.end()));
 }
 
 int run(int argc, char** argv) {
@@ -470,10 +428,11 @@ int run(int argc, char** argv) {
         }
     }
 
-    print_stats(times_us, args.codec);
+    benchmark_stats::print_stats(times_us, args.codec);
     if (!latencies_us.empty()) {
-        std::printf("  latency:    mean %.0f   p50 %.0f   max %.0f\n", mean_of(latencies_us),
-                    percentile_of(latencies_us, 0.50),
+        std::printf("  latency:    mean %.0f   p50 %.0f   max %.0f\n",
+                    benchmark_stats::mean_of(latencies_us),
+                    benchmark_stats::percentile_of(latencies_us, 0.50),
                     *std::max_element(latencies_us.begin(), latencies_us.end()));
     }
 

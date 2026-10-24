@@ -1,0 +1,22 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["CMakeLists.txt"])
+
+filegroup(
+    name = "sources",
+    srcs = glob([
+        "CMakeLists.txt",
+        "cmake/**",
+        "include/**",
+        "src/**",
+        "tools/**",
+    ]),
+)
+
+cc_library(
+    name = "c_api_headers",
+    hdrs = ["include/gjxl/gjxl.h"],
+    includes = ["include"],
+)
