@@ -36,6 +36,7 @@ bazel_dep(name = "rules_pkg", version = "1.3.0", dev_dependency = True)
 bazel_dep(name = "rules_python", version = "2.2.0", dev_dependency = True)
 bazel_dep(name = "pybind11_bazel", version = "3.0.1", dev_dependency = True)
 bazel_dep(name = "toolchains_llvm", version = "1.8.0", dev_dependency = True)
+bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
 bazel_dep(name = "aspect_rules_lint", version = "2.7.2", dev_dependency = True)
 
 # aspect_rules_lint pulls rules_buf -> gazelle -> rules_go@0.42.0, whose
@@ -108,7 +109,45 @@ python.toolchain(
     is_default = True,
     python_version = PYTHON_VERSION,
 )
-use_repo(python, "python_3_12")
+use_repo(python, "python_3_12", "python_3_12_x86_64-unknown-linux-gnu")
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci", dev_dependency = True)
+oci.pull(
+    name = "jetson_image",
+    digest = "sha256:6d1a76e8f9b9c5e1b2430b392bbb61cfe58814044be3fd77aae0577a92ddaa41",
+    image = "docker.io/stereolabs/zed",
+    platforms = ["linux/arm64"],
+)
+use_repo(oci, "jetson_image", "jetson_image_linux_arm64")
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "umoci",
+    dev_dependency = True,
+    executable = True,
+    sha256 = "b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b82a3b71",
+    url = "https://github.com/opencontainers/umoci/releases/download/v0.6.0/umoci.linux.amd64",
+)
+
+oci_sysroot = use_repo_rule("//toolchains/sysroot:repositories.bzl", "oci_sysroot")
+
+oci_sysroot(
+    name = "jetson_sysroot",
+    dev_dependency = True,
+    image = "@jetson_image_linux_arm64//:index.json",
+    packages = [
+        "libc6",
+        "libc6-dev",
+        "libgcc-11-dev",
+        "libgcc-s1",
+        "libstdc++-11-dev",
+        "libstdc++6",
+        "linux-libc-dev",
+    ],
+    python = "@python_3_12_x86_64-unknown-linux-gnu//:python",
+    umoci = "@umoci//file:downloaded",
+)
 
 pip = use_extension(
     "@rules_python//python/extensions:pip.bzl",
