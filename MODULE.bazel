@@ -167,14 +167,33 @@ llvm = use_extension(
     dev_dependency = True,
 )
 llvm.toolchain(
+    extra_compile_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
+    extra_link_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
     llvm_version = "19.1.0",
-    # CUDA's crt headers reject libc++ on x86, so the whole toolchain uses the
-    # host libstdc++ to keep host and CUDA host-side objects ABI-compatible.
-    stdlib = {"linux-x86_64": "stdc++"},
+    # CUDA's crt headers reject libc++ on x86; host and CUDA host-side objects
+    # must use the same C++ standard library.
+    stdlib = {
+        "linux-aarch64": "dynamic-stdc++-11",
+        "linux-x86_64": "stdc++",
+    },
+)
+llvm.sysroot(
+    label = "@jetson_sysroot//sysroot:sysroot",
+    targets = ["linux-aarch64"],
+)
+llvm.extra_target_compatible_with(
+    constraints = ["//platforms:jetson_linux"],
+    targets = ["linux-aarch64"],
 )
 use_repo(llvm, "llvm_toolchain")
 
 register_toolchains(
-    "@llvm_toolchain//:all",
+    "@llvm_toolchain//:cc-toolchain-x86_64-linux",
+    "@llvm_toolchain//:cc-toolchain-aarch64-linux",
+    dev_dependency = True,
+)
+
+register_execution_platforms(
+    "//platforms:linux_x86_64",
     dev_dependency = True,
 )

@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Martino Pilia
+# SPDX-License-Identifier: BSD-3-Clause
+
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+
+package(default_testonly = True)
+
+cc_binary(
+    name = "generate_header",
+    srcs = ["generate_header.cc"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+genrule(
+    name = "generated_header",
+    outs = ["generated.h"],
+    cmd = "$(execpath :generate_header) > $@",
+    tools = [":generate_header"],
+)
+
+cc_test(
+    name = "cpp_toolchain_test",
+    size = "small",
+    srcs = [
+        "cpp_toolchain_test.cc",
+        ":generated_header",
+    ],
+)
