@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+load("@rules_cuda//cuda:defs.bzl", "cuda_test")
 
 package(default_testonly = True)
 
@@ -28,4 +29,12 @@ cc_test(
         "cpp_toolchain_test.cc",
         ":generated_header",
     ],
+)
+
+cuda_test(
+    name = "cuda_toolchain_test",
+    size = "small",
+    srcs = ["cuda_toolchain_test.cu"],
+    hdrs = [":generated_header"],
+    tags = ["gpu"],
 )

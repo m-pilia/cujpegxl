@@ -1,0 +1,388 @@
+diff --git a/cuda/extensions.bzl b/cuda/extensions.bzl
+--- a/cuda/extensions.bzl
++++ b/cuda/extensions.bzl
+@@ -1,7 +1,7 @@
+ """Entry point for extensions used by bzlmod."""
+ 
+ load("//cuda/private:redist_json_helper.bzl", "redist_json_helper")
+-load("//cuda/private:repositories.bzl", "cuda_component", "cuda_toolkit")
++load("//cuda/private:repositories.bzl", "cuda_component", "cuda_toolkit", "cuda_toolkit_alias")
+ 
+ cuda_component_tag = tag_class(attrs = {
+     "name": attr.string(mandatory = True, doc = "Repo name for the deliverable cuda_component"),
+@@ -36,6 +36,7 @@
+ })
+ 
+ cuda_redist_json_tag = tag_class(attrs = {
++    "platform": attr.string(doc = "NVIDIA redistribution platform key, e.g. linux-aarch64 or linux-sbsa."),
+     "name": attr.string(mandatory = True, doc = "Repo name for the cuda_redist_json"),
+     "components": attr.string_list(doc = "Components to be used. If not specified, all components will be used."),
+     "integrity": attr.string(
+@@ -60,6 +61,12 @@
+ })
+ 
+ cuda_toolkit_tag = tag_class(attrs = {
++    "redist": attr.string(doc = "Name of the redistribution providing target headers and libraries."),
++    "exec_redist": attr.string(doc = "Name of the redistribution providing build-host compiler executables; defaults to redist."),
++    "target_compatible_with": attr.label_list(),
++    "exec_compatible_with": attr.label_list(),
++    "target_toolkits": attr.label_keyed_string_dict(doc = "Maps target config_setting labels to concrete toolkit names."),
++    "default_toolkit": attr.string(doc = "Concrete toolkit used for the automatically registered toolchain aliases."),
+     "name": attr.string(mandatory = True, doc = "Name for the toolchain repository", default = "cuda"),
+     "toolkit_path": attr.string(
+         doc = "Path to the CUDA SDK, if empty the environment variable CUDA_PATH will be used to deduce this path.",
+@@ -99,12 +106,12 @@
+ 
+     mapping = {}
+     for spec in component_specs:
+-        repo_name = redist_json_helper.get_repo_name(module_ctx, spec)
++        repo_name = attr.name + "_" + redist_json_helper.get_repo_name(module_ctx, spec)
+         mapping[spec["component_name"]] = "@" + repo_name
+ 
+-        attr = {key: value for key, value in spec.items()}
+-        attr["name"] = repo_name
+-        cuda_component(**attr)
++        component_attrs = dict(spec)
++        component_attrs["name"] = repo_name
++        cuda_component(**component_attrs)
+     return redist_ver, mapping
+ 
+ def _impl(module_ctx):
+@@ -125,32 +132,89 @@
+     for component in components:
+         cuda_component(**_module_tag_to_dict(component))
+ 
+-    if len(redist_jsons) > 1:
+-        fail("Using multiple cuda.redist_json is not supported yet.")
+-
+-    redist_version = None
+-    components_mapping = None
+-    for redist_json in redist_jsons:
+-        redist_version, components_mapping = _redist_json_impl(module_ctx, redist_json)
+-
+-    registrations = {}
++    redists = {}
++    for redist in redist_jsons:
++        if redist.name in redists:
++            fail("Duplicate CUDA redistribution name: " + redist.name)
++        redists[redist.name] = _redist_json_impl(module_ctx, redist)
++
++    toolkit_names = {}
+     for toolkit in toolkits:
+-        if toolkit.name in registrations.keys():
+-            if toolkit.toolkit_path == registrations[toolkit.name].toolkit_path:
+-                # No problem to register a matching toolkit twice
+-                continue
+-            fail("Multiple conflicting toolkits declared for name {} ({} and {}".format(toolkit.name, toolkit.toolkit_path, registrations[toolkit.name].toolkit_path))
+-        else:
+-            registrations[toolkit.name] = toolkit
+-
+-    if len(registrations) > 1:
+-        fail("multiple cuda.toolkit is not supported")
+-
+-    for _, toolkit in registrations.items():
+-        if components_mapping != None:
+-            cuda_toolkit(name = toolkit.name, components_mapping = components_mapping, version = redist_version)
+-        else:
+-            cuda_toolkit(**_module_tag_to_dict(toolkit))
++        if toolkit.name in toolkit_names:
++            fail("Duplicate CUDA toolkit name: " + toolkit.name)
++        toolkit_names[toolkit.name] = True
++
++    configured = {}
++    for toolkit in toolkits:
++        if toolkit.target_toolkits:
++            if any([
++                toolkit.redist,
++                toolkit.exec_redist,
++                toolkit.toolkit_path,
++                toolkit.components_mapping,
++                toolkit.version,
++                toolkit.nvcc_version,
++                toolkit.target_compatible_with,
++                toolkit.exec_compatible_with,
++            ]):
++                fail("target_toolkits cannot be combined with concrete toolkit configuration")
++            continue
++        if toolkit.default_toolkit:
++            fail("default_toolkit requires target_toolkits")
++        attrs = _module_tag_to_dict(toolkit)
++        for field in ["redist", "exec_redist", "target_toolkits", "default_toolkit"]:
++            attrs.pop(field)
++        for field in ["target_compatible_with", "exec_compatible_with"]:
++            attrs[field] = [str(label) for label in attrs[field]]
++        if redists:
++            redist_name = toolkit.redist
++            if not redist_name:
++                if len(redists) != 1:
++                    fail("toolkit.redist must select a named CUDA redistribution")
++                redist_name = redists.keys()[0]
++            if redist_name not in redists:
++                fail("Unknown CUDA redistribution: " + redist_name)
++            exec_name = toolkit.exec_redist or redist_name
++            if exec_name not in redists:
++                fail("Unknown execution CUDA redistribution: " + exec_name)
++            version, mapping = redists[redist_name]
++            exec_version, exec_mapping = redists[exec_name]
++            if version != exec_version:
++                fail("CUDA execution and target redistributions must have the same version")
++            attrs.update(
++                version = version,
++                components_mapping = mapping,
++                compiler_components_mapping = exec_mapping,
++            )
++        elif toolkit.redist or toolkit.exec_redist:
++            fail("toolkit.redist requires a CUDA redistribution declaration")
++        configured[toolkit.name] = attrs
++        cuda_toolkit(**attrs)
++
++    for toolkit in toolkits:
++        if not toolkit.target_toolkits:
++            continue
++        names = toolkit.target_toolkits.values()
++        if toolkit.default_toolkit not in names:
++            fail("default_toolkit must name one of target_toolkits")
++        for name in names:
++            if name not in configured:
++                fail("Unknown concrete CUDA toolkit: " + name)
++        default = configured[toolkit.default_toolkit]
++        if not default["version"] or not default["components_mapping"]:
++            fail("target_toolkits requires deliverable CUDA toolkits")
++        components = sorted(default["components_mapping"].keys())
++        for name in names:
++            other = configured[name]
++            if other["version"] != default["version"] or sorted(other["components_mapping"].keys()) != components:
++                fail("CUDA target toolkits must have the same version and components")
++        cuda_toolkit_alias(
++            name = toolkit.name,
++            target_toolkits = {str(label): "@" + name for label, name in toolkit.target_toolkits.items()},
++            default_toolkit = "@" + toolkit.default_toolkit,
++            components = components,
++            version = default["version"],
++        )
+ 
+ toolchain = module_extension(
+     implementation = _impl,
+diff --git a/cuda/private/redist_json_helper.bzl b/cuda/private/redist_json_helper.bzl
+--- a/cuda/private/redist_json_helper.bzl
++++ b/cuda/private/redist_json_helper.bzl
+@@ -87,8 +87,8 @@
+     elif _is_windows(ctx):
+         os = "windows"
+ 
+-    arch = "x86_64"  # TODO: support cross compiling
+-    platform = "{os}-{arch}".format(os = os, arch = arch)
++    arch = "x86_64"
++    platform = getattr(attr, "platform", "") or "{os}-{arch}".format(os = os, arch = arch)
+     all_components_on_platform = [k for k, v in FULL_COMPONENT_NAME.items() if v in redist and platform in redist[v]]
+     components = attr.components if attr.components else all_components_on_platform
+ 
+diff --git a/cuda/private/repositories.bzl b/cuda/private/repositories.bzl
+--- a/cuda/private/repositories.bzl
++++ b/cuda/private/repositories.bzl
+@@ -112,7 +112,7 @@
+         if rc not in repository_ctx.attr.components_mapping:
+             fail('component "{}" is required.'.format(rc))
+ 
+-    nvcc_repo = repository_ctx.attr.components_mapping["nvcc"]
++    nvcc_repo = (repository_ctx.attr.compiler_components_mapping or repository_ctx.attr.components_mapping)["nvcc"]
+ 
+     bin_ext = ".exe" if _is_windows(repository_ctx) else ""
+     nvcc = "{}//:nvcc/bin/nvcc{}".format(nvcc_repo, bin_ext)
+@@ -125,7 +125,7 @@
+     cicc = None
+     libdevice = None
+     if int(cuda_version_major) >= 13:
+-        nvvm_repo = repository_ctx.attr.components_mapping["nvvm"]
++        nvvm_repo = (repository_ctx.attr.compiler_components_mapping or repository_ctx.attr.components_mapping)["nvvm"]
+         cicc = "{}//:nvvm/nvvm/bin/cicc{}".format(nvvm_repo, bin_ext)  # TODO: can we use @cuda//:cicc?
+         libdevice = "{}//:nvvm/nvvm/libdevice/libdevice.10.bc".format(nvvm_repo)  # TODO: can we use @cuda//:libdevice?
+ 
+@@ -287,6 +287,9 @@
+     implementation = _cuda_toolkit_impl,
+     attrs = {
+         "toolkit_path": attr.string(doc = "Path to the CUDA SDK, if empty the environment variable CUDA_PATH will be used to deduce this path."),
++        "compiler_components_mapping": attr.string_dict(doc = "Build-host compiler components; target libraries remain in components_mapping."),
++        "target_compatible_with": attr.string_list(),
++        "exec_compatible_with": attr.string_list(),
+         "components_mapping": attr.string_dict(
+             doc = "A mapping from component names to component repos of a deliverable CUDA Toolkit. " +
+                   "Only the repo part of the label is useful",
+@@ -300,6 +303,41 @@
+     local = True,
+     environ = ["CUDA_PATH", "PATH", "CUDA_CLANG_PATH", "CUDA_CLANG_LABEL", "BAZEL_LLVM", "CUDA_COMPILER_USE_CC_TOOLCHAIN"],
+     # remotable = True,
++)
++
++def _cuda_toolkit_alias_impl(ctx):
++    lines = [
++        'load("@bazel_skylib//rules:common_settings.bzl", "bool_setting")',
++        'package(default_visibility = ["//visibility:public"])',
++        'bool_setting(name = "valid_toolchain_found", build_setting_default = True)',
++    ]
++    targets = ["cuda_all_files", "cuda_headers", "cuda_license"]
++    for component in ctx.attr.components:
++        targets.extend(REGISTRY[component])
++    for target in targets:
++        choices = {condition: repo + "//:" + target for condition, repo in ctx.attr.target_toolkits.items()}
++        lines.append("alias(name = %r, actual = select(%r))" % (target, choices))
++    ctx.file("BUILD.bazel", "\n".join(lines), executable = False)
++    major, minor = ctx.attr.version.split(".")[:2]
++    template_helper.generate_defs_bzl(ctx, major, minor, False)
++    for package, name in [
++        ("toolchain", "nvcc-local-toolchain"),
++        ("toolchain/clang", "clang-local-toolchain"),
++        ("toolchain/disabled", "disabled-local-toolchain"),
++    ]:
++        ctx.file(package + "/BUILD.bazel", 'alias(name = %r, actual = %r, visibility = ["//visibility:public"])' % (
++            name,
++            ctx.attr.default_toolkit + "//" + package + ":" + name,
++        ), executable = False)
++
++cuda_toolkit_alias = repository_rule(
++    implementation = _cuda_toolkit_alias_impl,
++    attrs = {
++        "target_toolkits": attr.string_dict(mandatory = True),
++        "default_toolkit": attr.string(mandatory = True),
++        "components": attr.string_list(mandatory = True),
++        "version": attr.string(mandatory = True),
++    },
+ )
+ 
+ def _patch_nvcc_profile_pre(repository_ctx, component_name):
+diff --git a/cuda/private/template_helper.bzl b/cuda/private/template_helper.bzl
+--- a/cuda/private/template_helper.bzl
++++ b/cuda/private/template_helper.bzl
+@@ -82,7 +82,8 @@
+     if is_cuda_repo and is_deliverable:  # generate `@cuda//BUILD` for CTK with deliverables
+         for comp in components:
+             for target in REGISTRY[comp]:
+-                repo = components[comp]
++                compiler_components = getattr(repository_ctx.attr, "compiler_components_mapping", {})
++                repo = compiler_components.get(comp, components[comp]) if target in ["compiler_root", "compiler_deps", "cicc", "libdevice"] else components[comp]
+                 line = 'alias(name = "{target}", actual = "{repo}//:{target}")'.format(target = target, repo = repo)
+                 template_content.append(line)
+ 
+@@ -187,7 +188,7 @@
+         "//cuda/private:templates/BUILD.toolchain_" +
+         ("nvcc" if _is_linux(repository_ctx) else "nvcc_msvc"),
+     )
+-    compiler_files = ["@cuda//:compiler_deps"]
++    compiler_files = ["@@%s//:compiler_deps" % repository_ctx.name]
+     if int(cuda.version_major) >= 13:
+         if cuda.cicc_label != None:
+             compiler_files.append(cuda.cicc_label)
+@@ -195,8 +196,11 @@
+             compiler_files.append(cuda.libdevice_label)
+     compiler_files_line = "compiler_files = " + repr(compiler_files) + ","
+ 
++    default_constraints = ["@platforms//os:linux"] if _is_linux(repository_ctx) else ["@platforms//os:windows", "@platforms//cpu:x86_64"]
+     substitutions = {
+         "# %{compiler_files_line}": compiler_files_line,
++        "# %{target_compatible_with_line}": "target_compatible_with = %r," % (repository_ctx.attr.target_compatible_with or default_constraints),
++        "# %{exec_compatible_with_line}": "exec_compatible_with = %r," % (repository_ctx.attr.exec_compatible_with or default_constraints),
+         "%{cuda_path}": _to_forward_slash(cuda.path) if cuda.path else "cuda-not-found",
+         "%{cuda_version}": "{}.{}".format(cuda.version_major, cuda.version_minor),
+         "%{nvcc_version_major}": str(cuda.nvcc_version_major),
+@@ -245,27 +249,34 @@
+     cuda_path_for_subst = ""
+     path_data = None
+     if cuda.path:  # local installation
+-        compiler_files.append("@cuda//:compiler_deps")
++        compiler_files.append("@@%s//:compiler_deps" % repository_ctx.name)
+         cuda_path_for_subst = _to_forward_slash(cuda.path)
+     else:  # scattered components
+-        cuda_path_for_subst = "$(location @cuda//:compiler_root)"
+-        path_data = ["@cuda//:compiler_root"]
++        cuda_path_for_subst = "$(location @@%s//:compiler_root)" % repository_ctx.name
++        path_data = ["@@%s//:compiler_root" % repository_ctx.name]
+         compiler_files.extend([
+-            "@cuda//:nvcc_all_files",
+-            "@cuda//:cccl_all_files",
+-            "@cuda//:cudart_all_files",
+-            "@cuda//:curand_all_files",
++            "@@%s//:nvcc_all_files" % repository_ctx.name,
++            "@@%s//:cccl_all_files" % repository_ctx.name,
++            "@@%s//:cudart_all_files" % repository_ctx.name,
++            "@@%s//:curand_all_files" % repository_ctx.name,
+         ])
+         if int(cuda.version_major) >= 13:
+             compiler_files.extend([
+-                "@cuda//:nvvm_all_files",
++                "@@%s//:nvvm_all_files" % repository_ctx.name,
+             ])
++    compiler_components = getattr(repository_ctx.attr, "compiler_components_mapping", {})
++    for component in ["nvcc", "nvvm"]:
++        repo = compiler_components.get(component)
++        if repo and repo != repository_ctx.attr.components_mapping.get(component):
++            compiler_files.append(repo + "//:" + component + "_all_files")
+     path_data_line = "path_data = " + repr(path_data) + ","
+     compiler_files_line = "compiler_files = " + repr(compiler_files) + ","
+ 
+     substitutions = {
+         "# %{compiler_attribute_line}": compiler_attr_line,
+         "# %{compiler_files_line}": compiler_files_line,
++        "# %{target_compatible_with_line}": "target_compatible_with = %r," % repository_ctx.attr.target_compatible_with,
++        "# %{exec_compatible_with_line}": "exec_compatible_with = %r," % repository_ctx.attr.exec_compatible_with,
+         "%{clang_path}": clang_path_for_subst,  # Will be empty if label is used
+         "%{clang_label}": clang_label_for_subst,  # Will be empty if path is used
+         "%{cuda_path}": cuda_path_for_subst,
+diff --git a/cuda/private/templates/BUILD.toolchain_clang b/cuda/private/templates/BUILD.toolchain_clang
+--- a/cuda/private/templates/BUILD.toolchain_clang
++++ b/cuda/private/templates/BUILD.toolchain_clang
+@@ -42,5 +42,7 @@
+     ],
+     toolchain = ":clang-local",
+     toolchain_type = "@rules_cuda//cuda:toolchain_type",
++    # %{target_compatible_with_line}
++    # %{exec_compatible_with_line}
+     visibility = ["//visibility:public"],
+ )
+diff --git a/cuda/private/templates/BUILD.toolchain_nvcc b/cuda/private/templates/BUILD.toolchain_nvcc
+--- a/cuda/private/templates/BUILD.toolchain_nvcc
++++ b/cuda/private/templates/BUILD.toolchain_nvcc
+@@ -38,17 +38,13 @@
+ 
+ toolchain(
+     name = "nvcc-local-toolchain",
+-    exec_compatible_with = [
+-        "@platforms//os:linux",
+-    ],
+-    target_compatible_with = [
+-        "@platforms//os:linux",
+-    ],
+     target_settings = [
+         "@rules_cuda//cuda:is_enabled",
+         "@rules_cuda//cuda:compiler_is_nvcc",
+     ],
+     toolchain = ":nvcc-local",
+     toolchain_type = "@rules_cuda//cuda:toolchain_type",
++    # %{target_compatible_with_line}
++    # %{exec_compatible_with_line}
+     visibility = ["//visibility:public"],
+ )
+diff --git a/cuda/private/templates/BUILD.toolchain_nvcc_msvc b/cuda/private/templates/BUILD.toolchain_nvcc_msvc
+--- a/cuda/private/templates/BUILD.toolchain_nvcc_msvc
++++ b/cuda/private/templates/BUILD.toolchain_nvcc_msvc
+@@ -39,19 +39,13 @@
+ 
+ toolchain(
+     name = "nvcc-local-toolchain",
+-    exec_compatible_with = [
+-        "@platforms//os:windows",
+-        "@platforms//cpu:x86_64",
+-    ],
+-    target_compatible_with = [
+-        "@platforms//os:windows",
+-        "@platforms//cpu:x86_64",
+-    ],
+     target_settings = [
+         "@rules_cuda//cuda:is_enabled",
+         "@rules_cuda//cuda:compiler_is_nvcc",
+     ],
+     toolchain = ":nvcc-local",
+     toolchain_type = "@rules_cuda//cuda:toolchain_type",
++    # %{target_compatible_with_line}
++    # %{exec_compatible_with_line}
+     visibility = ["//visibility:public"],
+ )

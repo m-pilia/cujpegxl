@@ -1,4 +1,4 @@
-# C++ toolchains
+# Build toolchains
 
 The root module registers two C++ toolchains from the pinned Clang 19.1.0
 distribution. Both execute their compiler and linker on Linux x86_64.
@@ -30,5 +30,34 @@ bazelisk test //toolchains/tests:cpp_toolchain_test
 ```
 
 Build-time tools use the x86_64 execution platform even when their consumers
-target Jetson. CUDA compilation additionally requires a matching CUDA target
-toolchain; the C++ configuration alone does not provide Jetson CUDA libraries.
+target Jetson.
+
+## CUDA
+
+The root module selects CUDA 12.6.3 redistributions for Linux x86_64 and Jetson
+`linux-aarch64`, with the manifest and component archives pinned by checksum.
+`linux-sbsa` is a different distribution and is not used for Jetson.
+
+Both CUDA toolchains use the registered Clang 19.1.0 C++ compiler and x86_64 CUDA
+executables. The Jetson toolchain uses ARM64 runtime libraries and target headers
+along with the Jetson C++ toolchain's CPU settings and sysroot. Existing `@cuda`
+library labels select the appropriate concrete toolkit for the target platform.
+The root module owns this selection; downstream Bazel consumers still supply
+their own C++ and CUDA toolchains.
+
+```sh
+bazelisk build --platforms=//platforms:jetson_orin_nano \
+  --@rules_cuda//cuda:archs=sm_87 \
+  //packaging:install_tree //tools/benchmark:encode_bench \
+  //toolchains/tests:cuda_toolchain_test
+```
+
+The CUDA check consumes the x86_64-generated header, compiles a kernel and C++
+standard-library code, and links the selected CUDA runtime. Its runtime check
+allocates device memory, launches the kernel, and verifies the copied result;
+it requires a GPU and should execute on the platform it was built for.
+
+The install tree retains static cudart linkage. The benchmark currently also
+requires ARM64 `libnvjpeg.so.12` and `libnvToolsExt.so.1`; retain its runfiles or
+provide those libraries when deploying it. Native builds continue to select
+x86_64 libraries and the configured `sm_61;sm_87` GPU architectures.

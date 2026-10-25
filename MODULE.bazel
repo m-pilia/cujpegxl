@@ -21,12 +21,53 @@ cuda = use_extension(
     "toolchain",
     dev_dependency = True,
 )
+CUDA_VERSION = "12.6.3"
+CUDA_REDIST_SHA256 = "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf"
+CUDA_COMPONENTS = ["cccl", "cudart", "curand", "nvcc", "nvjpeg", "nvtx"]
+
 cuda.redist_json(
     name = "cujpegxl_cuda_redist",
-    version = "12.6.3",
+    components = CUDA_COMPONENTS,
+    platform = "linux-x86_64",
+    sha256 = CUDA_REDIST_SHA256,
+    version = CUDA_VERSION,
 )
-cuda.toolkit(name = "cuda")
-use_repo(cuda, "cuda")
+cuda.redist_json(
+    name = "cujpegxl_cuda_jetson_redist",
+    components = CUDA_COMPONENTS,
+    platform = "linux-aarch64",
+    sha256 = CUDA_REDIST_SHA256,
+    version = CUDA_VERSION,
+)
+cuda.toolkit(
+    name = "cuda_native",
+    exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
+    redist = "cujpegxl_cuda_redist",
+    target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
+)
+cuda.toolkit(
+    name = "cuda_jetson",
+    exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
+    exec_redist = "cujpegxl_cuda_redist",
+    redist = "cujpegxl_cuda_jetson_redist",
+    target_compatible_with = ["//platforms:jetson_linux", "@platforms//cpu:aarch64", "@platforms//os:linux"],
+)
+cuda.toolkit(
+    name = "cuda",
+    default_toolkit = "cuda_native",
+    target_toolkits = {
+        "//platforms:is_linux_x86_64": "cuda_native",
+        "//platforms:is_jetson": "cuda_jetson",
+    },
+)
+use_repo(cuda, "cuda", "cuda_jetson")
+
+single_version_override(
+    module_name = "rules_cuda",
+    patch_strip = 1,
+    patches = ["//third_party/rules_cuda:cross-compilation.patch"],
+    version = "0.3.0",
+)
 
 # Development- and test-only dependencies. Marked dev so downstream consumers
 # that depend on cujpegxl via bazel_dep neither resolve nor register them; the
@@ -190,6 +231,7 @@ use_repo(llvm, "llvm_toolchain")
 register_toolchains(
     "@llvm_toolchain//:cc-toolchain-x86_64-linux",
     "@llvm_toolchain//:cc-toolchain-aarch64-linux",
+    "@cuda_jetson//toolchain/clang:clang-local-toolchain",
     dev_dependency = True,
 )
 
