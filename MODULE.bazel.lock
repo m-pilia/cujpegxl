@@ -563,7 +563,7 @@
     },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
-        "bzlTransitiveDigest": "rC1XM2med3OF80hrBWURkqE8cXiL0VNxL9irviTA2XA=",
+        "bzlTransitiveDigest": "MPQcuOdfklyzNlmjCQS2KWO/6yQKg9erwYQrf3iAJV8=",
         "usagesDigest": "iHsZuBQlzHawTMahOez6f1mSTpPEf4137eT4hS1DxXc=",
         "recordedInputs": [
           "REPO_MAPPING:,platforms platforms",

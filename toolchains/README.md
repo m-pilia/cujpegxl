@@ -17,7 +17,7 @@ libraries are selected from it rather than from the worker's system directories.
 Select the Jetson platform with:
 
 ```sh
-bazelisk build --platforms=//platforms:jetson_orin_nano //toolchains/tests:cpp_toolchain_test
+bazelisk build --config=jetson //toolchains/tests:cpp_toolchain_test
 ```
 
 The check builds and executes an x86_64 C++ code generator, then compiles a test
@@ -46,8 +46,7 @@ The root module owns this selection; downstream Bazel consumers still supply
 their own C++ and CUDA toolchains.
 
 ```sh
-bazelisk build --platforms=//platforms:jetson_orin_nano \
-  --@rules_cuda//cuda:archs=sm_87 \
+bazelisk build --config=jetson \
   //packaging:install_tree //tools/benchmark:encode_bench \
   //toolchains/tests:cuda_toolchain_test
 ```
@@ -57,7 +56,25 @@ standard-library code, and links the selected CUDA runtime. Its runtime check
 allocates device memory, launches the kernel, and verifies the copied result;
 it requires a GPU and should execute on the platform it was built for.
 
-The install tree retains static cudart linkage. The benchmark currently also
-requires ARM64 `libnvjpeg.so.12` and `libnvToolsExt.so.1`; retain its runfiles or
-provide those libraries when deploying it. Native builds continue to select
-x86_64 libraries and the configured `sm_61;sm_87` GPU architectures.
+`--config=jetson` selects the Jetson platform and `sm_87` for project kernels.
+The install tree retains its relocatable layout and static cudart linkage.
+The Jetson benchmark links cudart, nvJPEG, and its culibos support library
+statically and uses the NVTX 3 headers for profiling. It can be copied as a single
+executable without Bazel runfiles or CUDA/NVTX shared libraries. The device must
+provide the system C/C++ libraries and NVIDIA driver.
+
+Native builds continue to select x86_64 libraries and the configured
+`sm_61;sm_87` GPU architectures, preserving their shared nvJPEG and NVTX linkage.
+
+Check the Jetson benchmark's architecture, absence of CUDA/NVTX shared-library
+dependencies, and absence of RPATH/RUNPATH on an x86_64 worker without a GPU:
+
+```sh
+bazelisk test //tools/benchmark:jetson_linkage_test
+```
+
+The test cross-builds its benchmark dependency for Jetson and inspects the ELF
+with the pinned LLVM reader without executing the benchmark.
+Its Jetson dependency disables the `asan`, `ubsan`, and `tsan` features because
+the compiler distribution does not include AArch64 sanitizer runtimes. Other
+targets retain their configured sanitizer features.

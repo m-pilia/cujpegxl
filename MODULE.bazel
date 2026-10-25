@@ -226,7 +226,7 @@ llvm.extra_target_compatible_with(
     constraints = ["//platforms:jetson_linux"],
     targets = ["linux-aarch64"],
 )
-use_repo(llvm, "llvm_toolchain")
+use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
 
 register_toolchains(
     "@llvm_toolchain//:cc-toolchain-x86_64-linux",

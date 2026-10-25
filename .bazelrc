@@ -24,6 +24,9 @@ common --repo_env=CUDA_COMPILER_USE_CC_TOOLCHAIN=true
 # Statically link the CUDA runtime so consumers can link it without a CUDA toolkit.
 build --@rules_cuda//cuda:runtime=@cuda//:cuda_runtime_static
 
+build:jetson --platforms=//platforms:jetson_orin_nano
+build:jetson --@rules_cuda//cuda:archs=sm_87
+
 build:gjxl --define=gjxl_benchmark=true
 
 test --test_output=errors

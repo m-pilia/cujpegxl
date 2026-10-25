@@ -180,6 +180,15 @@ diff --git a/cuda/private/redist_json_helper.bzl b/cuda/private/redist_json_help
 diff --git a/cuda/private/repositories.bzl b/cuda/private/repositories.bzl
 --- a/cuda/private/repositories.bzl
 +++ b/cuda/private/repositories.bzl
+@@ -4,7 +4,7 @@
+ load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
+ load("//cuda/private:redist_json_helper.bzl", "redist_json_helper")
+ load("//cuda/private:template_helper.bzl", "template_helper")
+-load("//cuda/private:templates/registry.bzl", "REGISTRY")
++load("//cuda/private:templates/registry.bzl", "REGISTRY", "component_targets")
+ load("//cuda/private:toolchain.bzl", "register_detected_cuda_toolchains")
+ 
+ def _is_linux(ctx):
 @@ -112,7 +112,7 @@
          if rc not in repository_ctx.attr.components_mapping:
              fail('component "{}" is required.'.format(rc))
@@ -222,7 +231,7 @@ diff --git a/cuda/private/repositories.bzl b/cuda/private/repositories.bzl
 +    ]
 +    targets = ["cuda_all_files", "cuda_headers", "cuda_license"]
 +    for component in ctx.attr.components:
-+        targets.extend(REGISTRY[component])
++        targets.extend(component_targets(component, ctx.attr.version))
 +    for target in targets:
 +        choices = {condition: repo + "//:" + target for condition, repo in ctx.attr.target_toolkits.items()}
 +        lines.append("alias(name = %r, actual = select(%r))" % (target, choices))
@@ -253,11 +262,20 @@ diff --git a/cuda/private/repositories.bzl b/cuda/private/repositories.bzl
 diff --git a/cuda/private/template_helper.bzl b/cuda/private/template_helper.bzl
 --- a/cuda/private/template_helper.bzl
 +++ b/cuda/private/template_helper.bzl
-@@ -82,7 +82,8 @@
+@@ -1,5 +1,5 @@
+ load("//cuda/private:redist_json_helper.bzl", "redist_json_helper")
+-load("//cuda/private:templates/registry.bzl", "REGISTRY")
++load("//cuda/private:templates/registry.bzl", "REGISTRY", "component_targets")
+ 
+ def _to_forward_slash(s):
+     return s.replace("\\", "/")
+@@ -81,8 +81,9 @@
+ 
      if is_cuda_repo and is_deliverable:  # generate `@cuda//BUILD` for CTK with deliverables
          for comp in components:
-             for target in REGISTRY[comp]:
+-            for target in REGISTRY[comp]:
 -                repo = components[comp]
++            for target in component_targets(comp, repository_ctx.attr.version):
 +                compiler_components = getattr(repository_ctx.attr, "compiler_components_mapping", {})
 +                repo = compiler_components.get(comp, components[comp]) if target in ["compiler_root", "compiler_deps", "cicc", "libdevice"] else components[comp]
                  line = 'alias(name = "{target}", actual = "{repo}//:{target}")'.format(target = target, repo = repo)
@@ -327,6 +345,17 @@ diff --git a/cuda/private/template_helper.bzl b/cuda/private/template_helper.bzl
          "%{clang_path}": clang_path_for_subst,  # Will be empty if label is used
          "%{clang_label}": clang_label_for_subst,  # Will be empty if path is used
          "%{cuda_path}": cuda_path_for_subst,
+diff --git a/cuda/private/templates/BUILD.nvjpeg b/cuda/private/templates/BUILD.nvjpeg
+--- a/cuda/private/templates/BUILD.nvjpeg
++++ b/cuda/private/templates/BUILD.nvjpeg
+@@ -36,5 +36,7 @@
+         ":%{component_name}_headers",
+     ] + if_linux([
+         ":nvjpeg_static_a",
++        "@cuda//:cuda_runtime_static",
++        "@cuda//:culibos_a",
+     ]),
+ )
 diff --git a/cuda/private/templates/BUILD.toolchain_clang b/cuda/private/templates/BUILD.toolchain_clang
 --- a/cuda/private/templates/BUILD.toolchain_clang
 +++ b/cuda/private/templates/BUILD.toolchain_clang
@@ -386,3 +415,16 @@ diff --git a/cuda/private/templates/BUILD.toolchain_nvcc_msvc b/cuda/private/tem
 +    # %{exec_compatible_with_line}
      visibility = ["//visibility:public"],
  )
+diff --git a/cuda/private/templates/registry.bzl b/cuda/private/templates/registry.bzl
+--- a/cuda/private/templates/registry.bzl
++++ b/cuda/private/templates/registry.bzl
+@@ -46,3 +46,9 @@
+     "nvrtc": "cuda_nvrtc",
+     "nvtx": "cuda_nvtx",
+ }
++
++def component_targets(component, version):
++    targets = REGISTRY[component]
++    if component == "cudart" and int(version.split(".")[0]) < 13:
++        return targets + ["culibos_a"]
++    return targets

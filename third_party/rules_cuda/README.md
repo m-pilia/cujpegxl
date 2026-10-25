@@ -23,6 +23,11 @@ compiler root use the execution redistribution; CPU libraries and target headers
 use the target redistribution. Existing native NVCC constraint defaults are
 preserved when callers omit explicit constraints.
 
+Version-aware component exports expose `culibos_a` from the cudart archive before
+CUDA 13 and from the separate culibos component thereafter. The `nvjpeg_static`
+target declares its cudart and culibos dependencies so consumers receive the
+complete static link requirements through the existing `@cuda` interface.
+
 The project configures x86_64 and Jetson toolchains from the same release using
 these general settings. `//toolchains/tests:cuda_toolchain_test` exercises a host
 code generator, target C++ headers, a CUDA kernel, and runtime linking. Build it

@@ -3,7 +3,8 @@
 
 load("@cujpegxl_pip//:requirements.bzl", "requirement")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_import", "cc_library")
-load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("//toolchains/tests:jetson_binary.bzl", "jetson_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -31,8 +32,10 @@ cc_library(
     hdrs = ["nvjpeg_encoder.h"],
     deps = [
         "@cuda//:cuda_runtime_static",
-        "@cuda//:nvjpeg",
-    ],
+    ] + select({
+        "//platforms:is_jetson": ["@cuda//:nvjpeg_static"],
+        "//conditions:default": ["@cuda//:nvjpeg"],
+    }),
 )
 
 cc_binary(
@@ -44,7 +47,34 @@ cc_binary(
         ":nvjpeg_encoder",
         "//src:frame_encoder",
         "//src:worker_pool",
-        "@cuda//:nvtx3",
+    ] + select({
+        "//platforms:is_jetson": ["@cuda//:nvtx_headers"],
+        "//conditions:default": ["@cuda//:nvtx3"],
+    }),
+)
+
+jetson_binary(
+    name = "jetson_encode_bench",
+    testonly = True,
+    binary = ":encode_bench",
+)
+
+py_test(
+    name = "jetson_linkage_test",
+    size = "small",
+    srcs = ["jetson_linkage_test.py"],
+    tags = ["no-sanitizers"],
+    args = [
+        "$(rootpath :jetson_encode_bench)",
+        "$(rootpath @llvm_toolchain_llvm//:bin/llvm-readelf)",
+    ],
+    data = [
+        ":jetson_encode_bench",
+        "@llvm_toolchain_llvm//:bin/llvm-readelf",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
     ],
 )
 
