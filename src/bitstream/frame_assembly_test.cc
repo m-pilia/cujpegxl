@@ -114,10 +114,11 @@ void check_reassembly(const FrameCoefficients& fc) {
 
     const std::vector<std::uint8_t> dc_global{build_dc_global(params_of(fc))};
     TokenCode code{};
-    AcGlobalBuilder builder{ac.clustering, ac_group_count(fc.width, fc.height), code};
+    AcGlobalBuilder builder{ac.clustering, ac.orders, ac_group_count(fc.width, fc.height), code};
     for (std::size_t c{0}; c < builder.num_clusters(); ++c) {
         builder.build_cluster(c);
     }
+    builder.build_coeff_orders();
     builder.build_context_map();
     const std::vector<std::uint8_t> ac_global{builder.finish()};
 

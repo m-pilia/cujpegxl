@@ -22,6 +22,7 @@
 #include <cuda_fp16.h>
 
 #include "ac_clustering.h"
+#include "coeff_order.h"
 #include "entropy.h"
 #include "frontend_fused.h"
 #include "frontend_quantize.h"
@@ -177,6 +178,8 @@ struct FrameBuffers {
     std::int32_t* dc{nullptr};
     std::int32_t* nz_exact{nullptr};
     std::int32_t* nz_grid{nullptr};
+    CoeffOrderStats* order_stats{nullptr};
+    CoeffOrders* coeff_orders{nullptr};
     std::uint32_t* context_hist{nullptr};
     std::uint8_t* cluster_scratch{nullptr};
     AcClustering* clustering{nullptr};
@@ -227,6 +230,8 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .dc = carver.take<std::int32_t>(3 * blocks),
         .nz_exact = carver.take<std::int32_t>(3 * blocks),
         .nz_grid = carver.take<std::int32_t>(3 * blocks),
+        .order_stats = carver.take<CoeffOrderStats>(1),
+        .coeff_orders = carver.take<CoeffOrders>(1),
         .context_hist = carver.take<std::uint32_t>(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET),
         .cluster_scratch = carver.take<std::uint8_t>(ac_cluster_scratch_bytes()),
         .clustering = carver.take<AcClustering>(1),
@@ -289,6 +294,7 @@ struct Slot {
     FrameBuffers device{};
     PinnedBuffer<QuantCalibration> calibration;
     PinnedBuffer<AcClustering> clustering;
+    PinnedBuffer<CoeffOrders> coeff_orders;
     PinnedBuffer<std::uint32_t> layout;
     PinnedBuffer<std::uint32_t> dc_sizes;
     PinnedBuffer<std::uint8_t> dc_body;
@@ -443,8 +449,8 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     ArenaCarver measure{0};
     carve_frame_buffers(measure, width, height);
     if (!slot.arena.reserve(measure.size()) || !slot.calibration.reserve(1) ||
-        !slot.clustering.reserve(1) || !slot.layout.reserve(layout_words) ||
-        !slot.dc_sizes.reserve(num_dc)) {
+        !slot.clustering.reserve(1) || !slot.coeff_orders.reserve(1) ||
+        !slot.layout.reserve(layout_words) || !slot.dc_sizes.reserve(num_dc)) {
         return false;
     }
     ArenaCarver carver{reinterpret_cast<std::uintptr_t>(slot.arena.data())};
@@ -468,7 +474,8 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
                          d.adaptive_field, d.field_histogram, d.quant_field, d.calibration,
                          slot.stream) ||
         !quantize_residual(d.coeffs, d.acs, d.quant_field, d.calibration, width, height, d.ytox_map,
-                           d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, slot.stream)) {
+                           d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, d.order_stats,
+                           slot.stream)) {
         return false;
     }
     if (slot.stats != nullptr) {
@@ -502,8 +509,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         return false;
     }
 
-    if (!ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height, d.context_hist,
-                            d.item_sizes, slot.stream) ||
+    if (!ac_coeff_orders(d.order_stats, d.coeff_orders, slot.stream) ||
+        !ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
+                            d.context_hist, d.item_sizes, slot.stream) ||
         !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
                          slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
@@ -511,6 +519,10 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
                         cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
         cudaMemcpyAsync(slot.clustering.data(), d.clustering, sizeof(AcClustering),
                         cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
+        // The host reads only the Lehmer codes of the orders.
+        cudaMemcpyAsync(slot.coeff_orders.data()->lehmer, d.coeff_orders->lehmer,
+                        sizeof(CoeffOrders::lehmer), cudaMemcpyDeviceToHost,
+                        slot.stream) != cudaSuccess ||
         cudaMemcpyAsync(slot.layout.data(), d.layout, layout_words * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
         cudaEventRecord(slot.layout_copied, slot.stream) != cudaSuccess) {
@@ -519,9 +531,10 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
         const std::size_t g0{batch_begin(num_ac, b)};
         const std::size_t g1{batch_begin(num_ac, b + 1)};
-        if ((g0 != g1 && !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, width, height,
-                                         d.clustering->context_map, d.item_sizes, d.chunk_base,
-                                         d.layout, g0, g1, d.entries, d.raw, slot.stream)) ||
+        if ((g0 != g1 &&
+             !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
+                             d.clustering->context_map, d.item_sizes, d.chunk_base, d.layout, g0,
+                             g1, d.entries, d.raw, slot.stream)) ||
             cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
             return false;
         }
@@ -668,7 +681,8 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     const std::uint32_t* const token_offset{slot.layout.data()};
     const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
     const std::uint32_t* const raw_bits{raw_offset + num_ac + 1};
-    bitstream::AcGlobalBuilder tables{*slot.clustering.data(), num_ac, code};
+    bitstream::AcGlobalBuilder tables{*slot.clustering.data(), *slot.coeff_orders.data(), num_ac,
+                                      code};
     streams.resize(num_ac);
     order.resize(num_ac);
     coded.assign(num_ac, bitstream::CodedStream{});
@@ -703,17 +717,21 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     EncodeResult result{ENCODE_FAILED};
     const std::size_t num_threads{pool.size()};
 
-    // All threads build the context map, the longest job, first and the
-    // clusters' ANS tables, then thread 0 completes the AcGlobal and releases the batches as their
-    // copies land, longest groups first, and fetches the DcGroups while the others code; once all
-    // are done it lays out the file, and every thread places a share of the AC groups.
+    // All threads build the context map, the longest job, first, the
+    // coefficient orders and the clusters' ANS tables, then thread 0 completes the AcGlobal and
+    // releases the batches as their copies land, longest groups first, and fetches the DcGroups
+    // while the others code; once all are done it lays out the file, and every thread places a
+    // share of the AC groups.
     pool.run([&](std::size_t t) {
         for (std::size_t c{next_table.fetch_add(1, std::memory_order_relaxed)};
-             c <= tables.num_clusters(); c = next_table.fetch_add(1, std::memory_order_relaxed)) {
+             c < tables.num_clusters() + 2;
+             c = next_table.fetch_add(1, std::memory_order_relaxed)) {
             if (c == 0) {
                 tables.build_context_map();
+            } else if (c == 1) {
+                tables.build_coeff_orders();
             } else {
-                tables.build_cluster(c - 1);
+                tables.build_cluster(c - 2);
             }
         }
         tables_done.fetch_add(1, std::memory_order_acq_rel);

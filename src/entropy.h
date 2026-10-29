@@ -11,6 +11,7 @@
 
 #include "ac_clustering.h"
 #include "ac_context.h"
+#include "coeff_order.h"
 #include "vardct_layout.h"
 
 namespace cujpegxl {
@@ -31,12 +32,17 @@ constexpr std::size_t AC_COEFFS_PER_BLOCK = 63;
 // including partial edge groups. width/height must be multiples of 8.
 std::size_t ac_num_groups(std::size_t width, std::size_t height);
 
+// Before the AC token coder: the frame's coefficient `orders` (device) from the
+// `stats` (device) of quantize_residual. Deterministic.
+bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStream_t stream);
+
 // Phase 1 of the AC token coder: accumulate the per-context AC symbol
 // histograms over every group. `ac` is the covered-block coefficient buffer
 // (device; three channel-major planes X, Y, B of (width/8 * height/8) *
 // COEFFS_PER_BLOCK int16) and `acs` the per-8x8 transform signal (nullptr = all
-// 8x8 blocks). Each first-block tokenizes order[covered..size) of its size
-// gathered via covered_plane_slot; covered blocks contribute nothing. `nz_exact`
+// 8x8 blocks). Each first-block tokenizes order[covered..size) of its size and
+// channel in the device `orders`, gathered via covered_plane_slot; covered
+// blocks contribute nothing. `nz_exact`
 // holds each first-block's non-zero count over order[covered..size), and
 // `nz_grid` that count normalized per covered 8x8 and broadcast to every covered
 // position (the neighbor-prediction input); both are device buffers of 3 *
@@ -48,9 +54,9 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height);
 // bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. Deterministic
 // (integer atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
-                        const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* context_histograms, std::uint64_t* item_sizes,
-                        cudaStream_t stream);
+                        const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
+                        std::size_t height, std::uint32_t* context_histograms,
+                        std::uint64_t* item_sizes, cudaStream_t stream);
 
 std::size_t ac_cluster_scratch_bytes();
 
@@ -92,11 +98,11 @@ bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::si
 // `context_map` (device, AC_NUM_CONTEXTS) is the AcClustering's. The other
 // inputs are those of phases 1 and 3. Deterministic.
 bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
-                    const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                    const std::uint8_t* context_map, const std::uint64_t* item_sizes,
-                    const std::uint64_t* chunk_base, const std::uint32_t* layout,
-                    std::size_t group_begin, std::size_t group_end, std::uint16_t* entries,
-                    std::uint64_t* raw, cudaStream_t stream);
+                    const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
+                    std::size_t height, const std::uint8_t* context_map,
+                    const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
+                    const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
+                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

@@ -4,10 +4,12 @@
 #include "frontend_quantize.h"
 
 #include <cmath>
+#include <cstddef>
 
 #include <cuda_runtime.h>
 
 #include "cfl.h"
+#include "coeff_order.h"
 #include "dequant_weight_pairs.h"
 #include "exact_div.cuh"
 #include "quant_calibration.h"
@@ -107,6 +109,18 @@ static_assert(TILE_POSITIONS % QUANT_WARPS == 0 && TILE_VECTORS % QUANT_THREADS 
 // One CfL partial-sum thread per slot and tile row.
 static_assert(QUANT_THREADS == TILE_SIDE * BLOCK_SLOTS);
 
+// A thread's quantized coefficients are two slots of QUANT_STEPS positions per
+// channel; bit nonzero_bit(c, k, j) of its mask flags slot j of step k non-zero.
+__device__ inline std::uint32_t nonzero_bit(std::uint32_t c, std::uint32_t k, std::uint32_t j) {
+    return std::uint32_t{1} << ((c * QUANT_STEPS + k) * 2 + j);
+}
+
+constexpr std::uint32_t ORDER_STATS_WORDS = sizeof(CoeffOrderStats) / sizeof(std::uint32_t);
+constexpr std::uint32_t ORDER_STATS_VECTORS = (ORDER_STATS_WORDS + 3) / 4;
+static_assert(3 * QUANT_STEPS * 2 <= 32);
+static_assert(ORDER_STATS_VECTORS * sizeof(uint4) <= 3 * TILE_SLOTS * sizeof(__half),
+              "the tile's order statistics reuse its coefficient buffer");
+
 // A thread's share of a tile's coefficients, loaded into registers in one batch
 // so that all global loads are in flight before the shared-memory store.
 // Threads below TILE_POSITIONS also carry the signals of their position.
@@ -185,6 +199,8 @@ struct TilePosition {
 // - Each position derives its DC from its transform's LLF corner in the staged
 //   tile and quantizes it.
 // - X and B are quantized against the tile's color map.
+// - The non-zero counts per transform position (CoeffOrderStats) are summed in
+//   the coefficient buffer, free by then, and added to `order_stats`.
 // A warp quantizes the 64 slots of one position per step (two per lane), so
 // the non-zero counts of a step all go to one first-block.
 __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
@@ -195,7 +211,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
                          const QuantCalibration* __restrict__ calibration,
                          std::int8_t* __restrict__ ytox_map, std::int8_t* __restrict__ ytob_map,
                          std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc,
-                         std::int32_t* __restrict__ nz_exact, std::int32_t* __restrict__ nz_grid) {
+                         std::int32_t* __restrict__ nz_exact, std::int32_t* __restrict__ nz_grid,
+                         CoeffOrderStats* __restrict__ order_stats) {
     __shared__ __align__(16) __half tile_coeffs[3][TILE_SLOTS];
     __shared__ std::uint64_t tile_llf_mask[TILE_POSITIONS];
     // The owner's quantizer strength and its reciprocal.
@@ -322,6 +339,7 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     }
 
     float y_round[QUANT_STEPS][2];
+    std::uint32_t nonzero_mask{0};
 #pragma unroll
     for (std::uint32_t k{0}; k < QUANT_STEPS; ++k) {
         const std::uint32_t p{k * QUANT_WARPS + warp};
@@ -344,6 +362,7 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
                                                    ac_deadzone_threshold(at_pos.side, 1, raw))};
                 y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
                 qy[j] = static_cast<std::int16_t>(qy_int);
+                nonzero_mask |= qy_int != 0 ? nonzero_bit(1, k, j) : 0u;
             }
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
@@ -408,6 +427,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
                 qb[j] = static_cast<std::int16_t>(quantize_deadzone(
                     div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight),
                     threshold));
+                nonzero_mask |= (qx[j] != 0 ? nonzero_bit(0, k, j) : 0u) |
+                                (qb[j] != 0 ? nonzero_bit(2, k, j) : 0u);
             }
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
@@ -427,6 +448,12 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     }
     __syncthreads();
 
+    std::uint32_t* const stats{reinterpret_cast<std::uint32_t*>(&tile_coeffs[0][0])};
+    for (std::uint32_t v{tid}; v < ORDER_STATS_VECTORS; v += QUANT_THREADS) {
+        reinterpret_cast<uint4*>(stats)[v] = make_uint4(0, 0, 0, 0);
+    }
+    const bool first_block{tid < TILE_POSITIONS && tid % TILE_SIDE < cols &&
+                           tid / TILE_SIDE < rows && pos.owner == tid};
     if (tid < TILE_POSITIONS && tid % TILE_SIDE < cols && tid / TILE_SIDE < rows) {
         const std::uint32_t m{static_cast<std::uint32_t>(pos.side) / 8};
         const std::uint32_t covered{m * m};
@@ -434,8 +461,32 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         const std::uint32_t blk{(tile_by + tid / TILE_SIDE) * bw + tile_bx + tid % TILE_SIDE};
         for (std::uint32_t c{0}; c < 3; ++c) {
             const std::uint32_t nz{static_cast<std::uint32_t>(tile_nz[c][pos.owner])};
-            nz_exact[c * nblk + blk] = pos.owner == tid ? static_cast<std::int32_t>(nz) : 0;
+            nz_exact[c * nblk + blk] = first_block ? static_cast<std::int32_t>(nz) : 0;
             nz_grid[c * nblk + blk] = static_cast<std::int32_t>((nz + covered - 1) >> log2_covered);
+        }
+    }
+    __syncthreads();
+
+    if (first_block) {
+        atomicAdd(&stats[offsetof(CoeffOrderStats, blocks) / sizeof(std::uint32_t) +
+                         coeff_order_side_index(pos.side)],
+                  1u);
+    }
+    for (std::uint32_t bits{nonzero_mask}; bits != 0; bits &= bits - 1) {
+        const auto b{static_cast<std::uint32_t>(__ffs(static_cast<int>(bits)) - 1)};
+        const std::uint32_t c{b / (2 * QUANT_STEPS)};
+        const TilePosition at_pos{tile_pos[(b / 2) % QUANT_STEPS * QUANT_WARPS + warp]};
+        atomicAdd(&stats[coeff_order_offset(at_pos.side, static_cast<int>(c)) +
+                         at_pos.covered_ordinal * BLOCK_SLOTS + 2 * lane + b % 2],
+                  1u);
+    }
+    __syncthreads();
+
+    auto* const order_stats_words{reinterpret_cast<std::uint32_t*>(order_stats)};
+    for (std::uint32_t w{tid}; w < ORDER_STATS_WORDS; w += QUANT_THREADS) {
+        const std::uint32_t count{stats[w]};
+        if (count != 0) {
+            atomicAdd(&order_stats_words[w], count);
         }
     }
 }
@@ -446,7 +497,8 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
                        const std::int32_t* quant_field, const QuantCalibration* calibration,
                        std::size_t width, std::size_t height, std::int8_t* ytox_map,
                        std::int8_t* ytob_map, std::int16_t* ac, std::int32_t* dc,
-                       std::int32_t* nz_exact, std::int32_t* nz_grid, cudaStream_t stream) {
+                       std::int32_t* nz_exact, std::int32_t* nz_grid, CoeffOrderStats* order_stats,
+                       cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const LlfDcTerms* dc_terms{llf_dc_terms_device()};
@@ -455,10 +507,13 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
     }
     const std::uint32_t tiles_x{static_cast<std::uint32_t>(ceil_div(bw, TILE_SIDE))};
     const std::uint32_t tiles{tiles_x * static_cast<std::uint32_t>(ceil_div(bh, TILE_SIDE))};
+    if (cudaMemsetAsync(order_stats, 0, sizeof(CoeffOrderStats), stream) != cudaSuccess) {
+        return false;
+    }
     quantize_tile_kernel<<<tiles, QUANT_THREADS, 0, stream>>>(
         coeffs, acs, quant_field, dc_terms, static_cast<std::uint32_t>(bw),
         static_cast<std::uint32_t>(bh), tiles_x, calibration, ytox_map, ytob_map, ac, dc, nz_exact,
-        nz_grid);
+        nz_grid, order_stats);
     return cudaGetLastError() == cudaSuccess;
 }
 

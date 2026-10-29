@@ -41,6 +41,7 @@ cc_library(
     deps = [
         "//src:ac_clustering",
         "//src:ac_context",
+        "//src:coeff_order",
         "//src:dc_predict",
     ],
 )
@@ -73,6 +74,7 @@ cc_test(
         ":token_stream_reference",
         "//src:ac_clustering",
         "//src:ac_context",
+        "//src:coeff_order",
         "@googletest//:gtest_main",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
@@ -99,6 +101,7 @@ cc_library(
         ":bitstream",
         "//src:ac_clustering",
         "//src:ac_context",
+        "//src:coeff_order",
         "//src:dc_predict",
         "//src:vardct_layout",
     ],

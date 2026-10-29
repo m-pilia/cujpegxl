@@ -953,14 +953,11 @@ CUJPEGXL_BS_HD void write_acmeta_modular_header(W& w, const std::uint32_t* data_
     }
 }
 
-// Leading AcGlobal fields: DequantMatrices all_default, num_histograms,
-// used_orders.
+// Leading AcGlobal fields: DequantMatrices all_default, num_histograms.
 template <typename W>
 CUJPEGXL_BS_HD void serialize_ac_global_head(W& w, std::size_t num_ac_groups) {
-    constexpr U32Enc order_enc{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
     write_bool(w, true);                                 // DequantMatrices::Decode all_default
     write_bits(w, ceil_log2_nonzero(num_ac_groups), 0);  // num_histograms - 1
-    write_u32(w, order_enc, 0);                          // used_orders = 0 (natural)
 }
 
 // DcGroup pre-blob: extra_precision + the VarDCTDC modular header (Gradient).

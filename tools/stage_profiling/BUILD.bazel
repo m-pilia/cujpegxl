@@ -13,6 +13,7 @@ cc_binary(
     deps = [
         "//src:ac_clustering",
         "//src:ac_context",
+        "//src:coeff_order",
         "//src:entropy",
         "//src:frame_encoder",
         "//src:frontend_fused",

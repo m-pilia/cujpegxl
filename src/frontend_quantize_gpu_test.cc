@@ -3,9 +3,11 @@
 
 #include "frontend_quantize.h"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <random>
 #include <vector>
 
@@ -14,6 +16,8 @@
 #include <gtest/gtest.h>
 
 #include "cfl.h"
+#include "coeff_order.h"
+#include "coeff_order_reference.h"
 #include "quant_calibration.h"
 #include "quant_weights_dct16.h"
 #include "quant_weights_dct32.h"
@@ -109,6 +113,7 @@ struct Quantized {
     std::vector<std::int32_t> dc;
     std::vector<std::int32_t> nz_exact;
     std::vector<std::int32_t> nz_grid;
+    CoeffOrderStats order_stats;
 };
 
 template <typename T>
@@ -139,21 +144,24 @@ std::vector<T> download(const T* device, std::size_t count) {
     std::int32_t* d_dc{nullptr};
     std::int32_t* d_nz_exact{nullptr};
     std::int32_t* d_nz_grid{nullptr};
+    CoeffOrderStats* d_order_stats{nullptr};
     cudaMalloc(&d_mx, CMW * CMH * sizeof(std::int8_t));
     cudaMalloc(&d_mb, CMW * CMH * sizeof(std::int8_t));
     cudaMalloc(&d_ac, 3 * CPLANE * sizeof(std::int16_t));
     cudaMalloc(&d_dc, 3 * NBLK * sizeof(std::int32_t));
     cudaMalloc(&d_nz_exact, 3 * NBLK * sizeof(std::int32_t));
     cudaMalloc(&d_nz_grid, 3 * NBLK * sizeof(std::int32_t));
+    cudaMalloc(&d_order_stats, sizeof(CoeffOrderStats));
 
     const bool ok{quantize_residual(d_coeffs, d_acs, d_qf, d_calibration, WIDTH, HEIGHT, d_mx, d_mb,
-                                    d_ac, d_dc, d_nz_exact, d_nz_grid, nullptr)};
+                                    d_ac, d_dc, d_nz_exact, d_nz_grid, d_order_stats, nullptr)};
     out.ytox_map = download(d_mx, CMW * CMH);
     out.ytob_map = download(d_mb, CMW * CMH);
     out.ac = download(d_ac, 3 * CPLANE);
     out.dc = download(d_dc, 3 * NBLK);
     out.nz_exact = download(d_nz_exact, 3 * NBLK);
     out.nz_grid = download(d_nz_grid, 3 * NBLK);
+    out.order_stats = download(d_order_stats, 1)[0];
 
     cudaFree(d_coeffs);
     cudaFree(d_acs);
@@ -165,6 +173,7 @@ std::vector<T> download(const T* device, std::size_t count) {
     cudaFree(d_dc);
     cudaFree(d_nz_exact);
     cudaFree(d_nz_grid);
+    cudaFree(d_order_stats);
     return ok && cudaDeviceSynchronize() == cudaSuccess;
 }
 
@@ -396,6 +405,27 @@ TEST(FrontendQuantize, QuantizeResidualCountsNonzeros) {
         }
     }
     EXPECT_GT(nonzero_blocks, 0u);
+}
+
+// The order statistics count every first-block per side and every non-zero
+// quantized AC coefficient per side, channel and position.
+TEST(FrontendQuantize, QuantizeResidualCountsOrderStatistics) {
+    const Frame f{make_frame()};
+    Quantized q{};
+    ASSERT_TRUE(quantize(f, q));
+    const std::vector<std::int32_t> ac(q.ac.begin(), q.ac.end());
+    const CoeffOrderStats expected{coeff_order_stats_reference(
+        {ac.data(), ac.data() + CPLANE, ac.data() + 2 * CPLANE}, f.acs.data(), BW, BH)};
+    EXPECT_EQ(std::vector<std::uint32_t>(std::begin(q.order_stats.blocks),
+                                         std::end(q.order_stats.blocks)),
+              std::vector<std::uint32_t>(std::begin(expected.blocks), std::end(expected.blocks)));
+    EXPECT_EQ(
+        std::vector<std::uint32_t>(std::begin(q.order_stats.nonzeros),
+                                   std::end(q.order_stats.nonzeros)),
+        std::vector<std::uint32_t>(std::begin(expected.nonzeros), std::end(expected.nonzeros)));
+    for (std::uint32_t blocks : expected.blocks) {
+        EXPECT_GT(blocks, 0u);
+    }
 }
 
 }  // namespace

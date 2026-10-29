@@ -36,6 +36,7 @@ cc_library(
         "//src:ac_clustering_reference",
         "//src:ac_context",
         "//src:coeff_order",
+        "//src:coeff_order_reference",
         "//src:vardct_layout",
         "//src/bitstream",
         "//src/bitstream:frame_assembly",

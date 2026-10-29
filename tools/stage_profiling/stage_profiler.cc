@@ -46,6 +46,7 @@
 #include "src/bitstream/container.h"
 #include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/token_stream.h"
+#include "src/coeff_order.h"
 #include "src/entropy.h"
 #include "src/frame_encoder.h"
 #include "src/frontend_fused.h"
@@ -187,6 +188,8 @@ int main(int argc, char** argv) {
     std::int32_t* d_dc32{device_alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_nz_grid{device_alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_nz_exact{device_alloc<std::int32_t>(3 * blocks)};
+    CoeffOrderStats* d_order_stats{device_alloc<CoeffOrderStats>(1)};
+    CoeffOrders* d_coeff_orders{device_alloc<CoeffOrders>(1)};
     std::uint32_t* d_context_hist{
         device_alloc<std::uint32_t>(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET)};
     std::uint8_t* d_cluster_scratch{device_alloc<std::uint8_t>(ac_cluster_scratch_bytes())};
@@ -224,6 +227,7 @@ int main(int argc, char** argv) {
     std::uint8_t* d_dc_scratch{device_alloc<std::uint8_t>(dc_encode_scratch_bytes(width, height))};
 
     AcClustering* h_clustering{pinned_alloc<AcClustering>(1)};
+    CoeffOrders* h_coeff_orders{pinned_alloc<CoeffOrders>(1)};
     std::uint32_t* h_layout{pinned_alloc<std::uint32_t>(layout_words)};
     std::uint16_t* h_entries{pinned_alloc<std::uint16_t>(ac_max_tokens(width, height))};
     std::uint64_t* h_raw{pinned_alloc<std::uint64_t>(ac_max_raw_words(width, height) + 1)};
@@ -238,6 +242,7 @@ int main(int argc, char** argv) {
 
     Stage s_fe{"frontend_fused"};
     Stage s_qz{"quantize_residual"};
+    Stage s_aco{"ac_coeff_orders"};
     Stage s_ach{"ac_build_histogram"};
     Stage s_acl{"ac_token_layout"};
     Stage s_acc_cluster{"ac_cluster_contexts"};
@@ -276,15 +281,16 @@ int main(int argc, char** argv) {
         });
         timed(s_qz, record, [&] {
             quantize_residual(d_coeffs, d_acs, d_qf, d_calibration, width, height, d_mx, d_mb,
-                              d_ac16, d_dc32, d_nz_exact, d_nz_grid, nullptr);
+                              d_ac16, d_dc32, d_nz_exact, d_nz_grid, d_order_stats, nullptr);
         });
         QuantCalibration calibration{};
         cudaMemcpy(&calibration, d_calibration, sizeof(QuantCalibration), cudaMemcpyDeviceToHost);
 
         // Entropy sub-stages, serialized.
+        timed(s_aco, record, [&] { ac_coeff_orders(d_order_stats, d_coeff_orders, nullptr); });
         timed(s_ach, record, [&] {
-            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height, d_context_hist,
-                               d_item_sizes, nullptr);
+            ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
+                               d_context_hist, d_item_sizes, nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
@@ -294,12 +300,14 @@ int main(int argc, char** argv) {
             ac_cluster_contexts(d_context_hist, d_cluster_scratch, d_clustering, nullptr);
         });
         timed(s_acp, record, [&] {
-            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, width, height,
+            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
                            d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, 0,
                            num_ac, d_entries, d_raw, nullptr);
         });
         timed(s_act, record, [&] {
             cudaMemcpy(h_clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_coeff_orders->lehmer, d_coeff_orders->lehmer, sizeof(CoeffOrders::lehmer),
+                       cudaMemcpyDeviceToHost);
             cudaMemcpy(h_layout, d_layout, layout_words * sizeof(std::uint32_t),
                        cudaMemcpyDeviceToHost);
             cudaMemcpy(h_entries, d_entries, token_offset[num_ac] * sizeof(std::uint16_t),
@@ -341,15 +349,17 @@ int main(int argc, char** argv) {
 
         std::vector<std::uint8_t> ac_global;
         timed(s_acg, record, [&] {
-            bitstream::AcGlobalBuilder tables{*h_clustering, num_ac, code};
+            bitstream::AcGlobalBuilder tables{*h_clustering, *h_coeff_orders, num_ac, code};
             std::atomic<std::size_t> next{0};
             workers.run([&](std::size_t) {
-                for (std::size_t c{next.fetch_add(1)}; c <= tables.num_clusters();
+                for (std::size_t c{next.fetch_add(1)}; c < tables.num_clusters() + 2;
                      c = next.fetch_add(1)) {
                     if (c == 0) {
                         tables.build_context_map();
+                    } else if (c == 1) {
+                        tables.build_coeff_orders();
                     } else {
-                        tables.build_cluster(c - 1);
+                        tables.build_cluster(c - 2);
                     }
                 }
             });
@@ -418,9 +428,9 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_qz,  &s_ach, &s_acl, &s_acc_cluster, &s_acp,
-                          &s_act, &s_dch, &s_amh, &s_fbc, &s_dcb,         &s_dcg,
-                          &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_aco, &s_ach, &s_acl, &s_acc_cluster,
+                          &s_acp, &s_act, &s_dch, &s_amh, &s_fbc, &s_dcb,
+                          &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {

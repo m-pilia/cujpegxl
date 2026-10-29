@@ -19,6 +19,7 @@
 #include "src/bitstream/token_stream.h"
 #include "src/bitstream/token_stream_reference.h"
 #include "src/coeff_order.h"
+#include "src/coeff_order_reference.h"
 #include "src/vardct_layout.h"
 
 #include "modular.h"
@@ -117,11 +118,10 @@ int block_side(const FrameCoefficients& fc, std::size_t blk) {
     return fc.acs.empty() ? 8 : fc.acs[blk];
 }
 
-const std::vector<std::uint32_t>& natural_order_for(int side) {
-    static const std::vector<std::uint32_t> o8{natural_coeff_order(8)};
-    static const std::vector<std::uint32_t> o16{natural_coeff_order(16)};
-    static const std::vector<std::uint32_t> o32{natural_coeff_order(32)};
-    return side == 16 ? o16 : (side == 32 ? o32 : o8);
+CoeffOrders frame_coeff_orders(const FrameCoefficients& fc, std::size_t bw, std::size_t bh) {
+    return coeff_orders_reference(
+        coeff_order_stats_reference({fc.ac[0].data(), fc.ac[1].data(), fc.ac[2].data()},
+                                    fc.acs.empty() ? nullptr : fc.acs.data(), bw, bh));
 }
 
 // AcMetadata channels for a DC group covering dgw x dgh blocks at block origin
@@ -184,14 +184,15 @@ std::size_t log2_covered(int side) {
     return side == 16 ? 2 : (side == 32 ? 4 : 0);
 }
 
-// Tokenizes one AC group with libjxl's real per-token contexts, appending the
-// (context, symbol, extra-bits) tuples to `out` and accumulating the per-context
-// symbol histograms. The context math mirrors dec_group.cc DecodeACVarBlock: a
-// group-local normalized non-zero grid drives the non-zero-count prediction, and
-// each coefficient's zero-density context follows the scan.
-void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, std::size_t bx0,
-                                 std::size_t by0, std::size_t gbw, std::size_t gbh,
-                                 std::vector<std::uint32_t>& context_hist,
+// Tokenizes one AC group in the coefficient `orders` with libjxl's real
+// per-token contexts, appending the (context, symbol, extra-bits) tuples to
+// `out` and accumulating the per-context symbol histograms. The context math
+// mirrors dec_group.cc DecodeACVarBlock: a group-local normalized non-zero grid
+// drives the non-zero-count prediction, and each coefficient's zero-density
+// context follows the scan.
+void tokenize_ac_group_clustered(const FrameCoefficients& fc, const CoeffOrders& orders,
+                                 std::size_t bw, std::size_t bx0, std::size_t by0, std::size_t gbw,
+                                 std::size_t gbh, std::vector<std::uint32_t>& context_hist,
                                  std::vector<AcTok>& out) {
     const int channel_order[3]{1, 0, 2};  // physical planes Y, X, B
     const HybridUintConfig config{};
@@ -212,8 +213,8 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
             const std::size_t cb{cx * cx};
             const std::size_t sz{static_cast<std::size_t>(side) * side};
             const std::size_t l2{log2_covered(side)};
-            const std::vector<std::uint32_t>& order{natural_order_for(side)};
             for (int c : channel_order) {
+                const std::uint16_t* const order{orders.order + coeff_order_offset(side, c)};
                 std::int32_t nz{0};
                 for (std::size_t k{cb}; k < sz; ++k) {
                     if (fc.ac[c][covered_plane_slot(side, bx0 + sbx, by0 + sby, bw, order[k])] !=
@@ -251,8 +252,8 @@ void tokenize_ac_group_clustered(const FrameCoefficients& fc, std::size_t bw, st
             const std::size_t sz{static_cast<std::size_t>(side) * side};
             const std::uint32_t l2{static_cast<std::uint32_t>(log2_covered(side))};
             const int ord{ac_strategy_order(side)};
-            const std::vector<std::uint32_t>& order{natural_order_for(side)};
             for (int c : channel_order) {
+                const std::uint16_t* const order{orders.order + coeff_order_offset(side, c)};
                 std::uint32_t nzeros{0};
                 for (std::size_t k{cb}; k < sz; ++k) {
                     if (fc.ac[c][covered_plane_slot(side, gbx, gby, bw, order[k])] != 0) {
@@ -304,7 +305,7 @@ void emit_ac_tokens(BitWriter& w, const std::vector<AcTok>& toks, std::size_t be
 // Tokenizes every AC group in raster order, returning each group's [begin, end)
 // range into `toks`.
 std::vector<std::pair<std::size_t, std::size_t>> tokenize_all_ac_groups(
-    const FrameCoefficients& fc, std::size_t bw, std::size_t bh,
+    const FrameCoefficients& fc, const CoeffOrders& orders, std::size_t bw, std::size_t bh,
     std::vector<std::uint32_t>& context_hist, std::vector<AcTok>& toks) {
     const std::size_t xg{ceil_div(bw, AC_GROUP_BLOCKS)};
     const std::size_t yg{ceil_div(bh, AC_GROUP_BLOCKS)};
@@ -315,7 +316,7 @@ std::vector<std::pair<std::size_t, std::size_t>> tokenize_all_ac_groups(
         const std::size_t gbw{std::min(AC_GROUP_BLOCKS, bw - bx0)};
         const std::size_t gbh{std::min(AC_GROUP_BLOCKS, bh - by0)};
         const std::size_t begin{toks.size()};
-        tokenize_ac_group_clustered(fc, bw, bx0, by0, gbw, gbh, context_hist, toks);
+        tokenize_ac_group_clustered(fc, orders, bw, bx0, by0, gbw, gbh, context_hist, toks);
         ranges[g] = {begin, toks.size()};
     }
     return ranges;
@@ -363,9 +364,11 @@ std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients&
     write_bool(body, true);  // DequantMatrices::Decode all_default
     // num_histograms: CeilLog2Nonzero(num_groups == 1) == 0 bits.
     write_u32(body, ORDER_ENC, 0);  // used_orders = 0 (natural order)
+    // Without statistics every position has the same key: the natural orders.
+    const CoeffOrders natural{coeff_orders_reference(CoeffOrderStats{})};
     std::vector<std::uint32_t> context_hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
     std::vector<AcTok> toks{};
-    tokenize_ac_group_clustered(fc, bw, 0, 0, bw, bh, context_hist, toks);
+    tokenize_ac_group_clustered(fc, natural, bw, 0, 0, bw, bh, context_hist, toks);
     const AcClustering clustering{cluster_ac_contexts_reference(context_hist.data())};
     std::vector<std::uint8_t> depth{};
     std::vector<std::uint16_t> bits{};
@@ -386,10 +389,11 @@ std::vector<std::uint8_t> write_single_group_codestream(const FrameCoefficients&
 // coded with the AcGlobal code of the frame's context clustering.
 AcReference build_ac_reference(const FrameCoefficients& fc, std::size_t bw, std::size_t bh) {
     AcReference ref{};
+    ref.orders = frame_coeff_orders(fc, bw, bh);
     ref.context_histograms.assign(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
     std::vector<AcTok> toks{};
     const std::vector<std::pair<std::size_t, std::size_t>> ranges{
-        tokenize_all_ac_groups(fc, bw, bh, ref.context_histograms, toks)};
+        tokenize_all_ac_groups(fc, ref.orders, bw, bh, ref.context_histograms, toks)};
     ref.clustering = cluster_ac_contexts_reference(ref.context_histograms.data());
     for (const auto& range : ranges) {
         std::vector<std::uint16_t> entries{};
@@ -413,10 +417,11 @@ AcReference build_ac_reference(const FrameCoefficients& fc, std::size_t bw, std:
         ref.group_raw_bits.push_back(raw_bits);
     }
     TokenCode code{};
-    AcGlobalBuilder builder{ref.clustering, ranges.size(), code};
+    AcGlobalBuilder builder{ref.clustering, ref.orders, ranges.size(), code};
     for (std::size_t c{0}; c < builder.num_clusters(); ++c) {
         builder.build_cluster(c);
     }
+    builder.build_coeff_orders();
     builder.build_context_map();
     ref.ac_global = builder.finish();
     for (std::size_t g{0}; g < ranges.size(); ++g) {

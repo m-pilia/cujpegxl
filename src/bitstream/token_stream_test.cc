@@ -28,11 +28,13 @@
 #include "serialize_impl.h"
 #include "src/ac_clustering.h"
 #include "src/ac_context.h"
+#include "src/coeff_order.h"
 #include "token_stream_reference.h"
 
 #include "lib/jxl/base/span.h"
 #include "lib/jxl/dec_ans.h"
 #include "lib/jxl/dec_bit_reader.h"
+#include "lib/jxl/fields.h"
 
 namespace cujpegxl::bitstream {
 namespace {
@@ -152,6 +154,8 @@ void decode_with_libjxl(const std::vector<std::uint8_t>& ac_global, const Stream
     JxlMemoryManager mm{nullptr, &test_alloc, &test_free};
     jxl::BitReader hbr{jxl::Bytes(ac_global.data(), ac_global.size())};
     hbr.SkipBits(head.bits_written());
+    const jxl::U32Enc used_orders_enc{jxl::Val(0x5F), jxl::Val(0x13), jxl::Val(0), jxl::Bits(13)};
+    ASSERT_EQ(jxl::U32Coder::Read(used_orders_enc, &hbr), 0u);
     jxl::ANSCode ans_code{};
     std::vector<std::uint8_t> map{};
     ASSERT_TRUE(jxl::DecodeHistograms(&mm, &hbr, AC_NUM_CONTEXTS, &ans_code, &map));
@@ -180,8 +184,10 @@ void decode_with_libjxl(const std::vector<std::uint8_t>& ac_global, const Stream
 void check_streams(std::vector<std::vector<Token>> tokens, bool expect_prefix) {
     const Streams s{prepare(std::move(tokens))};
     TokenCode code{};
-    AcGlobalBuilder builder{s.clustering, s.streams.size(), code};
+    const CoeffOrders natural{};
+    AcGlobalBuilder builder{s.clustering, natural, s.streams.size(), code};
     builder.build_context_map();
+    builder.build_coeff_orders();
     for (std::size_t c{builder.num_clusters()}; c > 0; --c) {
         builder.build_cluster(c - 1);
     }

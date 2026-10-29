@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include "ac_clustering.h"
+#include "coeff_order_reference.h"
 #include "entropy.h"
 #include "vardct_layout.h"
 
@@ -90,9 +91,15 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     }
 
     const NonzeroCounts nz{nonzero_counts(ac, acs, width / 8, height / 8)};
+    const std::size_t plane{q.size() / 3};
+    const CoeffOrderStats stats{
+        coeff_order_stats_reference({q.data(), q.data() + plane, q.data() + 2 * plane},
+                                    acs.empty() ? nullptr : acs.data(), width / 8, height / 8)};
 
     std::int16_t* d_ac{nullptr};
     std::int8_t* d_acs{nullptr};
+    CoeffOrderStats* d_stats{nullptr};
+    CoeffOrders* d_orders{nullptr};
     std::uint32_t* d_hist{nullptr};
     std::uint8_t* d_cluster_scratch{nullptr};
     AcClustering* d_clustering{nullptr};
@@ -106,6 +113,10 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     std::uint64_t* d_raw{nullptr};
 
     bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) &&
+            cudaMalloc(&d_stats, sizeof(CoeffOrderStats)) == cudaSuccess &&
+            cudaMemcpy(d_stats, &stats, sizeof(CoeffOrderStats), cudaMemcpyHostToDevice) ==
+                cudaSuccess &&
+            cudaMalloc(&d_orders, sizeof(CoeffOrders)) == cudaSuccess &&
             cudaMalloc(&d_hist, AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET * sizeof(std::uint32_t)) ==
                 cudaSuccess &&
             cudaMalloc(&d_cluster_scratch, ac_cluster_scratch_bytes()) == cudaSuccess &&
@@ -124,19 +135,24 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
             cudaMemset(d_raw, 0xA5, ac_max_raw_words(width, height) * sizeof(std::uint64_t)) ==
                 cudaSuccess};
 
-    ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height, d_hist,
-                                  d_item_sizes, nullptr);
+    ok = ok && ac_coeff_orders(d_stats, d_orders, nullptr);
+    ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, d_orders, width, height,
+                                  d_hist, d_item_sizes, nullptr);
     ok = ok && ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base,
                                d_layout, nullptr);
     ok = ok && ac_cluster_contexts(d_hist, d_cluster_scratch, d_clustering, nullptr);
     for (std::size_t b{0}; ok && b < batches; ++b) {
         const std::size_t begin{b * num_groups / batches};
         const std::size_t end{(b + 1) * num_groups / batches};
-        ok = begin == end || ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, width, height,
-                                            d_clustering->context_map, d_item_sizes, d_chunk_base,
-                                            d_layout, begin, end, d_entries, d_raw, nullptr);
+        ok = begin == end ||
+             ac_pack_tokens(d_ac, d_acs, d_nz_grid, d_nz_exact, d_orders, width, height,
+                            d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, begin,
+                            end, d_entries, d_raw, nullptr);
     }
-    ok = ok && download(d_hist, AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, out.context_histograms) &&
+    ok = ok &&
+         cudaMemcpy(&out.orders, d_orders, sizeof(CoeffOrders), cudaMemcpyDeviceToHost) ==
+             cudaSuccess &&
+         download(d_hist, AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, out.context_histograms) &&
          cudaMemcpy(&out.clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost) ==
              cudaSuccess &&
          download(d_layout, layout_words, out.layout) &&
@@ -145,6 +161,8 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
 
     cudaFree(d_ac);
     cudaFree(d_acs);
+    cudaFree(d_stats);
+    cudaFree(d_orders);
     cudaFree(d_hist);
     cudaFree(d_cluster_scratch);
     cudaFree(d_clustering);
@@ -156,6 +174,21 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     cudaFree(d_layout);
     cudaFree(d_entries);
     cudaFree(d_raw);
+    return ok;
+}
+
+bool ac_coeff_orders_device(const CoeffOrderStats& stats, CoeffOrders& out) {
+    CoeffOrderStats* d_stats{nullptr};
+    CoeffOrders* d_orders{nullptr};
+    const bool ok{cudaMalloc(&d_stats, sizeof(CoeffOrderStats)) == cudaSuccess &&
+                  cudaMemcpy(d_stats, &stats, sizeof(CoeffOrderStats), cudaMemcpyHostToDevice) ==
+                      cudaSuccess &&
+                  cudaMalloc(&d_orders, sizeof(CoeffOrders)) == cudaSuccess &&
+                  ac_coeff_orders(d_stats, d_orders, nullptr) &&
+                  cudaMemcpy(&out, d_orders, sizeof(CoeffOrders), cudaMemcpyDeviceToHost) ==
+                      cudaSuccess};
+    cudaFree(d_stats);
+    cudaFree(d_orders);
     return ok;
 }
 

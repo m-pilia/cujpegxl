@@ -4,7 +4,6 @@
 #include "entropy.h"
 
 #include <mutex>
-#include <utility>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -28,54 +27,23 @@ constexpr std::uint32_t LSB_IN_TOKEN = 0;
 // planes 0=X, 1=Y, 2=B.
 __constant__ int CHANNEL_ORDER[3]{1, 0, 2};
 
-// order[k] = libjxl-raster index of the k-th coefficient in the square DCT scan
-// order, per transform size. NATURAL_ORDER is the 8x8 table; the DCT16/DCT32
-// tables drive the larger blocks of the mixed-block tokenizer. Global rather
-// than __constant__: the warp tokenizer indexes them with a different k per
-// lane, which the constant cache would serialize.
-__device__ std::uint32_t NATURAL_ORDER[64];
+// order[k] = libjxl-raster index of the k-th coefficient in the natural order,
+// per transform size.
+__device__ std::uint32_t NATURAL_ORDER_8[64];
 __device__ std::uint32_t NATURAL_ORDER_16[256];
 __device__ std::uint32_t NATURAL_ORDER_32[1024];
 
 __device__ std::int32_t AC_LOG2_TABLE[AC_LOG2_TABLE_SIZE + 1];
 
 __device__ const std::uint32_t* natural_order_dev(int side) {
-    return side == 16 ? NATURAL_ORDER_16 : (side == 32 ? NATURAL_ORDER_32 : NATURAL_ORDER);
-}
-
-void compute_natural_order(std::uint32_t out[64]) {
-    constexpr std::size_t dim{8};
-    std::size_t cur{1};
-    for (std::size_t i{0}; i < dim; ++i) {
-        for (std::size_t j{0}; j <= i; ++j) {
-            std::size_t x{j};
-            std::size_t y{i - j};
-            if (i & 1) {
-                std::swap(x, y);
-            }
-            const std::size_t val{(x < 1 && y < 1) ? 0 : cur++};
-            out[val] = static_cast<std::uint32_t>(y * dim + x);
-        }
-    }
-    for (std::size_t ip{dim - 1}; ip > 0; --ip) {
-        const std::size_t i{ip - 1};
-        for (std::size_t j{0}; j <= i; ++j) {
-            std::size_t x{dim - 1 - (i - j)};
-            std::size_t y{dim - 1 - j};
-            if (i & 1) {
-                std::swap(x, y);
-            }
-            out[cur++] = static_cast<std::uint32_t>(y * dim + x);
-        }
-    }
+    return side == 16 ? NATURAL_ORDER_16 : (side == 32 ? NATURAL_ORDER_32 : NATURAL_ORDER_8);
 }
 
 void init_constants() {
-    std::uint32_t order[64];
-    compute_natural_order(order);
-    cudaMemcpyToSymbol(NATURAL_ORDER, order, sizeof(order));
+    const std::vector<std::uint32_t> o8{natural_coeff_order(8)};
     const std::vector<std::uint32_t> o16{natural_coeff_order(16)};
     const std::vector<std::uint32_t> o32{natural_coeff_order(32)};
+    cudaMemcpyToSymbol(NATURAL_ORDER_8, o8.data(), o8.size() * sizeof(std::uint32_t));
     cudaMemcpyToSymbol(NATURAL_ORDER_16, o16.data(), o16.size() * sizeof(std::uint32_t));
     cudaMemcpyToSymbol(NATURAL_ORDER_32, o32.data(), o32.size() * sizeof(std::uint32_t));
     const AcLog2Table log2_table{ac_log2_table()};
@@ -766,11 +734,108 @@ __global__ void dc_chunk_emit_kernel(
     w.finish();
 }
 
+// --- Coefficient orders (see coeff_order.h) -------------------------------------
+
+// A thread block ranks ORDER_RANKS positions of one (side, channel) order: the
+// order of side 8 takes one thread block, of side 16 two and of side 32 eight.
+// ORDER_SPLITS threads share a position, each comparing it with a part of the
+// keys, so that the quadratic ranking of a DCT32's 1024 positions spreads over
+// the device in short chains of loads.
+constexpr unsigned int ORDER_RANKS = 128;
+constexpr unsigned int ORDER_SPLITS = 4;
+constexpr unsigned int ORDER_THREADS = ORDER_RANKS * ORDER_SPLITS;
+constexpr unsigned int ORDER_BLOCKS_PER_CHANNEL = 1 + 2 + 8;
+constexpr std::uint32_t ORDER_MAX_SIZE = 32 * 32;
+
+__device__ std::uint32_t count_at_most(const uint4& k, std::uint32_t key) {
+    return (k.x <= key ? 1u : 0u) + (k.y <= key ? 1u : 0u) + (k.z <= key ? 1u : 0u) +
+           (k.w <= key ? 1u : 0u);
+}
+
+__device__ std::uint32_t count_below(const uint4& k, std::uint32_t key) {
+    return (k.x < key ? 1u : 0u) + (k.y < key ? 1u : 0u) + (k.z < key ? 1u : 0u) +
+           (k.w < key ? 1u : 0u);
+}
+
+// The stable sort of the natural order by key puts natural index i at rank
+// #{j < i : key_j <= key_i} + #{j > i : key_j < key_i}, and the Lehmer code at
+// that rank is #{j < i : key_j > key_i}. The low-frequency corner, the first
+// natural indices, has key 0 and stays in front.
+__global__ void __launch_bounds__(ORDER_THREADS)
+    coeff_orders_kernel(const CoeffOrderStats* __restrict__ stats,
+                        CoeffOrders* __restrict__ orders) {
+    __shared__ __align__(16) std::uint32_t keys[ORDER_MAX_SIZE];
+    __shared__ uint2 partial[ORDER_SPLITS][ORDER_RANKS];
+    const int c{static_cast<int>(blockIdx.x / ORDER_BLOCKS_PER_CHANNEL)};
+    const unsigned int part{blockIdx.x % ORDER_BLOCKS_PER_CHANNEL};
+    const int side{part == 0 ? 8 : (part < 3 ? 16 : 32)};
+    const std::uint32_t chunk{part == 0 ? 0u : (part < 3 ? part - 1 : part - 3)};
+    const auto size{static_cast<std::uint32_t>(side * side)};
+    const auto covered{static_cast<std::uint32_t>((side / 8) * (side / 8))};
+    const std::size_t base{coeff_order_offset(side, c)};
+    const std::uint32_t* const natural{natural_order_dev(side)};
+    const std::uint32_t blocks{stats->blocks[coeff_order_side_index(side)]};
+#pragma unroll
+    for (std::uint32_t k{0}; k < ORDER_MAX_SIZE / ORDER_THREADS; ++k) {
+        const std::uint32_t i{k * ORDER_THREADS + threadIdx.x};
+        if (i < size) {
+            keys[i] =
+                i < covered ? 0 : coeff_order_key(blocks, stats->nonzeros[base + natural[i]], side);
+        }
+    }
+    __syncthreads();
+
+    const std::uint32_t split{threadIdx.x / ORDER_RANKS};
+    const std::uint32_t local{threadIdx.x % ORDER_RANKS};
+    const std::uint32_t i{chunk * ORDER_RANKS + local};
+    if (i < size) {
+        const std::uint32_t key{keys[i]};
+        // Of the thread's keys [lo, hi), those before the warp's first index
+        // precede every lane's own, those past its last follow it.
+        const std::uint32_t warp_first{i & ~31u};
+        const std::uint32_t lo{split * (size / ORDER_SPLITS)};
+        const std::uint32_t hi{lo + size / ORDER_SPLITS};
+        const std::uint32_t lanes_begin{min(hi, max(lo, warp_first))};
+        const std::uint32_t lanes_end{max(lo, min(hi, warp_first + 32))};
+        std::uint32_t before{0};
+        std::uint32_t after{0};
+#pragma unroll 4
+        for (std::uint32_t j{lo}; j < lanes_begin; j += 4) {
+            before += count_at_most(*reinterpret_cast<const uint4*>(&keys[j]), key);
+        }
+#pragma unroll 8
+        for (std::uint32_t j{lanes_begin}; j < lanes_end; ++j) {
+            const std::uint32_t kj{keys[j]};
+            before += j < i && kj <= key ? 1u : 0u;
+            after += j > i && kj < key ? 1u : 0u;
+        }
+#pragma unroll 4
+        for (std::uint32_t j{lanes_end}; j < hi; j += 4) {
+            after += count_below(*reinterpret_cast<const uint4*>(&keys[j]), key);
+        }
+        partial[split][local] = make_uint2(before, after);
+    }
+    __syncthreads();
+
+    if (split == 0 && i < size) {
+        std::uint32_t before{0};
+        std::uint32_t rank{0};
+        for (std::uint32_t s{0}; s < ORDER_SPLITS; ++s) {
+            const uint2 p{partial[s][local]};
+            before += p.x;
+            rank += p.x + p.y;
+        }
+        orders->order[base + rank] = static_cast<std::uint16_t>(natural[i]);
+        orders->lehmer[base + rank] = static_cast<std::uint16_t>(i - before);
+    }
+}
+
 // --- Mixed-block AC path ------------------------------------------------------
 // The coefficient buffer is the covered-block layout (COEFFS_PER_BLOCK slots
 // per 8x8 position, per channel plane nblocks*COEFFS_PER_BLOCK); a first-block of
 // side N tokenizes order[covered..size) of its channel plane, gathered via
-// covered_plane_slot; covered blocks emit nothing.
+// covered_plane_slot with the frame's coefficient order; covered blocks emit
+// nothing.
 
 // Symbol and context of a block/channel's non-zero-count token, its first token.
 // `nzeros` is the exact non-zero count of order[covered..size), precomputed by
@@ -792,14 +857,15 @@ __device__ void ac_count_token(int side, int c, std::uint32_t predicted, std::ui
 // in scan order by lane. The next chunk's coefficients are loaded before the
 // current chunk is emitted, so their latency overlaps the emit.
 template <typename Emit>
-__device__ void warp_for_each_coeff_token(const std::int16_t* plane, std::size_t bx, std::size_t by,
-                                          int side, std::size_t bw, int c, std::uint32_t nzeros,
-                                          unsigned int lane, Emit emit) {
+__device__ void warp_for_each_coeff_token(const std::int16_t* plane, const std::uint16_t* orders,
+                                          std::size_t bx, std::size_t by, int side, std::size_t bw,
+                                          int c, std::uint32_t nzeros, unsigned int lane,
+                                          Emit emit) {
     const int cx{side / 8};
     const std::uint32_t covered{static_cast<std::uint32_t>(cx * cx)};
     const std::uint32_t size{static_cast<std::uint32_t>(side * side)};
     const std::uint32_t l2{side == 16 ? 2u : (side == 32 ? 4u : 0u)};
-    const std::uint32_t* order{natural_order_dev(side)};
+    const std::uint16_t* const order{orders + coeff_order_offset(side, c)};
     const std::uint32_t histo_off{
         ac_zero_density_offset(ac_block_context(c, ac_strategy_order(side)))};
     const unsigned int lanes_below{(1u << lane) - 1u};
@@ -855,8 +921,8 @@ constexpr unsigned int HIST_ITEMS_PER_CTA = 1024;
 
 __global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                  const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                                 std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                 std::uint32_t* context_histograms,
+                                 const std::uint16_t* orders, std::size_t bw, std::size_t bh,
+                                 std::size_t nblocks, std::uint32_t* context_histograms,
                                  unsigned long long* item_sizes) {
     const unsigned int lane{threadIdx.x % 32};
     const std::size_t total{3 * bw * bh};
@@ -899,8 +965,8 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
             std::uint32_t item_tokens{0};
             std::uint32_t item_raw_bits{0};
             warp_for_each_coeff_token(
-                ac + static_cast<std::size_t>(item_c) * nblocks * COEFFS_PER_BLOCK, item_block % bw,
-                item_block / bw, item_side, bw, item_c, item_nzeros, lane,
+                ac + static_cast<std::size_t>(item_c) * nblocks * COEFFS_PER_BLOCK, orders,
+                item_block % bw, item_block / bw, item_side, bw, item_c, item_nzeros, lane,
                 [&](bool active, std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
                     std::uint32_t context) {
                     count(active, symbol, nbits, bits, context);
@@ -924,6 +990,7 @@ struct AcGroupCtx {
     const std::int8_t* acs;
     const std::int32_t* nz_grid;
     const std::int32_t* nz_exact;
+    const std::uint16_t* orders;
     std::size_t bw, nblocks;
     std::size_t bx0, by0, gbw;
     std::size_t n_items;  // gbw * gbh * 3, covered block-channels emit nothing
@@ -931,14 +998,15 @@ struct AcGroupCtx {
 
 __device__ AcGroupCtx build_ac_ctx(std::size_t g, const std::int16_t* ac, const std::int8_t* acs,
                                    const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                                   std::size_t bw, std::size_t bh, std::size_t nblocks,
-                                   std::size_t xg) {
+                                   const std::uint16_t* orders, std::size_t bw, std::size_t bh,
+                                   std::size_t nblocks, std::size_t xg) {
     const GroupExtent e{group_extent(g, bw, bh, xg)};
     AcGroupCtx c{};
     c.ac = ac;
     c.acs = acs;
     c.nz_grid = nz_grid;
     c.nz_exact = nz_exact;
+    c.orders = orders;
     c.bw = bw;
     c.nblocks = nblocks;
     c.bx0 = e.bx0;
@@ -997,7 +1065,7 @@ __device__ void warp_item_coeff_tokens(const AcGroupCtx& c, const AcLaneItem& it
                                        unsigned int lane, Emit emit) {
     const int ch{__shfl_sync(~0u, it.ch, src)};
     warp_for_each_coeff_token(c.ac + static_cast<std::size_t>(ch) * c.nblocks * COEFFS_PER_BLOCK,
-                              __shfl_sync(~0u, it.bx, src), __shfl_sync(~0u, it.by, src),
+                              c.orders, __shfl_sync(~0u, it.bx, src), __shfl_sync(~0u, it.by, src),
                               __shfl_sync(~0u, it.side, src), c.bw, ch,
                               __shfl_sync(~0u, it.nzeros, src), lane, emit);
 }
@@ -1120,9 +1188,9 @@ __device__ std::uint16_t token_entry(const std::uint8_t* context_map, std::uint3
 // tokens, the active lanes in scan order.
 __global__ void ac_pack_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                               std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xg,
-                               std::size_t group_begin, std::size_t group_end,
-                               const std::uint8_t* context_map,
+                               const std::uint16_t* orders, std::size_t bw, std::size_t bh,
+                               std::size_t nblocks, std::size_t xg, std::size_t group_begin,
+                               std::size_t group_end, const std::uint8_t* context_map,
                                const unsigned long long* item_sizes,
                                const unsigned long long* chunk_base, const std::uint32_t* layout,
                                std::size_t num_groups, std::uint16_t* entries,
@@ -1133,7 +1201,7 @@ __global__ void ac_pack_kernel(const std::int16_t* ac, const std::int8_t* acs,
         return;
     }
     const std::size_t g{q / AC_GROUP_CHUNKS};
-    const AcGroupCtx c{build_ac_ctx(g, ac, acs, nz_grid, nz_exact, bw, bh, nblocks, xg)};
+    const AcGroupCtx c{build_ac_ctx(g, ac, acs, nz_grid, nz_exact, orders, bw, bh, nblocks, xg)};
     const unsigned int lane{threadIdx.x % 32};
     const unsigned int lanes_below{(1u << lane) - 1u};
     const std::size_t i{(q % AC_GROUP_CHUNKS) * 32 + lane};
@@ -1585,10 +1653,16 @@ std::size_t ac_num_groups(std::size_t width, std::size_t height) {
     return xg * yg;
 }
 
+bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStream_t stream) {
+    ensure_constants();
+    coeff_orders_kernel<<<3 * ORDER_BLOCKS_PER_CHANNEL, ORDER_THREADS, 0, stream>>>(stats, orders);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
-                        const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                        std::uint32_t* context_histograms, std::uint64_t* item_sizes,
-                        cudaStream_t stream) {
+                        const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
+                        std::size_t height, std::uint32_t* context_histograms,
+                        std::uint64_t* item_sizes, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1602,7 +1676,7 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const st
     const unsigned int blocks{
         static_cast<unsigned int>((total + HIST_ITEMS_PER_CTA - 1) / HIST_ITEMS_PER_CTA)};
     histogram_kernel<<<blocks, HIST_THREADS, 0, stream>>>(
-        ac, acs, nz_grid, nz_exact, bw, bh, nblocks, context_histograms,
+        ac, acs, nz_grid, nz_exact, orders->order, bw, bh, nblocks, context_histograms,
         reinterpret_cast<unsigned long long*>(item_sizes));
     return cudaGetLastError() == cudaSuccess;
 }
@@ -1649,11 +1723,11 @@ bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::si
 }
 
 bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
-                    const std::int32_t* nz_exact, std::size_t width, std::size_t height,
-                    const std::uint8_t* context_map, const std::uint64_t* item_sizes,
-                    const std::uint64_t* chunk_base, const std::uint32_t* layout,
-                    std::size_t group_begin, std::size_t group_end, std::uint16_t* entries,
-                    std::uint64_t* raw, cudaStream_t stream) {
+                    const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
+                    std::size_t height, const std::uint8_t* context_map,
+                    const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
+                    const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
+                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream) {
     ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
@@ -1666,8 +1740,8 @@ bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::i
     const std::size_t chunks_per_cta{AC_CHUNK_THREADS / 32};
     ac_pack_kernel<<<static_cast<unsigned int>((num_chunks + chunks_per_cta - 1) / chunks_per_cta),
                      AC_CHUNK_THREADS, 0, stream>>>(
-        ac, acs, nz_grid, nz_exact, bw, bh, bw * bh, xg, group_begin, group_end, context_map,
-        reinterpret_cast<const unsigned long long*>(item_sizes),
+        ac, acs, nz_grid, nz_exact, orders->order, bw, bh, bw * bh, xg, group_begin, group_end,
+        context_map, reinterpret_cast<const unsigned long long*>(item_sizes),
         reinterpret_cast<const unsigned long long*>(chunk_base), layout, num_groups, entries,
         raw_words);
     return cudaGetLastError() == cudaSuccess;

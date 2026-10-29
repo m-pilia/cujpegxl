@@ -4,6 +4,7 @@
 #include "frame_assembly.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 
 #include "ans.h"
@@ -23,9 +24,101 @@ namespace {
 constexpr U32Enc GLOBAL_SCALE_ENC{
     {BitsOffset(11, 1), BitsOffset(11, 2049), BitsOffset(12, 4097), BitsOffset(16, 8193)}};
 constexpr U32Enc QUANT_DC_ENC{{Val(16), BitsOffset(5, 1), BitsOffset(8, 1), BitsOffset(16, 1)}};
+constexpr U32Enc USED_ORDERS_ENC{{Val(0x5F), Val(0x13), Val(0), Bits(13)}};
+
+// libjxl kPermutationContexts. The hybrid-uint tokens of the permutation values
+// (below 1024) stay below PERMUTATION_ALPHABET.
+constexpr std::size_t PERMUTATION_CONTEXTS{8};
+constexpr std::size_t PERMUTATION_ALPHABET{64};
 
 std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
+}
+
+struct PermutationToken {
+    std::uint32_t context;
+    std::uint32_t value;
+};
+
+// libjxl CoeffOrderContext.
+std::uint32_t permutation_context(std::uint32_t value) {
+    return value == 0 ? 0
+                      : std::min(static_cast<std::uint32_t>(1 + ac_floor_log2(value)),
+                                 static_cast<std::uint32_t>(PERMUTATION_CONTEXTS - 1));
+}
+
+// libjxl TokenizePermutation of the orders of transform side `side`, in channel
+// order X, Y, B: the length of each Lehmer code past the low-frequency corner up
+// to its last non-zero entry, then those entries.
+void tokenize_orders(const CoeffOrders& orders, int side, std::vector<PermutationToken>& tokens) {
+    const auto size{static_cast<std::uint32_t>(side * side)};
+    const auto skip{static_cast<std::uint32_t>((side / 8) * (side / 8))};
+    for (int c{0}; c < 3; ++c) {
+        const std::uint16_t* const lehmer{orders.lehmer + coeff_order_offset(side, c)};
+        std::uint32_t end{size};
+        while (end > skip && lehmer[end - 1] == 0) {
+            --end;
+        }
+        tokens.push_back({permutation_context(size), end - skip});
+        std::uint32_t last{0};
+        for (std::uint32_t i{skip}; i < end; ++i) {
+            tokens.push_back({permutation_context(last), lehmer[i]});
+            last = lehmer[i];
+        }
+    }
+}
+
+// used_orders and the permutations of the orders it marks, those of the sides
+// with an order other than the natural one in any channel (libjxl
+// EncodeCoeffOrders), prefix-coded with a histogram per context holding tokens.
+void write_coeff_orders(BitWriter& w, const CoeffOrders& orders) {
+    std::uint32_t used_orders{0};
+    std::vector<PermutationToken> tokens{};
+    for (int side : {8, 16, 32}) {
+        const std::uint16_t* const lehmer{orders.lehmer + coeff_order_offset(side, 0)};
+        if (std::any_of(lehmer, lehmer + 3 * side * side, [](std::uint16_t v) { return v != 0; })) {
+            used_orders |= 1u << ac_strategy_order(side);
+            tokenize_orders(orders, side, tokens);
+        }
+    }
+    write_u32(w, USED_ORDERS_ENC, used_orders);
+    if (used_orders == 0) {
+        return;
+    }
+
+    const HybridUintConfig config{};
+    std::array<std::uint32_t, PERMUTATION_CONTEXTS * PERMUTATION_ALPHABET> context_hist{};
+    for (const PermutationToken& t : tokens) {
+        std::uint32_t symbol{}, nbits{}, bits{};
+        config.encode(t.value, symbol, nbits, bits);
+        assert(symbol < PERMUTATION_ALPHABET);
+        ++context_hist[t.context * PERMUTATION_ALPHABET + symbol];
+    }
+    std::array<std::uint8_t, PERMUTATION_CONTEXTS> context_map{};
+    std::vector<std::uint32_t> cluster_hist{};
+    for (std::size_t ctx{0}; ctx < PERMUTATION_CONTEXTS; ++ctx) {
+        const auto first{context_hist.begin() +
+                         static_cast<std::ptrdiff_t>(ctx * PERMUTATION_ALPHABET)};
+        const auto last{first + static_cast<std::ptrdiff_t>(PERMUTATION_ALPHABET)};
+        if (std::any_of(first, last, [](std::uint32_t n) { return n != 0; })) {
+            context_map[ctx] =
+                static_cast<std::uint8_t>(cluster_hist.size() / PERMUTATION_ALPHABET);
+            cluster_hist.insert(cluster_hist.end(), first, last);
+        }
+    }
+    const std::size_t num_clusters{cluster_hist.size() / PERMUTATION_ALPHABET};
+    std::vector<std::uint8_t> depth(cluster_hist.size());
+    std::vector<std::uint16_t> bits(cluster_hist.size());
+    write_clustered_prefix_histograms(w, context_map.data(), PERMUTATION_CONTEXTS, num_clusters,
+                                      cluster_hist.data(), PERMUTATION_ALPHABET, config,
+                                      depth.data(), bits.data());
+    for (const PermutationToken& t : tokens) {
+        std::uint32_t symbol{}, nbits{}, raw{};
+        config.encode(t.value, symbol, nbits, raw);
+        const std::size_t i{context_map[t.context] * PERMUTATION_ALPHABET + symbol};
+        w.write(depth[i], bits[i]);
+        w.write(nbits, raw);
+    }
 }
 
 }  // namespace
@@ -50,9 +143,10 @@ std::vector<std::uint8_t> build_dc_global(const QuantParams& qp) {
     return w.bytes();
 }
 
-AcGlobalBuilder::AcGlobalBuilder(const AcClustering& clustering, std::size_t num_ac_groups,
-                                 TokenCode& code)
+AcGlobalBuilder::AcGlobalBuilder(const AcClustering& clustering, const CoeffOrders& orders,
+                                 std::size_t num_ac_groups, TokenCode& code)
     : clustering_{clustering},
+      orders_{orders},
       num_ac_groups_{num_ac_groups},
       code_{code},
       cluster_bits_(clustering.num_clusters) {
@@ -107,6 +201,10 @@ void AcGlobalBuilder::build_cluster(std::size_t c) {
     }
 }
 
+void AcGlobalBuilder::build_coeff_orders() {
+    write_coeff_orders(coeff_orders_bits_, orders_);
+}
+
 void AcGlobalBuilder::build_context_map() {
     if (code_.use_prefix_code) {
         return;
@@ -119,6 +217,7 @@ std::vector<std::uint8_t> AcGlobalBuilder::finish() {
     const HybridUintConfig config{};
     BitWriter w{};
     detail::serialize_ac_global_head(w, num_ac_groups_);
+    w.append(coeff_orders_bits_);
     if (code_.use_prefix_code) {
         std::vector<std::uint8_t> depth(num_clusters() * AC_CONTEXT_ALPHABET, 0);
         std::vector<std::uint16_t> bits(num_clusters() * AC_CONTEXT_ALPHABET, 0);

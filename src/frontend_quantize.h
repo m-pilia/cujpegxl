@@ -10,6 +10,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
+#include "coeff_order.h"
 #include "quant_calibration.h"
 
 namespace cujpegxl {
@@ -45,13 +46,16 @@ namespace cujpegxl {
 // coefficients (covered positions are zero), and `nz_grid` that count
 // normalized per covered 8x8 block, (nz + covered - 1) >> log2(covered), at
 // every position the transform covers (the neighbor-prediction input).
+// `order_stats` (device) receives the counts the coefficient orders are
+// computed from.
 // Deterministic. Enqueues on `stream` without waiting; returns false on a CUDA
 // error.
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
                        const std::int32_t* quant_field, const QuantCalibration* calibration,
                        std::size_t width, std::size_t height, std::int8_t* ytox_map,
                        std::int8_t* ytob_map, std::int16_t* ac, std::int32_t* dc,
-                       std::int32_t* nz_exact, std::int32_t* nz_grid, cudaStream_t stream);
+                       std::int32_t* nz_exact, std::int32_t* nz_grid, CoeffOrderStats* order_stats,
+                       cudaStream_t stream);
 
 }  // namespace cujpegxl
 

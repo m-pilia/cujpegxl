@@ -2,18 +2,22 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Validates the device AC token coder against the host bitstream reference: the
-// per-context histograms, the context clustering and every group's token
-// entries and raw bits must match exactly, whatever the batching of the pack,
-// and repeated runs must be identical.
+// coefficient orders, the per-context histograms, the context clustering and
+// every group's token entries and raw bits must match exactly, whatever the
+// batching of the pack, and repeated runs must be identical.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <random>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "ac_clustering_reference.h"
+#include "coeff_order.h"
+#include "coeff_order_reference.h"
 #include "entropy.h"
 #include "entropy_roundtrip.h"
 #include "src/vardct_layout.h"
@@ -26,8 +30,18 @@ using bitstream::AcReference;
 using bitstream::FrameCoefficients;
 using bitstream::reference_ac_encode;
 
-// Flattens fc.ac into the device coefficient layout (plane-major over channels
-// X, Y, B; blocks in raster order; 64 coefficients each).
+void expect_same_orders(const CoeffOrders& got, const CoeffOrders& expected) {
+    EXPECT_EQ(std::vector<std::uint16_t>(std::begin(got.order), std::end(got.order)),
+              std::vector<std::uint16_t>(std::begin(expected.order), std::end(expected.order)));
+    EXPECT_EQ(std::vector<std::uint16_t>(std::begin(got.lehmer), std::end(got.lehmer)),
+              std::vector<std::uint16_t>(std::begin(expected.lehmer), std::end(expected.lehmer)));
+}
+
+bool natural_orders(const CoeffOrders& orders) {
+    return std::all_of(std::begin(orders.lehmer), std::end(orders.lehmer),
+                       [](std::uint16_t v) { return v == 0; });
+}
+
 void expect_same_clustering(const AcClustering& got, const AcClustering& expected) {
     ASSERT_EQ(got.num_clusters, expected.num_clusters);
     EXPECT_EQ(
@@ -38,6 +52,8 @@ void expect_same_clustering(const AcClustering& got, const AcClustering& expecte
                                         std::end(expected.context_map)));
 }
 
+// Flattens fc.ac into the device coefficient layout (plane-major over channels
+// X, Y, B; blocks in raster order; 64 coefficients each).
 std::vector<std::int32_t> flatten_ac(const FrameCoefficients& fc) {
     std::vector<std::int32_t> q{};
     q.reserve(fc.ac[0].size() * 3);
@@ -129,6 +145,8 @@ void check_matches_reference(const FrameCoefficients& fc, std::size_t batches) {
     AcDeviceTokens dev{};
     ASSERT_TRUE(ac_tokens_device(flatten_ac(fc), fc.acs, fc.width, fc.height, batches, dev));
 
+    EXPECT_FALSE(natural_orders(ref.orders));
+    expect_same_orders(dev.orders, ref.orders);
     EXPECT_EQ(dev.context_histograms, ref.context_histograms);
     expect_same_clustering(dev.clustering, ref.clustering);
     const std::size_t num_groups{ref.group_entries.size()};
@@ -197,11 +215,73 @@ TEST(EntropyGpu, Deterministic) {
     AcDeviceTokens b{};
     ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, a));
     ASSERT_TRUE(ac_tokens_device(q, fc.acs, fc.width, fc.height, 2, b));
+    expect_same_orders(a.orders, b.orders);
     EXPECT_EQ(a.context_histograms, b.context_histograms);
     expect_same_clustering(a.clustering, b.clustering);
     EXPECT_EQ(a.layout, b.layout);
     EXPECT_EQ(a.entries, b.entries);
     EXPECT_EQ(a.raw, b.raw);
+}
+
+// Statistics with `blocks` first-blocks per side, each position non-zero in a
+// random share of them, few distinct shares so that many keys tie.
+CoeffOrderStats random_order_stats(std::uint32_t seed, std::uint32_t blocks, std::uint32_t shares) {
+    std::mt19937 rng{seed};
+    CoeffOrderStats stats{};
+    for (std::uint32_t& b : stats.blocks) {
+        b = blocks;
+    }
+    for (std::uint32_t& n : stats.nonzeros) {
+        n = static_cast<std::uint32_t>(rng() % shares) * blocks / (shares - 1);
+    }
+    return stats;
+}
+
+void check_orders_match_reference(const CoeffOrderStats& stats) {
+    CoeffOrders dev{};
+    ASSERT_TRUE(ac_coeff_orders_device(stats, dev));
+    expect_same_orders(dev, coeff_orders_reference(stats));
+}
+
+TEST(EntropyGpu, CoeffOrdersMatchReference) {
+    check_orders_match_reference(random_order_stats(1, 1000, 3));
+    check_orders_match_reference(random_order_stats(2, 129600, 50));
+    check_orders_match_reference(random_order_stats(3, 7, 8));
+}
+
+TEST(EntropyGpu, CoeffOrdersWithoutStatisticsAreNatural) {
+    CoeffOrders dev{};
+    ASSERT_TRUE(ac_coeff_orders_device(CoeffOrderStats{}, dev));
+    EXPECT_TRUE(natural_orders(dev));
+    for (int side : {8, 16, 32}) {
+        const std::vector<std::uint32_t> natural{
+            natural_coeff_order(static_cast<std::size_t>(side))};
+        for (int c{0}; c < 3; ++c) {
+            const std::uint16_t* const order{dev.order + coeff_order_offset(side, c)};
+            EXPECT_EQ(std::vector<std::uint32_t>(order, order + side * side), natural)
+                << "side " << side << " channel " << c;
+        }
+    }
+}
+
+TEST(EntropyGpu, CoeffOrderPutsDenserPositionsFirst) {
+    CoeffOrderStats stats{};
+    stats.blocks[coeff_order_side_index(8)] = 100;
+    const std::vector<std::uint32_t> natural{natural_coeff_order(8)};
+    // The last natural position, non-zero in every block, moves right after the
+    // DC; the others keep their natural order.
+    stats.nonzeros[coeff_order_offset(8, 1) + natural[63]] = 100;
+    CoeffOrders dev{};
+    ASSERT_TRUE(ac_coeff_orders_device(stats, dev));
+    const std::uint16_t* const order{dev.order + coeff_order_offset(8, 1)};
+    EXPECT_EQ(order[0], natural[0]);
+    EXPECT_EQ(order[1], natural[63]);
+    for (std::size_t k{2}; k < 64; ++k) {
+        EXPECT_EQ(order[k], natural[k - 1]) << k;
+    }
+    const std::uint16_t* const lehmer{dev.lehmer + coeff_order_offset(8, 1)};
+    EXPECT_EQ(lehmer[1], 62);
+    expect_same_orders(dev, coeff_orders_reference(stats));
 }
 
 // Per-context histograms with `num_contexts` contexts holding tokens, each drawn

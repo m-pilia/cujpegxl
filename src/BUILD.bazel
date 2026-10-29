@@ -67,6 +67,17 @@ cc_library(
 )
 
 cc_library(
+    name = "coeff_order_reference",
+    testonly = True,
+    srcs = ["coeff_order_reference.cc"],
+    hdrs = ["coeff_order_reference.h"],
+    deps = [
+        ":coeff_order",
+        ":vardct_layout",
+    ],
+)
+
+cc_library(
     name = "vardct_layout",
     hdrs = ["vardct_layout.h"],
     copts = RUNTIME_COPTS,
@@ -161,6 +172,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":cfl",
+        ":coeff_order",
         ":exact_div",
         ":quant_consts",
         ":vardct_layout",
@@ -173,6 +185,8 @@ cc_test(
     tags = ["gpu"],
     deps = [
         ":cfl",
+        ":coeff_order",
+        ":coeff_order_reference",
         ":frontend_quantize",
         ":quant_consts",
         ":vardct_layout",
@@ -302,6 +316,8 @@ cuda_library(
     hdrs = ["entropy_roundtrip.h"],
     deps = [
         ":ac_clustering",
+        ":coeff_order",
+        ":coeff_order_reference",
         ":entropy",
         ":vardct_layout",
     ],
@@ -313,6 +329,8 @@ cc_test(
     tags = ["gpu"],
     deps = [
         ":ac_clustering_reference",
+        ":coeff_order",
+        ":coeff_order_reference",
         ":entropy",
         ":entropy_roundtrip",
         ":vardct_layout",
@@ -366,6 +384,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":ac_clustering",
+        ":coeff_order",
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "src/ac_clustering.h"
+#include "src/coeff_order.h"
 
 namespace cujpegxl::bitstream {
 
@@ -55,22 +56,24 @@ struct FrameCoefficients {
 // Emits a complete JXL codestream (signature + headers + frame) for `fc` into a
 // freshly allocated byte buffer. The output is decodable by libjxl/djxl. The AC
 // coefficients are coded with libjxl's real per-token contexts, clustered by
-// cluster_ac_contexts_reference: in a multi-group frame with the production
-// AcGlobal code (rANS or prefix codes), in a single-group frame with prefix
+// cluster_ac_contexts_reference: in a multi-group frame in the coefficient
+// orders of coeff_orders_reference with the production AcGlobal code (rANS or
+// prefix codes), in a single-group frame in the natural orders with prefix
 // codes.
 std::vector<std::uint8_t> write_vardct_codestream(const FrameCoefficients& fc);
 
-// The host reference for the device AC token coder: the per-context histograms
-// of the real per-token contexts (`context_histograms`, context *
-// AC_CONTEXT_ALPHABET + symbol) and their `clustering` by
-// cluster_ac_contexts_reference. Per AC group (one AcGroup TOC section, raster
-// order) it carries the token stream the device must pack, entries cluster <<
+// The host reference for the device AC token coder: the frame's coefficient
+// `orders` by coeff_orders_reference, the per-context histograms of the real
+// per-token contexts (`context_histograms`, context * AC_CONTEXT_ALPHABET +
+// symbol) and their `clustering` by cluster_ac_contexts_reference. Per AC group (one AcGroup TOC
+// section, raster order) it carries the token stream the device must pack, entries cluster <<
 // TOKEN_CLUSTER_SHIFT | symbol and their `group_raw_bits` raw bits packed
 // LSB-first in `group_raw` (with a zero word past the last), and the group
 // section coded with the production AcGlobal code (`ac_global`). This is exactly what
 // write_vardct_codestream(fc) emits for the AcGlobal and AC groups of a
 // multi-group frame.
 struct AcReference {
+    CoeffOrders orders{};
     std::vector<std::uint32_t> context_histograms{};
     AcClustering clustering{};
     std::vector<std::vector<std::uint16_t>> group_entries{};
