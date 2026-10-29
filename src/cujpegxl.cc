@@ -138,6 +138,9 @@ cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegx
     if (status != CUJPEGXL_OK) {
         return status;
     }
+    if (input->luma_pitch < config.width || input->chroma_pitch < config.width) {
+        return CUJPEGXL_INVALID_ARGUMENT;
+    }
     cujpegxl::FrameEncoder& frame_encoder{encoder->frame_encoder};
     const std::size_t in_flight{frame_encoder.in_flight()};
     if (in_flight == frame_encoder.pipeline_depth()) {

@@ -222,6 +222,29 @@ TEST(CujpegxlEncodeGpu, RejectsUnsupportedResolution) {
     EXPECT_EQ(encoder, nullptr);
 }
 
+TEST(CujpegxlEncodeGpu, RejectsShortPitches) {
+    const cujpegxl_config config{512, 512, 1.0f};
+
+    DeviceNv12 nv12{};
+    ASSERT_TRUE(upload_nv12(config.width, config.height, nv12));
+    std::size_t bound{0};
+    ASSERT_EQ(cujpegxl_max_output_size(&config, &bound), CUJPEGXL_OK);
+    std::vector<std::uint8_t> buffer(bound, 0);
+    cujpegxl_output output{buffer.data(), 0, buffer.size()};
+
+    cujpegxl_encoder* encoder{nullptr};
+    ASSERT_EQ(cujpegxl_encoder_create(&config, 0, 1, &encoder), CUJPEGXL_OK);
+    const cujpegxl_nv12_input short_luma{nv12.luma, nv12.chroma, config.width - 1,
+                                         nv12.chroma_pitch, nullptr};
+    EXPECT_EQ(cujpegxl_encoder_submit(encoder, &short_luma, &output), CUJPEGXL_INVALID_ARGUMENT);
+    const cujpegxl_nv12_input short_chroma{nv12.luma, nv12.chroma, nv12.luma_pitch,
+                                           config.width - 1, nullptr};
+    EXPECT_EQ(cujpegxl_encoder_submit(encoder, &short_chroma, &output), CUJPEGXL_INVALID_ARGUMENT);
+    cujpegxl_output* received{nullptr};
+    EXPECT_EQ(cujpegxl_encoder_receive(encoder, &received), CUJPEGXL_PIPELINE_EMPTY);
+    cujpegxl_encoder_destroy(encoder);
+}
+
 TEST(CujpegxlEncodeGpu, RejectsZeroPipelineDepth) {
     const cujpegxl_config config{512, 512, 1.0f};
     cujpegxl_encoder* encoder{nullptr};
