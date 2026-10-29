@@ -62,7 +62,7 @@ The `//eval_dataset` package implements tooling to generate a reproducible evalu
 
 Evaluation results using a 100 image subset of the evaluation dataset at 2160p resolution (`bazelisk run //eval_dataset:prepare_dataset -- --resolution 2160p --limit 100 ...`):
 
-![ssimulacra2](doc/2026-10-23_ssimulacra2.png)
+![ssimulacra2](doc/2026-10-29_ssimulacra2.png)
 
 ## Code checks
 
