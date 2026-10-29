@@ -47,7 +47,6 @@ typedef struct cujpegxl_config {
     uint32_t width;
     uint32_t height;
     float distance;
-    int32_t device_ordinal;
 } cujpegxl_config;
 
 /* NV12 (BT.709 full range) input. `luma`/`chroma` are device pointers.
@@ -84,10 +83,9 @@ cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* 
  * the host entropy-codes the frames submitted before it. Each frame in flight
  * holds its own device and pinned host memory. The output does not depend on
  * the depth. An encoder is not thread-safe. */
-cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, uint32_t pipeline_depth,
-                                        cujpegxl_encoder** out_encoder);
-/* Applies to the frames submitted afterwards. The device is fixed at creation:
- * a different `device_ordinal` is an invalid argument. */
+cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t device_ordinal,
+                                        uint32_t pipeline_depth, cujpegxl_encoder** out_encoder);
+/* Applies to the frames submitted afterwards. */
 cujpegxl_status cujpegxl_encoder_configure(cujpegxl_encoder* encoder,
                                            const cujpegxl_config* config);
 /* Starts encoding `input` into `output->data` (`output->capacity` bytes) and

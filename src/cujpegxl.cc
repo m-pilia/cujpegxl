@@ -121,8 +121,8 @@ cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* 
     return CUJPEGXL_OK;
 }
 
-cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, uint32_t pipeline_depth,
-                                        cujpegxl_encoder** out_encoder) {
+cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t device_ordinal,
+                                        uint32_t pipeline_depth, cujpegxl_encoder** out_encoder) {
     if (config == nullptr || out_encoder == nullptr || pipeline_depth == 0) {
         return CUJPEGXL_INVALID_ARGUMENT;
     }
@@ -132,13 +132,12 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, uint32_t 
         return status;
     }
     cujpegxl::DeviceCapability capability{};
-    if (!cujpegxl::query_device_capability(config->device_ordinal, &capability)) {
+    if (!cujpegxl::query_device_capability(device_ordinal, &capability)) {
         return CUJPEGXL_NO_DEVICE;
     }
     auto* encoder{new (std::nothrow) cujpegxl_encoder{
         *config,
-        cujpegxl::FrameEncoder{config->device_ordinal, cujpegxl::default_worker_threads(),
-                               pipeline_depth},
+        cujpegxl::FrameEncoder{device_ordinal, cujpegxl::default_worker_threads(), pipeline_depth},
         std::vector<cujpegxl_output*>(pipeline_depth, nullptr), 0}};
     if (encoder == nullptr) {
         return CUJPEGXL_INTERNAL_ERROR;
@@ -155,9 +154,6 @@ cujpegxl_status cujpegxl_encoder_configure(cujpegxl_encoder* encoder,
     const cujpegxl_status status{validate_config(*config)};
     if (status != CUJPEGXL_OK) {
         return status;
-    }
-    if (config->device_ordinal != encoder->config.device_ordinal) {
-        return CUJPEGXL_INVALID_ARGUMENT;
     }
     encoder->config = *config;
     return CUJPEGXL_OK;

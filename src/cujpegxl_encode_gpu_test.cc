@@ -102,7 +102,7 @@ testing::AssertionResult decode_dims(const std::uint8_t* data, std::size_t size,
 }
 
 TEST(CujpegxlEncodeGpu, EncodesDeviceNv12AndDecodes) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
+    const cujpegxl_config config{512, 512, 1.0f};
 
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(config.width, config.height, nv12));
@@ -112,7 +112,7 @@ TEST(CujpegxlEncodeGpu, EncodesDeviceNv12AndDecodes) {
     ASSERT_GT(bound, 0u);
 
     cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_create(&config, 1, &encoder), CUJPEGXL_OK);
+    ASSERT_EQ(cujpegxl_encoder_create(&config, 0, 1, &encoder), CUJPEGXL_OK);
     ASSERT_NE(encoder, nullptr);
 
     std::vector<std::uint8_t> buffer(bound, 0);
@@ -137,13 +137,13 @@ TEST(CujpegxlEncodeGpu, EncodesDeviceNv12AndDecodes) {
 }
 
 TEST(CujpegxlEncodeGpu, TooSmallBufferReports) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
+    const cujpegxl_config config{512, 512, 1.0f};
 
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(config.width, config.height, nv12));
 
     cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_create(&config, 1, &encoder), CUJPEGXL_OK);
+    ASSERT_EQ(cujpegxl_encoder_create(&config, 0, 1, &encoder), CUJPEGXL_OK);
 
     std::vector<std::uint8_t> buffer(16, 0);
     cujpegxl_output output{buffer.data(), 0, buffer.size()};
@@ -163,7 +163,7 @@ TEST(CujpegxlEncodeGpu, TooSmallBufferReports) {
 // frame is submitted without synchronizing: an encoder that does not wait for
 // that stream reads the planes before they are written.
 TEST(CujpegxlEncodeGpu, WaitsForInputStream) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
+    const cujpegxl_config config{512, 512, 1.0f};
 
     DeviceNv12 source{};
     ASSERT_TRUE(upload_nv12(config.width, config.height, source));
@@ -186,7 +186,7 @@ TEST(CujpegxlEncodeGpu, WaitsForInputStream) {
     cujpegxl_output actual_output{actual.data(), 0, actual.size()};
 
     cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_create(&config, 1, &encoder), CUJPEGXL_OK);
+    ASSERT_EQ(cujpegxl_encoder_create(&config, 0, 1, &encoder), CUJPEGXL_OK);
     cujpegxl_output* received{nullptr};
     const cujpegxl_nv12_input synchronized{source.luma, source.chroma, source.luma_pitch,
                                            source.chroma_pitch, nullptr};
@@ -216,33 +216,24 @@ TEST(CujpegxlEncodeGpu, WaitsForInputStream) {
 }
 
 TEST(CujpegxlEncodeGpu, RejectsUnsupportedResolution) {
-    const cujpegxl_config config{100, 100, 1.0f, 0};
+    const cujpegxl_config config{100, 100, 1.0f};
     cujpegxl_encoder* encoder{nullptr};
-    EXPECT_EQ(cujpegxl_encoder_create(&config, 1, &encoder), CUJPEGXL_UNSUPPORTED_RESOLUTION);
+    EXPECT_EQ(cujpegxl_encoder_create(&config, 0, 1, &encoder), CUJPEGXL_UNSUPPORTED_RESOLUTION);
     EXPECT_EQ(encoder, nullptr);
 }
 
 TEST(CujpegxlEncodeGpu, RejectsZeroPipelineDepth) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
+    const cujpegxl_config config{512, 512, 1.0f};
     cujpegxl_encoder* encoder{nullptr};
-    EXPECT_EQ(cujpegxl_encoder_create(&config, 0, &encoder), CUJPEGXL_INVALID_ARGUMENT);
+    EXPECT_EQ(cujpegxl_encoder_create(&config, 0, 0, &encoder), CUJPEGXL_INVALID_ARGUMENT);
     EXPECT_EQ(encoder, nullptr);
-}
-
-TEST(CujpegxlEncodeGpu, RejectsDeviceChange) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
-    cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_create(&config, 1, &encoder), CUJPEGXL_OK);
-    const cujpegxl_config other_device{512, 512, 1.0f, 1};
-    EXPECT_EQ(cujpegxl_encoder_configure(encoder, &other_device), CUJPEGXL_INVALID_ARGUMENT);
-    cujpegxl_encoder_destroy(encoder);
 }
 
 // Frames come back in submission order with their own outputs; the second
 // frame, submitted after a configure, has the new distance.
 TEST(CujpegxlEncodeGpu, PipelinesFramesInOrder) {
-    const cujpegxl_config config{512, 512, 1.0f, 0};
-    const cujpegxl_config coarse{512, 512, 4.0f, 0};
+    const cujpegxl_config config{512, 512, 1.0f};
+    const cujpegxl_config coarse{512, 512, 4.0f};
 
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(config.width, config.height, nv12));
@@ -257,7 +248,7 @@ TEST(CujpegxlEncodeGpu, PipelinesFramesInOrder) {
     }
 
     cujpegxl_encoder* encoder{nullptr};
-    ASSERT_EQ(cujpegxl_encoder_create(&config, 2, &encoder), CUJPEGXL_OK);
+    ASSERT_EQ(cujpegxl_encoder_create(&config, 0, 2, &encoder), CUJPEGXL_OK);
     cujpegxl_output* received{nullptr};
     EXPECT_EQ(cujpegxl_encoder_receive(encoder, &received), CUJPEGXL_PIPELINE_EMPTY);
     ASSERT_EQ(cujpegxl_encoder_submit(encoder, &input, &outputs[0]), CUJPEGXL_OK);
