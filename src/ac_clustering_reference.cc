@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <limits>
 #include <vector>
 
@@ -14,34 +15,6 @@ namespace {
 constexpr std::size_t NUM_CONTEXTS{AC_NUM_CONTEXTS};
 
 using Histogram = std::vector<std::uint32_t>;
-
-// A histogram with the terms of its AcHistogramRef.
-struct Terms {
-    std::vector<std::int64_t> bin_xlog2x;
-    std::vector<std::int32_t> bin_log2;
-    AcHistogramRef ref;
-    std::int32_t total_log2;
-};
-
-Terms terms_of(const std::uint32_t* bins, const AcLog2Table& table) {
-    Terms t{std::vector<std::int64_t>(AC_CONTEXT_ALPHABET, 0),
-            std::vector<std::int32_t>(AC_CONTEXT_ALPHABET, 0),
-            {},
-            0};
-    t.ref.bins = bins;
-    for (std::size_t s{0}; s < AC_CONTEXT_ALPHABET; ++s) {
-        t.ref.total += bins[s];
-        if (bins[s] != 0) {
-            t.ref.mask |= std::uint64_t{1} << s;
-            t.bin_xlog2x[s] = ac_xlog2x(bins[s], table.data());
-            t.bin_log2[s] = ac_fixed_log2(bins[s], table.data());
-        }
-    }
-    t.ref.bin_xlog2x = t.bin_xlog2x.data();
-    t.ref.total_xlog2x = ac_xlog2x(t.ref.total, table.data());
-    t.total_log2 = t.ref.total != 0 ? ac_fixed_log2(t.ref.total, table.data()) : 0;
-    return t;
-}
 
 std::vector<Histogram> cluster_histograms(const std::uint32_t* context_histograms,
                                           const std::vector<std::size_t>& active,
@@ -60,82 +33,77 @@ std::vector<Histogram> cluster_histograms(const std::uint32_t* context_histogram
 
 AcClustering cluster_ac_contexts_reference(const std::uint32_t* context_histograms) {
     const AcLog2Table table{ac_log2_table()};
-    std::vector<Terms> context_terms{};
     std::vector<AcHistogramRef> contexts{};
     std::vector<std::size_t> active{};
+    std::vector<std::uint32_t> assignment(NUM_CONTEXTS, 0);
+    std::uint32_t alphabet{0};
     for (std::size_t i{0}; i < NUM_CONTEXTS; ++i) {
-        context_terms.push_back(terms_of(context_histograms + i * AC_CONTEXT_ALPHABET, table));
-        contexts.push_back(context_terms.back().ref);
-        if (contexts.back().total != 0) {
+        AcHistogramRef ref{context_histograms + i * AC_CONTEXT_ALPHABET, 0, 0};
+        for (std::size_t s{0}; s < AC_CONTEXT_ALPHABET; ++s) {
+            ref.total += ref.bins[s];
+            if (ref.bins[s] != 0) {
+                ref.mask |= std::uint64_t{1} << s;
+                alphabet = std::max(alphabet, static_cast<std::uint32_t>(s + 1));
+            }
+        }
+        contexts.push_back(ref);
+        if (ref.total != 0) {
             active.push_back(i);
         }
+        assignment[i] = ac_initial_cluster(static_cast<std::uint32_t>(i));
     }
 
-    std::vector<std::size_t> seeds{};
-    if (!active.empty()) {
-        std::size_t largest{0};
-        for (std::size_t a{1}; a < active.size(); ++a) {
-            if (contexts[active[a]].total > contexts[active[largest]].total) {
-                largest = a;
-            }
-        }
-        std::vector<std::int64_t> distances(active.size(),
-                                            std::numeric_limits<std::int64_t>::max());
-        for (;;) {
-            seeds.push_back(active[largest]);
-            distances[largest] = 0;
-            if (seeds.size() == AC_MAX_CLUSTERS) {
-                break;
-            }
-            std::int64_t farthest{-1};
-            for (std::size_t a{0}; a < active.size(); ++a) {
-                if (distances[a] == 0) {
-                    continue;
-                }
-                const std::int64_t cost{
-                    ac_merge_cost(contexts[active[a]], contexts[seeds.back()], table.data())};
-                distances[a] = std::min(distances[a], std::max<std::int64_t>(cost, 0));
-                if (distances[a] > farthest) {
-                    farthest = distances[a];
-                    largest = a;
-                }
-            }
-            if (farthest < AC_MIN_SEED_DISTANCE) {
-                break;
-            }
-        }
-    }
-
-    std::vector<std::uint32_t> assignment(NUM_CONTEXTS, 0);
-    for (std::size_t context : active) {
-        std::int64_t best{std::numeric_limits<std::int64_t>::max()};
-        for (std::size_t j{0}; j < seeds.size(); ++j) {
-            const std::int64_t cost{
-                seeds[j] == context
-                    ? std::numeric_limits<std::int64_t>::min()
-                    : ac_merge_cost(contexts[context], contexts[seeds[j]], table.data())};
-            if (cost < best) {
-                best = cost;
-                assignment[context] = static_cast<std::uint32_t>(j);
-            }
-        }
-    }
     for (int it{0}; it < AC_CLUSTER_LLOYD_ITERATIONS; ++it) {
-        const std::vector<Histogram> clusters{
-            cluster_histograms(context_histograms, active, assignment)};
-        std::vector<Terms> refs{};
-        for (const Histogram& c : clusters) {
-            refs.push_back(terms_of(c.data(), table));
+        std::vector<std::int32_t> total_log2{};
+        std::vector<std::int32_t> bin_log2{};
+        const auto cluster_log2 = [&] {
+            const std::vector<Histogram> clusters{
+                cluster_histograms(context_histograms, active, assignment)};
+            total_log2.assign(AC_MAX_CLUSTERS, -1);
+            bin_log2.assign(AC_MAX_CLUSTERS * AC_CONTEXT_ALPHABET, 0);
+            for (std::size_t j{0}; j < AC_MAX_CLUSTERS; ++j) {
+                std::uint32_t total{0};
+                for (std::size_t s{0}; s < AC_CONTEXT_ALPHABET; ++s) {
+                    total += clusters[j][s];
+                    bin_log2[j * AC_CONTEXT_ALPHABET + s] =
+                        ac_smoothed_bin_log2(clusters[j][s], table.data());
+                }
+                if (total != 0) {
+                    total_log2[j] = ac_smoothed_total_log2(total, alphabet, table.data());
+                }
+            }
+        };
+        cluster_log2();
+        if (it == AC_CLUSTER_REFILL_ITERATION) {
+            std::vector<std::uint64_t> keys(AC_MAX_CLUSTERS, 0);
+            for (std::size_t context : active) {
+                const std::uint32_t j{assignment[context]};
+                const std::uint64_t excess{
+                    ac_refill_excess(contexts[context], total_log2[j],
+                                     bin_log2.data() + j * AC_CONTEXT_ALPHABET, table.data())};
+                keys[j] =
+                    std::max(keys[j], ac_refill_key(excess, static_cast<std::uint32_t>(context)));
+            }
+            std::vector<std::uint32_t> empty_clusters{};
+            for (std::uint32_t j{0}; j < AC_MAX_CLUSTERS; ++j) {
+                if (total_log2[j] < 0) {
+                    empty_clusters.push_back(j);
+                }
+            }
+            std::sort(keys.begin(), keys.end(), std::greater<>{});
+            for (std::size_t m{0}; m < empty_clusters.size() && keys[m] != 0; ++m) {
+                assignment[ac_refill_key_context(keys[m])] = empty_clusters[m];
+            }
+            cluster_log2();
         }
         for (std::size_t context : active) {
-            const AcHistogramRef& a{contexts[context]};
             std::int64_t best{std::numeric_limits<std::int64_t>::max()};
             for (std::size_t j{0}; j < AC_MAX_CLUSTERS; ++j) {
-                if (refs[j].ref.total == 0 || (a.mask & ~refs[j].ref.mask) != 0) {
+                if (total_log2[j] < 0) {
                     continue;
                 }
-                const std::int64_t cost{
-                    ac_coding_cost(a, refs[j].total_log2, refs[j].bin_log2.data())};
+                const std::int64_t cost{ac_coding_cost(contexts[context], total_log2[j],
+                                                       bin_log2.data() + j * AC_CONTEXT_ALPHABET)};
                 if (cost < best) {
                     best = cost;
                     assignment[context] = static_cast<std::uint32_t>(j);

@@ -12,10 +12,15 @@
 #include "ac_context.h"
 
 // Data-driven clustering of the AC contexts into the histograms the AC groups
-// are coded with: libjxl kFast's farthest-first seeding, a parallel assignment
-// of every context to its nearest seed, then AC_CLUSTER_LLOYD_ITERATIONS Lloyd
-// iterations by cross-entropy. Costs are in integer fixed point, so the device
-// and the host reference cluster identically.
+// are coded with: starting from the fixed map ac_initial_cluster,
+// AC_CLUSTER_LLOYD_ITERATIONS parallel Lloyd iterations move every context to
+// the cluster that codes it in the fewest bits, by cross-entropy with smoothed
+// probabilities. Before iteration AC_CLUSTER_REFILL_ITERATION, the empty
+// clusters are refilled, since the Lloyd iterations cannot fill them: each
+// non-empty cluster nominates its context with the largest ac_refill_excess, and
+// the nominees with the largest excess move alone to the empty clusters. Costs
+// are in integer fixed point, so the device and the host reference cluster
+// identically.
 
 namespace cujpegxl {
 
@@ -23,13 +28,43 @@ namespace cujpegxl {
 // int16 (at most 65535, token 63), a non-zero-count token at most 1008.
 inline constexpr std::size_t AC_CONTEXT_ALPHABET = 64;
 inline constexpr std::size_t AC_MAX_CLUSTERS = 32;
-inline constexpr int AC_CLUSTER_LLOYD_ITERATIONS = 2;
+inline constexpr int AC_CLUSTER_LLOYD_ITERATIONS = 4;
+inline constexpr int AC_CLUSTER_REFILL_ITERATION = 2;
+static_assert(AC_CLUSTER_REFILL_ITERATION > 0 &&
+              AC_CLUSTER_REFILL_ITERATION < AC_CLUSTER_LLOYD_ITERATIONS);
 
 // Costs are bits in AC_COST_FRAC_BITS fixed point.
 inline constexpr int AC_COST_FRAC_BITS = 20;
-// libjxl kMinDistanceForDistinct: seeding stops when the farthest context is
-// closer than this to its nearest seed.
-inline constexpr std::int64_t AC_MIN_SEED_DISTANCE = std::int64_t{48} << AC_COST_FRAC_BITS;
+
+// The luma/chroma split of the block contexts, the non-zero-count contexts in
+// four bands of the predicted count and the coefficient contexts in twelve of
+// the zero-density context: 2 * 4 + 2 * 12 clusters.
+CUJPEGXL_ACC_HD inline std::uint32_t ac_initial_cluster(std::uint32_t context) {
+    const std::uint32_t count_contexts{AC_NUM_BLOCK_CTX * AC_NON_ZERO_BUCKETS};
+    if (context < count_contexts) {
+        const std::uint32_t nonzero_bucket{context / AC_NUM_BLOCK_CTX};
+        const std::uint32_t channel_group{context % AC_NUM_BLOCK_CTX < 7 ? 0u : 1u};
+        const std::uint32_t band{
+            nonzero_bucket < 4 ? 0u : (nonzero_bucket < 12 ? 1u : (nonzero_bucket < 24 ? 2u : 3u))};
+        return channel_group * 4 + band;
+    }
+    const std::uint32_t rel{context - count_contexts};
+    const std::uint32_t channel_group{rel / AC_ZERO_DENSITY_COUNT < 7 ? 0u : 1u};
+    const std::uint32_t zdc{rel % AC_ZERO_DENSITY_COUNT};
+    const std::uint32_t band{zdc < 32    ? 0u
+                             : zdc < 64  ? 1u
+                             : zdc < 96  ? 2u
+                             : zdc < 128 ? 3u
+                             : zdc < 160 ? 4u
+                             : zdc < 200 ? 5u
+                             : zdc < 240 ? 6u
+                             : zdc < 280 ? 7u
+                             : zdc < 328 ? 8u
+                             : zdc < 376 ? 9u
+                             : zdc < 424 ? 10u
+                                         : 11u};
+    return 8 + channel_group * 12 + band;
+}
 
 // log2(1 + i / AC_LOG2_TABLE_SIZE) in fixed point, interpolated linearly.
 inline constexpr int AC_LOG2_TABLE_BITS = 10;
@@ -74,49 +109,37 @@ CUJPEGXL_ACC_HD inline std::int32_t ac_fixed_log2(std::uint32_t x, const std::in
     return (e << AC_COST_FRAC_BITS) + lo + (((table[idx + 1] - lo) * rem) >> REM_BITS);
 }
 
-// x * log2(x), with a log2 >= 0: a 32 x 32 -> 64-bit product.
+// x times a log2 >= 0: a 32 x 32 -> 64-bit product.
 CUJPEGXL_ACC_HD inline std::int64_t ac_times_log2(std::uint32_t x, std::int32_t log2) {
     return static_cast<std::int64_t>(static_cast<std::uint64_t>(x) *
                                      static_cast<std::uint32_t>(log2));
 }
 
-CUJPEGXL_ACC_HD inline std::int64_t ac_xlog2x(std::uint32_t x, const std::int32_t* table) {
-    return x == 0 ? 0 : ac_times_log2(x, ac_fixed_log2(x, table));
-}
-
-// A histogram of AC_CONTEXT_ALPHABET bins with its total, the mask of its
-// non-zero bins and the ac_xlog2x of its bins and total.
+// A histogram of AC_CONTEXT_ALPHABET bins with its total and the mask of its
+// non-zero bins.
 struct AcHistogramRef {
     const std::uint32_t* bins;
-    const std::int64_t* bin_xlog2x;
     std::uint32_t total;
-    std::int64_t total_xlog2x;
     std::uint64_t mask;
 };
 
-// The terms of ac_merge_cost: one for the totals, and one for each bin
-// non-zero in both histograms, subtracted.
-CUJPEGXL_ACC_HD inline std::int64_t ac_merge_term(std::uint32_t a, std::uint32_t b,
-                                                  std::int64_t a_xlog2x, std::int64_t b_xlog2x,
-                                                  const std::int32_t* table) {
-    return ac_xlog2x(a + b, table) - a_xlog2x - b_xlog2x;
+// The log2 terms of a cluster's smoothed probabilities (n + 1/2) / (total +
+// alphabet / 2), doubled to stay integers, so that a symbol the cluster lacks
+// costs finitely. `alphabet` is one past the highest symbol of any context of
+// the frame.
+CUJPEGXL_ACC_HD inline std::int32_t ac_smoothed_bin_log2(std::uint32_t count,
+                                                         const std::int32_t* table) {
+    return ac_fixed_log2(2 * count + 1, table);
 }
 
-// libjxl HistogramDistance: the entropy-coded size of `a` and `b` merged minus
-// their sizes apart. Only the bins non-zero in both contribute beyond the totals.
-CUJPEGXL_ACC_HD inline std::int64_t ac_merge_cost(const AcHistogramRef& a, const AcHistogramRef& b,
-                                                  const std::int32_t* table) {
-    std::int64_t cost{ac_merge_term(a.total, b.total, a.total_xlog2x, b.total_xlog2x, table)};
-    for (std::uint64_t m{a.mask & b.mask}; m != 0; m &= m - 1) {
-        const int s{ac_lowest_bit(m)};
-        cost -= ac_merge_term(a.bins[s], b.bins[s], a.bin_xlog2x[s], b.bin_xlog2x[s], table);
-    }
-    return cost;
+CUJPEGXL_ACC_HD inline std::int32_t ac_smoothed_total_log2(std::uint32_t total,
+                                                           std::uint32_t alphabet,
+                                                           const std::int32_t* table) {
+    return ac_fixed_log2(2 * total + alphabet, table);
 }
 
 // The size of `a` entropy-coded with the distribution of a cluster, given the
-// log2 of the cluster's total and of its bins; the cluster must hold every
-// symbol of `a`. Up to a term of `a` alone.
+// ac_smoothed_total_log2 and ac_smoothed_bin_log2 of the cluster.
 CUJPEGXL_ACC_HD inline std::int64_t ac_coding_cost(const AcHistogramRef& a,
                                                    std::int32_t cluster_total_log2,
                                                    const std::int32_t* cluster_bin_log2) {
@@ -126,6 +149,41 @@ CUJPEGXL_ACC_HD inline std::int64_t ac_coding_cost(const AcHistogramRef& a,
         cost -= ac_times_log2(a.bins[s], cluster_bin_log2[s]);
     }
     return cost;
+}
+
+// The bits `a` loses coded with a cluster's distribution instead of its own: its
+// ac_coding_cost minus its entropy, at least 0, in AC_EXCESS_FRAC_BITS fixed
+// point. Below 2^45 for the 2^27 tokens of the largest frames.
+inline constexpr int AC_EXCESS_FRAC_BITS = 13;
+
+CUJPEGXL_ACC_HD inline std::uint64_t ac_refill_excess(const AcHistogramRef& a,
+                                                      std::int32_t cluster_total_log2,
+                                                      const std::int32_t* cluster_bin_log2,
+                                                      const std::int32_t* table) {
+    std::int64_t entropy{ac_times_log2(a.total, ac_fixed_log2(a.total, table))};
+    for (std::uint64_t m{a.mask}; m != 0; m &= m - 1) {
+        const int s{ac_lowest_bit(m)};
+        entropy -= ac_times_log2(a.bins[s], ac_fixed_log2(a.bins[s], table));
+    }
+    const std::int64_t excess{ac_coding_cost(a, cluster_total_log2, cluster_bin_log2) - entropy};
+    return excess > 0
+               ? static_cast<std::uint64_t>(excess) >> (AC_COST_FRAC_BITS - AC_EXCESS_FRAC_BITS)
+               : 0;
+}
+
+// A refill nominee's key, ordered by the largest excess then the lowest context;
+// never 0.
+inline constexpr int AC_REFILL_CONTEXT_BITS = 13;
+static_assert(AC_NUM_CONTEXTS < (1 << AC_REFILL_CONTEXT_BITS));
+
+CUJPEGXL_ACC_HD inline std::uint64_t ac_refill_key(std::uint64_t excess, std::uint32_t context) {
+    return excess << AC_REFILL_CONTEXT_BITS |
+           (((std::uint64_t{1} << AC_REFILL_CONTEXT_BITS) - 1) - context);
+}
+
+CUJPEGXL_ACC_HD inline std::uint32_t ac_refill_key_context(std::uint64_t key) {
+    return static_cast<std::uint32_t>(((std::uint64_t{1} << AC_REFILL_CONTEXT_BITS) - 1) -
+                                      (key & ((std::uint64_t{1} << AC_REFILL_CONTEXT_BITS) - 1)));
 }
 
 // The clustering of a frame's AC contexts. Clusters are numbered by their first

@@ -127,6 +127,15 @@ cc_library(
     deps = [":ac_context"],
 )
 
+cc_test(
+    name = "ac_clustering_test",
+    srcs = ["ac_clustering_test.cc"],
+    deps = [
+        ":ac_clustering",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "ac_clustering_reference",
     testonly = True,

@@ -243,11 +243,48 @@ TEST(EntropyGpu, ClusteringMatchesReference) {
     check_clustering_matches_reference(random_context_histograms(3, 7425, 64));
 }
 
-TEST(EntropyGpu, ClusteringStopsAtMaxClusters) {
-    const std::vector<std::uint32_t> hist{random_context_histograms(4, 3000, 200)};
+TEST(EntropyGpu, ContextMovesToTheClusterCodingItBest) {
+    // `moving` starts in `kept`'s initial cluster, but its symbols are those of
+    // `target`, alone in another initial cluster.
+    constexpr std::size_t kept{0};
+    constexpr std::size_t moving{1};
+    constexpr std::size_t target{4 * AC_NUM_BLOCK_CTX};
+    ASSERT_EQ(ac_initial_cluster(kept), ac_initial_cluster(moving));
+    ASSERT_NE(ac_initial_cluster(kept), ac_initial_cluster(target));
+    std::vector<std::uint32_t> hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
+    hist[kept * AC_CONTEXT_ALPHABET] = 500;
+    hist[kept * AC_CONTEXT_ALPHABET + 1] = 500;
+    hist[moving * AC_CONTEXT_ALPHABET + 5] = 100;
+    hist[moving * AC_CONTEXT_ALPHABET + 6] = 300;
+    hist[target * AC_CONTEXT_ALPHABET + 5] = 1000;
+    hist[target * AC_CONTEXT_ALPHABET + 6] = 3000;
     AcClustering dev{};
     ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
-    EXPECT_EQ(dev.num_clusters, AC_MAX_CLUSTERS);
+    EXPECT_EQ(dev.num_clusters, 2u);
+    EXPECT_EQ(dev.context_map[kept], 0u);
+    EXPECT_EQ(dev.context_map[moving], 1u);
+    EXPECT_EQ(dev.context_map[target], 1u);
+    EXPECT_EQ(dev.histograms[AC_CONTEXT_ALPHABET + 5], 1100u);
+    EXPECT_EQ(dev.histograms[AC_CONTEXT_ALPHABET + 6], 3300u);
+    expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
+}
+
+TEST(EntropyGpu, RefillSeparatesContextsOfOneInitialCluster) {
+    // Alone in one initial cluster with disjoint symbols: the Lloyd assignments
+    // keep them together, the refill moves one to an empty cluster.
+    constexpr std::size_t first{0};
+    constexpr std::size_t second{1};
+    ASSERT_EQ(ac_initial_cluster(first), ac_initial_cluster(second));
+    std::vector<std::uint32_t> hist(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET, 0);
+    hist[first * AC_CONTEXT_ALPHABET] = 500;
+    hist[first * AC_CONTEXT_ALPHABET + 1] = 500;
+    hist[second * AC_CONTEXT_ALPHABET + 5] = 100;
+    hist[second * AC_CONTEXT_ALPHABET + 6] = 300;
+    AcClustering dev{};
+    ASSERT_TRUE(ac_cluster_contexts_device(hist, dev));
+    EXPECT_EQ(dev.num_clusters, 2u);
+    EXPECT_EQ(dev.context_map[first], 0u);
+    EXPECT_EQ(dev.context_map[second], 1u);
     expect_same_clustering(dev, cluster_ac_contexts_reference(hist.data()));
 }
 

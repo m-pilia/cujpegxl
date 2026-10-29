@@ -1183,68 +1183,54 @@ __global__ void ac_pack_kernel(const std::int16_t* ac, const std::int8_t* acs,
 static_assert(AC_MAX_CLUSTERS == 32, "the assignment kernels take one cluster per lane");
 
 // The clustering after context_stats_kernel runs as one cooperatively launched
-// kernel, every thread block resident, whose phases are separated by grid
-// barriers: the farthest-first rounds are sequential, and a launch per round
-// costs more than a round spread over the device.
+// kernel, every thread block resident, whose Lloyd iterations are separated by
+// grid barriers, cheaper than a launch per iteration.
 constexpr unsigned int CLUSTER_THREADS = 512;
 constexpr std::size_t CLUSTER_HISTOGRAM_WORDS{AC_MAX_CLUSTERS * AC_CONTEXT_ALPHABET};
 
-// A seeding round's farthest context, the highest cost then the lowest slot,
-// is the maximum of keys cost << SLOT_BITS | (SLOT_MASK - slot). A cost is at
-// most the merged histogram's entropy, 6 bits per token, so it stays below 2^50
-// in fixed point for the 2^27 tokens of the largest frames.
-constexpr int SLOT_BITS = 13;
-constexpr std::uint64_t SLOT_MASK = (std::uint64_t{1} << SLOT_BITS) - 1;
-static_assert(AC_NUM_CONTEXTS <= SLOT_MASK);
-// The round keys rotate over three entries, so that one can be cleared for the
-// round after next while the blocks still read the current one.
-constexpr std::size_t ROUND_KEYS = 3;
-
 struct ClusterScratch {
     std::uint64_t* masks;
-    std::int64_t* distances;
-    std::int64_t* bin_xlog2x;
-    std::int64_t* total_xlog2x;
-    std::uint64_t* round_keys;
-    std::uint32_t* totals;
-    // The cluster histograms after the assignment to the seeds and after each
-    // Lloyd assignment.
+    // From `refill_keys` (a cluster's ac_refill_key nominee) to `alphabet`, zeroed
+    // together before the launch.
+    std::uint64_t* refill_keys;
+    // The cluster histograms of the initial map and after each Lloyd assignment.
     std::uint32_t* cluster_hist;
-    std::uint32_t* first_context;
     std::uint32_t* arrivals;
+    std::uint32_t* alphabet;
+    std::uint32_t* totals;
+    std::uint32_t* first_context;
     std::uint32_t* num_active;
-    std::uint32_t* largest;
     std::uint16_t* active;
     std::uint8_t* assignment;
 };
 
 constexpr std::size_t NUM_CONTEXTS{AC_NUM_CONTEXTS};
 
+constexpr std::size_t CLUSTER_ZEROED_BYTES{
+    AC_MAX_CLUSTERS * sizeof(std::uint64_t) +
+    ((AC_CLUSTER_LLOYD_ITERATIONS + 1) * CLUSTER_HISTOGRAM_WORDS + 2) * sizeof(std::uint32_t)};
+
 // Layout sized by ac_cluster_scratch_bytes; the 64-bit arrays come first so every
 // array is naturally aligned.
 ClusterScratch carve_cluster_scratch(std::uint8_t* scratch) {
     ClusterScratch s{};
     s.masks = reinterpret_cast<std::uint64_t*>(scratch);
-    s.distances = reinterpret_cast<std::int64_t*>(s.masks + NUM_CONTEXTS);
-    s.bin_xlog2x = s.distances + NUM_CONTEXTS;
-    s.total_xlog2x = s.bin_xlog2x + NUM_CONTEXTS * AC_CONTEXT_ALPHABET;
-    s.round_keys = reinterpret_cast<std::uint64_t*>(s.total_xlog2x + NUM_CONTEXTS);
-    s.totals = reinterpret_cast<std::uint32_t*>(s.round_keys + ROUND_KEYS);
-    s.cluster_hist = s.totals + NUM_CONTEXTS;
-    s.first_context = s.cluster_hist + (AC_CLUSTER_LLOYD_ITERATIONS + 1) * CLUSTER_HISTOGRAM_WORDS;
-    s.arrivals = s.first_context + AC_MAX_CLUSTERS;
-    s.num_active = s.arrivals + 1;
-    s.largest = s.num_active + 1;
-    s.active = reinterpret_cast<std::uint16_t*>(s.largest + 1);
+    s.refill_keys = s.masks + NUM_CONTEXTS;
+    s.cluster_hist = reinterpret_cast<std::uint32_t*>(s.refill_keys + AC_MAX_CLUSTERS);
+    s.arrivals = s.cluster_hist + (AC_CLUSTER_LLOYD_ITERATIONS + 1) * CLUSTER_HISTOGRAM_WORDS;
+    s.alphabet = s.arrivals + 1;
+    s.totals = s.alphabet + 1;
+    s.first_context = s.totals + NUM_CONTEXTS;
+    s.num_active = s.first_context + AC_MAX_CLUSTERS;
+    s.active = reinterpret_cast<std::uint16_t*>(s.num_active + 1);
     s.assignment = reinterpret_cast<std::uint8_t*>(s.active + NUM_CONTEXTS);
     return s;
 }
 
 __device__ AcHistogramRef context_ref(const std::uint32_t* context_histograms,
                                       const ClusterScratch& s, std::uint32_t context) {
-    return AcHistogramRef{context_histograms + context * AC_CONTEXT_ALPHABET,
-                          s.bin_xlog2x + context * AC_CONTEXT_ALPHABET, s.totals[context],
-                          s.total_xlog2x[context], s.masks[context]};
+    return AcHistogramRef{context_histograms + context * AC_CONTEXT_ALPHABET, s.totals[context],
+                          s.masks[context]};
 }
 
 // The (value, index) pair of the lowest value, the lowest index among equal
@@ -1260,48 +1246,8 @@ __device__ void warp_argmin(std::int64_t& value, std::uint32_t& index) {
     }
 }
 
-// The (value, index) pair of the highest value, the lowest index among equal
-// values, over the thread block, returned to every thread. `sh_value` and
-// `sh_index` hold 32 entries.
-__device__ void block_argmax(std::int64_t& value, std::uint32_t& index, std::int64_t* sh_value,
-                             std::uint32_t* sh_index) {
-    const unsigned int lane{threadIdx.x % 32};
-    const unsigned int warp{threadIdx.x / 32};
-    const auto reduce = [&] {
-        for (unsigned int d{16}; d > 0; d >>= 1) {
-            const std::int64_t other_value{__shfl_xor_sync(~0u, value, d)};
-            const std::uint32_t other_index{__shfl_xor_sync(~0u, index, d)};
-            if (other_value > value || (other_value == value && other_index < index)) {
-                value = other_value;
-                index = other_index;
-            }
-        }
-    };
-    reduce();
-    if (lane == 0) {
-        sh_value[warp] = value;
-        sh_index[warp] = index;
-    }
-    __syncthreads();
-    if (warp == 0) {
-        const bool has_warp{lane < blockDim.x / 32};
-        value = has_warp ? sh_value[lane] : INT64_MIN;
-        index = has_warp ? sh_index[lane] : UINT32_MAX;
-        reduce();
-        if (lane == 0) {
-            sh_value[0] = value;
-            sh_index[0] = index;
-        }
-    }
-    __syncthreads();
-    value = sh_value[0];
-    index = sh_index[0];
-    __syncthreads();
-}
-
-// Warp per context: its token total, the mask of its non-zero bins and the
-// ac_xlog2x terms of its AcHistogramRef (only those of its non-zero bins, the
-// only ones read).
+// Warp per context: its token total and the mask of its non-zero bins, the
+// frame's alphabet and the histograms of the ac_initial_cluster map.
 __global__ void context_stats_kernel(const std::uint32_t* context_histograms, ClusterScratch s) {
     static_assert(AC_CONTEXT_ALPHABET == 64);
     const std::size_t context{(static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x) /
@@ -1316,17 +1262,22 @@ __global__ void context_stats_kernel(const std::uint32_t* context_histograms, Cl
     const std::uint32_t total{warp_sum(lo + hi)};
     const std::uint64_t mask{static_cast<std::uint64_t>(__ballot_sync(~0u, lo != 0)) |
                              (static_cast<std::uint64_t>(__ballot_sync(~0u, hi != 0)) << 32)};
-    std::int64_t* const bin_xlog2x{s.bin_xlog2x + context * AC_CONTEXT_ALPHABET};
+    std::uint32_t* const initial{s.cluster_hist +
+                                 ac_initial_cluster(static_cast<std::uint32_t>(context)) *
+                                     AC_CONTEXT_ALPHABET};
     if (lo != 0) {
-        bin_xlog2x[lane] = ac_xlog2x(lo, AC_LOG2_TABLE);
+        atomicAdd(&initial[lane], lo);
     }
     if (hi != 0) {
-        bin_xlog2x[lane + 32] = ac_xlog2x(hi, AC_LOG2_TABLE);
+        atomicAdd(&initial[lane + 32], hi);
     }
     if (lane == 0) {
         s.totals[context] = total;
-        s.total_xlog2x[context] = ac_xlog2x(total, AC_LOG2_TABLE);
         s.masks[context] = mask;
+        if (mask != 0) {
+            atomicMax(s.alphabet,
+                      static_cast<std::uint32_t>(64 - __clzll(static_cast<long long>(mask))));
+        }
     }
 }
 
@@ -1354,36 +1305,28 @@ __device__ void grid_barrier(std::uint32_t* arrivals, std::uint32_t& barriers) {
     __syncthreads();
 }
 
-// Shared memory of cluster_contexts_kernel. Row j of the seed arrays holds seed
-// j; the Lloyd assignments reuse `bins` for the clusters' log2.
+// Shared memory of cluster_contexts_kernel. A refill moves context
+// move_context[m] from cluster move_from[m] to the empty move_to[m].
 struct ClusterShared {
     std::int32_t table[AC_LOG2_TABLE_SIZE + 1];
-    std::uint32_t bins[CLUSTER_HISTOGRAM_WORDS];
-    std::int64_t bin_xlog2x[CLUSTER_HISTOGRAM_WORDS];
-    AcHistogramRef seeds[AC_MAX_CLUSTERS];
-    std::uint32_t seed_contexts[AC_MAX_CLUSTERS];
+    std::uint32_t counts[CLUSTER_HISTOGRAM_WORDS];
+    std::int32_t bin_log2[CLUSTER_HISTOGRAM_WORDS];
     std::int32_t total_log2[AC_MAX_CLUSTERS];
-    std::uint64_t cluster_masks[AC_MAX_CLUSTERS];
+    std::uint32_t move_context[AC_MAX_CLUSTERS];
+    std::uint32_t move_from[AC_MAX_CLUSTERS];
+    std::uint32_t move_to[AC_MAX_CLUSTERS];
+    std::uint32_t num_moves;
     std::uint32_t rank[AC_MAX_CLUSTERS];
     std::uint32_t inverse[AC_MAX_CLUSTERS];
     std::uint32_t warp_counts[CLUSTER_THREADS / 32];
     std::uint32_t first_context[AC_MAX_CLUSTERS];
-    std::int64_t argmax_value[32];
-    std::uint32_t argmax_index[32];
 };
 
-// Thread block 0 lists the contexts with tokens in context order and finds the
-// largest, the first seed, while the others wait at the first barrier.
+// Thread block 0 lists the contexts with tokens in context order, while the
+// others wait at the first barrier.
 __device__ void list_active_contexts(const ClusterScratch& s, ClusterShared& sh) {
-    for (std::uint32_t i{threadIdx.x};
-         i < (AC_CLUSTER_LLOYD_ITERATIONS + 1) * CLUSTER_HISTOGRAM_WORDS; i += blockDim.x) {
-        s.cluster_hist[i] = 0;
-    }
     if (threadIdx.x < AC_MAX_CLUSTERS) {
         s.first_context[threadIdx.x] = UINT32_MAX;
-    }
-    if (threadIdx.x < ROUND_KEYS) {
-        s.round_keys[threadIdx.x] = 0;
     }
     const unsigned int lane{threadIdx.x % 32};
     const unsigned int warp{threadIdx.x / 32};
@@ -1407,120 +1350,9 @@ __device__ void list_active_contexts(const ClusterScratch& s, ClusterShared& sh)
         }
         __syncthreads();
     }
-    std::int64_t largest_total{-1};
-    std::uint32_t largest{UINT32_MAX};
-    for (std::uint32_t a{threadIdx.x}; a < num_active; a += blockDim.x) {
-        const std::int64_t total{s.totals[s.active[a]]};
-        if (total > largest_total) {
-            largest_total = total;
-            largest = a;
-        }
-    }
-    block_argmax(largest_total, largest, sh.argmax_value, sh.argmax_index);
     if (threadIdx.x == 0) {
         *s.num_active = num_active;
-        *s.largest = largest;
     }
-}
-
-// Picks the seeds as libjxl's FastClusterHistograms does. The first seed is the
-// largest context; every round updates each context's merge cost to its nearest
-// seed and takes the farthest context as the next seed, until AC_MAX_CLUSTERS
-// seeds or the farthest is closer than AC_MIN_SEED_DISTANCE. A context at cost
-// 0 (a seed, or one merging for free) is not considered again. A warp updates
-// a context, its lanes taking two bins each; the warps interleave over the
-// thread blocks, which spreads the few contexts with tokens over the device.
-// Each thread block reduces its contexts into the round's key. Returns the
-// number of seeds, staged in `sh`.
-__device__ std::uint32_t pick_seeds(const std::uint32_t* context_histograms,
-                                    const ClusterScratch& s, ClusterShared& sh,
-                                    std::uint32_t num_active, std::uint32_t& barriers) {
-    const unsigned int lane{threadIdx.x % 32};
-    const std::uint32_t grid_warps{gridDim.x * blockDim.x / 32};
-    const std::uint32_t first_slot{(threadIdx.x / 32) * gridDim.x + blockIdx.x};
-    if (lane == 0) {
-        for (std::uint32_t a{first_slot}; a < num_active; a += grid_warps) {
-            s.distances[a] = INT64_MAX;
-        }
-    }
-    std::uint32_t largest{load_coherent(s.largest)};
-    std::uint32_t num_seeds{0};
-    for (std::uint32_t round{0}; num_active != 0; ++round) {
-        const std::uint32_t seed{load_coherent(&s.active[largest])};
-        const std::uint32_t row{num_seeds * static_cast<std::uint32_t>(AC_CONTEXT_ALPHABET)};
-        if (threadIdx.x < AC_CONTEXT_ALPHABET) {
-            sh.bins[row + threadIdx.x] =
-                context_histograms[seed * AC_CONTEXT_ALPHABET + threadIdx.x];
-            sh.bin_xlog2x[row + threadIdx.x] =
-                s.bin_xlog2x[seed * AC_CONTEXT_ALPHABET + threadIdx.x];
-        }
-        if (threadIdx.x == 0) {
-            sh.seed_contexts[num_seeds] = seed;
-            sh.seeds[num_seeds] = AcHistogramRef{sh.bins + row, sh.bin_xlog2x + row, s.totals[seed],
-                                                 s.total_xlog2x[seed], s.masks[seed]};
-        }
-        ++num_seeds;
-        if (num_seeds == AC_MAX_CLUSTERS) {
-            break;
-        }
-        __syncthreads();
-        const AcHistogramRef& seed_ref{sh.seeds[num_seeds - 1]};
-        std::int64_t farthest{-1};
-        std::uint32_t farthest_slot{UINT32_MAX};
-        for (std::uint32_t a{first_slot}; a < num_active; a += grid_warps) {
-            std::int64_t distance{a == largest ? 0 : s.distances[a]};
-            if (distance == 0) {
-                if (lane == 0) {
-                    s.distances[a] = 0;
-                }
-                continue;
-            }
-            const AcHistogramRef context{
-                context_ref(context_histograms, s, load_coherent(&s.active[a]))};
-            std::int64_t shared{0};
-            for (unsigned int sym{lane}; sym < AC_CONTEXT_ALPHABET; sym += 32) {
-                const std::uint32_t count{context.bins[sym]};
-                if (count != 0 && seed_ref.bins[sym] != 0) {
-                    shared += ac_merge_term(count, seed_ref.bins[sym], context.bin_xlog2x[sym],
-                                            seed_ref.bin_xlog2x[sym], sh.table);
-                }
-            }
-            for (unsigned int d{16}; d > 0; d >>= 1) {
-                shared += __shfl_xor_sync(~0u, shared, d);
-            }
-            const std::int64_t cost{ac_merge_term(context.total, seed_ref.total,
-                                                  context.total_xlog2x, seed_ref.total_xlog2x,
-                                                  sh.table) -
-                                    shared};
-            distance = min(distance, max(cost, std::int64_t{0}));
-            if (lane == 0) {
-                s.distances[a] = distance;
-                if (distance > farthest) {
-                    farthest = distance;
-                    farthest_slot = a;
-                }
-            }
-        }
-        block_argmax(farthest, farthest_slot, sh.argmax_value, sh.argmax_index);
-        std::uint64_t* const key{&s.round_keys[round % ROUND_KEYS]};
-        if (threadIdx.x == 0 && farthest >= 0) {
-            atomicMax(reinterpret_cast<unsigned long long*>(key),
-                      static_cast<unsigned long long>(farthest) << SLOT_BITS |
-                          (SLOT_MASK - farthest_slot));
-        }
-        grid_barrier(s.arrivals, barriers);
-        const std::uint64_t round_key{load_coherent(key)};
-        if (blockIdx.x == 0 && threadIdx.x == 0) {
-            s.round_keys[(round + 2) % ROUND_KEYS] = 0;
-        }
-        if (round_key == 0 ||
-            static_cast<std::int64_t>(round_key >> SLOT_BITS) < AC_MIN_SEED_DISTANCE) {
-            break;
-        }
-        largest = static_cast<std::uint32_t>(SLOT_MASK - (round_key & SLOT_MASK));
-    }
-    __syncthreads();
-    return num_seeds;
 }
 
 // A warp per context with tokens, the same contexts for every assignment, lane
@@ -1550,6 +1382,83 @@ __device__ void assign_contexts(const std::uint32_t* context_histograms, const C
     }
 }
 
+// The smoothed log2 terms of the clusters in `sh.counts`; a cluster without
+// tokens gets total_log2 -1.
+__device__ void cluster_log2(ClusterShared& sh, std::uint32_t alphabet) {
+    const unsigned int lane{threadIdx.x % 32};
+    for (std::uint32_t j{threadIdx.x / 32}; j < AC_MAX_CLUSTERS; j += blockDim.x / 32) {
+        const std::uint32_t lo{sh.counts[j * AC_CONTEXT_ALPHABET + lane]};
+        const std::uint32_t hi{sh.counts[j * AC_CONTEXT_ALPHABET + lane + 32]};
+        sh.bin_log2[j * AC_CONTEXT_ALPHABET + lane] = ac_smoothed_bin_log2(lo, sh.table);
+        sh.bin_log2[j * AC_CONTEXT_ALPHABET + lane + 32] = ac_smoothed_bin_log2(hi, sh.table);
+        const std::uint32_t total{warp_sum(lo + hi)};
+        if (lane == 0) {
+            sh.total_log2[j] = total != 0 ? ac_smoothed_total_log2(total, alphabet, sh.table) : -1;
+        }
+    }
+    __syncthreads();
+}
+
+// The refill of the empty clusters (see ac_clustering.h), on the clusters in
+// `sh` and the assignment that produced them. A thread per context reduces its
+// key into its cluster's nominee; after a grid barrier, every thread block
+// ranks the nominees and applies the moves to its own `sh`, so that the next
+// assignment sees them without another barrier.
+__device__ void refill_empty_clusters(const std::uint32_t* context_histograms,
+                                      const ClusterScratch& s, ClusterShared& sh,
+                                      std::uint32_t num_active, std::uint32_t alphabet,
+                                      std::uint32_t& barriers) {
+    for (std::uint32_t a{blockIdx.x * blockDim.x + threadIdx.x}; a < num_active;
+         a += gridDim.x * blockDim.x) {
+        const std::uint32_t context{load_coherent(&s.active[a])};
+        const std::uint32_t cluster{load_coherent(&s.assignment[context])};
+        const std::uint64_t excess{
+            ac_refill_excess(context_ref(context_histograms, s, context), sh.total_log2[cluster],
+                             sh.bin_log2 + cluster * AC_CONTEXT_ALPHABET, sh.table)};
+        atomicMax(reinterpret_cast<unsigned long long*>(&s.refill_keys[cluster]),
+                  static_cast<unsigned long long>(ac_refill_key(excess, context)));
+    }
+    grid_barrier(s.arrivals, barriers);
+    if (threadIdx.x < 32) {
+        const std::uint32_t j{threadIdx.x};
+        const std::uint64_t key{load_coherent(&s.refill_keys[j])};
+        const unsigned int empty{__ballot_sync(~0u, sh.total_log2[j] < 0)};
+        const std::uint32_t num_nominees{
+            static_cast<std::uint32_t>(__popc(__ballot_sync(~0u, key != 0)))};
+        std::uint32_t rank{0};
+        for (unsigned int k{0}; k < 32; ++k) {
+            rank += __shfl_sync(~0u, key, k) > key ? 1 : 0;
+        }
+        const std::uint32_t num_moves{min(num_nominees, static_cast<std::uint32_t>(__popc(empty)))};
+        if (key != 0 && rank < num_moves) {
+            unsigned int slots{empty};
+            for (std::uint32_t r{0}; r < rank; ++r) {
+                slots &= slots - 1;
+            }
+            sh.move_context[rank] = ac_refill_key_context(key);
+            sh.move_from[rank] = j;
+            sh.move_to[rank] = static_cast<std::uint32_t>(__ffs(static_cast<int>(slots)) - 1);
+        }
+        if (j == 0) {
+            sh.num_moves = num_moves;
+        }
+    }
+    __syncthreads();
+    // The moves touch distinct clusters: one nominee per cluster, into distinct
+    // empty ones.
+    const unsigned int lane{threadIdx.x % 32};
+    for (std::uint32_t m{threadIdx.x / 32}; m < sh.num_moves; m += blockDim.x / 32) {
+        for (std::uint32_t sym{lane}; sym < AC_CONTEXT_ALPHABET; sym += 32) {
+            const std::uint32_t count{
+                context_histograms[sh.move_context[m] * AC_CONTEXT_ALPHABET + sym]};
+            sh.counts[sh.move_from[m] * AC_CONTEXT_ALPHABET + sym] -= count;
+            sh.counts[sh.move_to[m] * AC_CONTEXT_ALPHABET + sym] = count;
+        }
+    }
+    __syncthreads();
+    cluster_log2(sh, alphabet);
+}
+
 // The finish reads the last Lloyd assignment.
 static_assert(AC_CLUSTER_LLOYD_ITERATIONS >= 1);
 
@@ -1565,54 +1474,29 @@ __global__ void cluster_contexts_kernel(const std::uint32_t* context_histograms,
     }
     grid_barrier(s.arrivals, barriers);
     const std::uint32_t num_active{load_coherent(s.num_active)};
-    const std::uint32_t num_seeds{pick_seeds(context_histograms, s, sh, num_active, barriers)};
+    const std::uint32_t alphabet{load_coherent(s.alphabet)};
 
-    assign_contexts(
-        context_histograms, s, num_active, s.cluster_hist,
-        [&](std::uint32_t context, unsigned int j) -> std::int64_t {
-            if (j >= num_seeds) {
-                return INT64_MAX;
-            }
-            if (sh.seed_contexts[j] == context) {
-                return INT64_MIN;
-            }
-            return ac_merge_cost(context_ref(context_histograms, s, context), sh.seeds[j],
-                                 sh.table);
-        },
-        [](std::uint32_t, std::uint32_t) {});
-    grid_barrier(s.arrivals, barriers);
-
-    // Lloyd assignments: every context moves to the cluster that codes it in the
-    // fewest bits, among those holding all of its symbols.
-    std::int32_t* const bin_log2{reinterpret_cast<std::int32_t*>(sh.bins)};
-    const unsigned int lane{threadIdx.x % 32};
+    // Lloyd assignments: every context moves to the non-empty cluster that codes
+    // it in the fewest bits.
     for (int it{0}; it < AC_CLUSTER_LLOYD_ITERATIONS; ++it) {
         const std::uint32_t* const clusters{s.cluster_hist + it * CLUSTER_HISTOGRAM_WORDS};
-        for (std::uint32_t j{threadIdx.x / 32}; j < AC_MAX_CLUSTERS; j += blockDim.x / 32) {
-            const std::uint32_t lo{load_coherent(&clusters[j * AC_CONTEXT_ALPHABET + lane])};
-            const std::uint32_t hi{load_coherent(&clusters[j * AC_CONTEXT_ALPHABET + lane + 32])};
-            bin_log2[j * AC_CONTEXT_ALPHABET + lane] = lo != 0 ? ac_fixed_log2(lo, sh.table) : 0;
-            bin_log2[j * AC_CONTEXT_ALPHABET + lane + 32] =
-                hi != 0 ? ac_fixed_log2(hi, sh.table) : 0;
-            const std::uint32_t total{warp_sum(lo + hi)};
-            const std::uint64_t mask{
-                static_cast<std::uint64_t>(__ballot_sync(~0u, lo != 0)) |
-                (static_cast<std::uint64_t>(__ballot_sync(~0u, hi != 0)) << 32)};
-            if (lane == 0) {
-                sh.total_log2[j] = total != 0 ? ac_fixed_log2(total, sh.table) : -1;
-                sh.cluster_masks[j] = mask;
-            }
+        for (std::uint32_t i{threadIdx.x}; i < CLUSTER_HISTOGRAM_WORDS; i += blockDim.x) {
+            sh.counts[i] = load_coherent(&clusters[i]);
         }
         __syncthreads();
+        cluster_log2(sh, alphabet);
+        if (it == AC_CLUSTER_REFILL_ITERATION) {
+            refill_empty_clusters(context_histograms, s, sh, num_active, alphabet, barriers);
+        }
         const bool last{it + 1 == AC_CLUSTER_LLOYD_ITERATIONS};
         assign_contexts(
             context_histograms, s, num_active, s.cluster_hist + (it + 1) * CLUSTER_HISTOGRAM_WORDS,
             [&](std::uint32_t context, unsigned int j) -> std::int64_t {
-                const AcHistogramRef a{context_ref(context_histograms, s, context)};
-                if (sh.total_log2[j] < 0 || (a.mask & ~sh.cluster_masks[j]) != 0) {
+                if (sh.total_log2[j] < 0) {
                     return INT64_MAX;
                 }
-                return ac_coding_cost(a, sh.total_log2[j], bin_log2 + j * AC_CONTEXT_ALPHABET);
+                return ac_coding_cost(context_ref(context_histograms, s, context), sh.total_log2[j],
+                                      sh.bin_log2 + j * AC_CONTEXT_ALPHABET);
             },
             [&](std::uint32_t context, std::uint32_t cluster) {
                 s.assignment[context] = static_cast<std::uint8_t>(cluster);
@@ -1790,12 +1674,9 @@ bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::i
 }
 
 std::size_t ac_cluster_scratch_bytes() {
-    return NUM_CONTEXTS *
-               (sizeof(std::uint64_t) + (AC_CONTEXT_ALPHABET + 2) * sizeof(std::int64_t) +
-                sizeof(std::uint32_t) + sizeof(std::uint16_t) + sizeof(std::uint8_t)) +
-           ROUND_KEYS * sizeof(std::uint64_t) +
-           ((AC_CLUSTER_LLOYD_ITERATIONS + 1) * CLUSTER_HISTOGRAM_WORDS + AC_MAX_CLUSTERS + 3) *
-               sizeof(std::uint32_t);
+    return NUM_CONTEXTS * (sizeof(std::uint64_t) + sizeof(std::uint32_t) + sizeof(std::uint16_t) +
+                           sizeof(std::uint8_t)) +
+           CLUSTER_ZEROED_BYTES + (AC_MAX_CLUSTERS + 1) * sizeof(std::uint32_t);
 }
 
 bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* scratch,
@@ -1808,7 +1689,7 @@ bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* 
         return false;
     }
     ClusterScratch s{carve_cluster_scratch(scratch)};
-    if (cudaMemsetAsync(s.arrivals, 0, sizeof(std::uint32_t), stream) != cudaSuccess) {
+    if (cudaMemsetAsync(s.refill_keys, 0, CLUSTER_ZEROED_BYTES, stream) != cudaSuccess) {
         return false;
     }
     context_stats_kernel<<<static_cast<unsigned int>((NUM_CONTEXTS * 32 + CLUSTER_THREADS - 1) /
