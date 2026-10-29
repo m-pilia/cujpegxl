@@ -38,6 +38,7 @@ Notable exclusions include:
 
 Some numerical approximations are made for performance reasons, trading a bit of quality for speed:
 - Huffman codes limited to 15 bit.
+- Quantization global scale computed from histogram only rather than exact median.
 - Transform selection uses a simpler heuristic.
 - Fuzzy erosion is local (clamped to a 32px tile) as opposed to global.
 - Context clustering uses <=32 clusters (as opposed to libjxl's 128) and a simplified cost model.
@@ -50,7 +51,7 @@ Some features are not implemented:
 - Modular mode and lossless compression.
 - Multi-pass encoding.
 - Reference frames.
-- Input pixel formats other than YUV NV12.
+- Input pixel formats other than YUV420 NV12.
 - ICC colour profiles.
 
 ## Evaluation tools

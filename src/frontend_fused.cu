@@ -16,6 +16,7 @@
 #include "quant_calibration.h"
 #include "transform_select_impl.cuh"
 #include "vardct_layout.h"
+#include "warp_scan.cuh"
 #include "xyb_impl.cuh"
 
 namespace cujpegxl {
@@ -623,13 +624,125 @@ __device__ __forceinline__ void store_region_coeffs(const float* const (&coeffs)
     }
 }
 
+// The adaptive field histogram bins a value by its float exponent and top
+// mantissa bits, 2^(23 - FIELD_BIN_SHIFT) bins per octave from FIELD_MIN up to
+// FIELD_MAX; values outside the range fall into the end bins.
+constexpr std::uint32_t FIELD_BIN_SHIFT{16};
+constexpr float FIELD_MIN{1.0f / 65536.0f};
+constexpr float FIELD_MAX{65536.0f};
+constexpr std::uint32_t FIELD_BIN_FIRST{(127u - 16u) << (23u - FIELD_BIN_SHIFT)};
+static_assert(ADAPTIVE_FIELD_BINS == 32u << (23u - FIELD_BIN_SHIFT));
+
+__device__ inline std::uint32_t field_bin(float qf) {
+    const std::int32_t bin{static_cast<std::int32_t>(__float_as_uint(qf) >> FIELD_BIN_SHIFT) -
+                           static_cast<std::int32_t>(FIELD_BIN_FIRST)};
+    return bin < 0 ? 0u : min(static_cast<std::uint32_t>(bin), ADAPTIVE_FIELD_BINS - 1);
+}
+
+// The number of field values below `v` in the histogram's cumulative counts
+// `below` (below[b] values in the bins before b), linear within a bin in the
+// float representation.
+__device__ inline float field_values_below(const std::uint32_t* below, float v) {
+    if (!(v > FIELD_MIN)) {
+        return 0.0f;
+    }
+    const std::uint32_t bits{__float_as_uint(v)};
+    const std::uint32_t bin{(bits >> FIELD_BIN_SHIFT) - FIELD_BIN_FIRST};
+    if (bin >= ADAPTIVE_FIELD_BINS) {
+        return static_cast<float>(below[ADAPTIVE_FIELD_BINS]);
+    }
+    constexpr std::uint32_t FRACTION_MASK{(1u << FIELD_BIN_SHIFT) - 1};
+    const float fraction{static_cast<float>(bits & FRACTION_MASK) *
+                         (1.0f / static_cast<float>(1u << FIELD_BIN_SHIFT))};
+    return static_cast<float>(below[bin]) +
+           static_cast<float>(below[bin + 1] - below[bin]) * fraction;
+}
+
+constexpr std::uint32_t CALIBRATE_THREADS{1024};
+static_assert(ADAPTIVE_FIELD_BINS == 4 * CALIBRATE_THREADS);
+
+// The smallest positive float in (lo, hi], given by their representations, at
+// which the monotone `reaches` holds, to one representation step; `reaches`
+// must hold at hi. Called by the whole block with block-uniform arguments.
+template <typename Reaches>
+__device__ float first_reaching(std::uint32_t lo, std::uint32_t hi, Reaches reaches) {
+    while (hi - lo > 1) {
+        const std::uint32_t step{(hi - lo + CALIBRATE_THREADS - 1) / CALIBRATE_THREADS};
+        const std::uint32_t x{min(hi, lo + (threadIdx.x + 1) * step)};
+        const std::uint32_t failing{
+            static_cast<std::uint32_t>(__syncthreads_count(!reaches(__uint_as_float(x))))};
+        lo += failing * step;
+        hi = min(hi, lo + step);
+    }
+    return __uint_as_float(hi);
+}
+
+// The median and median absolute deviation of the adaptive field, estimated from
+// its histogram, and the calibration they give. libjxl takes the order
+// statistics of rank count / 2 exactly; the estimates are within a bin of them.
+__global__ void __launch_bounds__(CALIBRATE_THREADS)
+    calibrate_field_kernel(const std::uint32_t* __restrict__ field_histogram, float quant_dc_float,
+                           QuantCalibration* __restrict__ calibration) {
+    __shared__ std::uint32_t below[ADAPTIVE_FIELD_BINS + 1];
+    __shared__ std::uint32_t warp_sums[CALIBRATE_THREADS / 32];
+    const std::uint32_t tid{threadIdx.x};
+    const std::uint32_t lane{tid % 32};
+    const std::uint32_t warp{tid / 32};
+
+    const uint4 counts{reinterpret_cast<const uint4*>(field_histogram)[tid]};
+    const std::uint32_t sum{counts.x + counts.y + counts.z + counts.w};
+    const std::uint32_t inclusive{warp_inclusive_sum(sum, lane)};
+    if (lane == 31) {
+        warp_sums[warp] = inclusive;
+    }
+    __syncthreads();
+    if (warp == 0) {
+        warp_sums[lane] = warp_inclusive_sum(warp_sums[lane], lane);
+    }
+    __syncthreads();
+    const std::uint32_t first{(warp == 0 ? 0u : warp_sums[warp - 1]) + inclusive - sum};
+    below[4 * tid] = first;
+    below[4 * tid + 1] = first + counts.x;
+    below[4 * tid + 2] = first + counts.x + counts.y;
+    below[4 * tid + 3] = first + counts.x + counts.y + counts.z;
+    if (tid == CALIBRATE_THREADS - 1) {
+        below[ADAPTIVE_FIELD_BINS] = first + sum;
+    }
+    __syncthreads();
+
+    const float rank{static_cast<float>(below[ADAPTIVE_FIELD_BINS] / 2) + 0.5f};
+    const float median{first_reaching(0u, __float_as_uint(FIELD_MAX), [&](float v) {
+        return field_values_below(below, v) >= rank;
+    })};
+    const float deviation{first_reaching(0u, __float_as_uint(2.0f * FIELD_MAX), [&](float t) {
+        return field_values_below(below, median + t) - field_values_below(below, median - t) >=
+               rank;
+    })};
+    if (tid == 0) {
+        *calibration = calibrate_quant(quant_dc_float, median, deviation);
+    }
+}
+
+constexpr std::uint32_t FIELD_THREADS{256};
+
+__global__ void __launch_bounds__(FIELD_THREADS)
+    quantize_field_kernel(const float* __restrict__ adaptive_field, std::uint32_t blocks,
+                          const QuantCalibration* __restrict__ calibration,
+                          std::int32_t* __restrict__ quant_field) {
+    const std::uint32_t i{blockIdx.x * FIELD_THREADS + threadIdx.x};
+    if (i < blocks) {
+        quant_field[i] = quant_field_value(adaptive_field[i], calibration->inv_global_scale);
+    }
+}
+
 __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
                           cudaTextureObject_t chroma_tex, std::size_t width, std::size_t height,
                           std::size_t bw, std::size_t bh, float km0, float km1, float km2,
-                          float km3, float mul_pb, float add_pb, float inv_global_scale, float qgsf,
+                          float km3, float mul_pb, float add_pb, float qgsf,
                           __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
-                          std::int32_t* __restrict__ quant_field) {
+                          float* __restrict__ adaptive_field,
+                          std::uint32_t* __restrict__ field_histogram) {
     extern __shared__ __align__(16) unsigned char workspace_bytes[];
     float* workspace{reinterpret_cast<float*>(workspace_bytes)};
     float* sharp_y{workspace};
@@ -773,9 +886,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
             ov += blue_sum * 0.14207000358439159f;
 
             const float qval{expf(ov) * mul_pb + add_pb};
-            int qi{static_cast<int>(qval * inv_global_scale + 0.5f)};
-            qi = qi < 1 ? 1 : (qi > K_QUANT_MAX ? K_QUANT_MAX : qi);
-            quant_field[gby * bw + gbx] = qi;
+            adaptive_field[gby * bw + gbx] = qval;
+            atomicAdd(&field_histogram[field_bin(qval)], 1u);
         }
     }
 
@@ -835,13 +947,20 @@ ChromaTexture::~ChromaTexture() {
 
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
                      std::size_t width, std::size_t height, float distance, __half* coeffs,
-                     std::int8_t* acs, std::int32_t* quant_field, cudaStream_t stream) {
+                     std::int8_t* acs, float* adaptive_field, std::uint32_t* field_histogram,
+                     std::int32_t* quant_field, QuantCalibration* calibration,
+                     cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
+    const std::uint32_t blocks{static_cast<std::uint32_t>(bw * bh)};
 
-    const QuantCalibration cal{calibrate_quant(distance)};
     const float scale{K_AC_QUANT / distance};
-    const float qgsf{static_cast<float>(cal.raw_quant_field) * cal.global_scale_float};
+    const float quant_dc_float{initial_quant_dc(distance)};
+    // The transform selection runs before the adaptive field exists, at the
+    // quantizer of a uniform field of the distance's AC quantizer.
+    const QuantCalibration uniform{calibrate_quant(quant_dc_float, scale, 0.0f)};
+    const float qgsf{static_cast<float>(quant_field_value(scale, uniform.inv_global_scale)) *
+                     uniform.global_scale_float};
 
     // PerBlockModulations exponent -> multiplicative field mapping.
     const float base_level{0.48f * scale};
@@ -871,12 +990,20 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
         return false;
     }
 
+    if (cudaMemsetAsync(field_histogram, 0, ADAPTIVE_FIELD_BINS * sizeof(std::uint32_t), stream) !=
+        cudaSuccess) {
+        return false;
+    }
     const dim3 block{FRONTEND_THREADS};
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
     frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES, stream>>>(
         luma, luma_pitch, chroma.get(), width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
-        cal.inv_global_scale, qgsf, coeffs, acs, quant_field);
+        qgsf, coeffs, acs, adaptive_field, field_histogram);
+    calibrate_field_kernel<<<1, CALIBRATE_THREADS, 0, stream>>>(field_histogram, quant_dc_float,
+                                                                calibration);
+    quantize_field_kernel<<<(blocks + FIELD_THREADS - 1) / FIELD_THREADS, FIELD_THREADS, 0,
+                            stream>>>(adaptive_field, blocks, calibration, quant_field);
     return cudaGetLastError() == cudaSuccess;
 }
 

@@ -262,7 +262,20 @@ cuda_library(
         ":quant_consts",
         ":transform_select_impl",
         ":vardct_layout",
+        ":warp_scan",
         ":xyb_impl",
+    ],
+)
+
+cc_test(
+    name = "frontend_fused_gpu_test",
+    srcs = ["frontend_fused_gpu_test.cc"],
+    tags = ["gpu"],
+    deps = [
+        ":frontend_fused",
+        ":quant_consts",
+        ":vardct_layout",
+        "@googletest//:gtest_main",
     ],
 )
 

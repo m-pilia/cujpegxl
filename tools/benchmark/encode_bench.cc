@@ -41,7 +41,6 @@
 #include <cuda_runtime.h>
 #include <nvtx3/nvToolsExt.h>
 
-#include "src/bitstream/frame_assembly.h"
 #include "src/frame_encoder.h"
 #include "src/worker_pool.h"
 #include "tools/benchmark/benchmark_stats.h"
@@ -336,8 +335,6 @@ int run(int argc, char** argv) {
     std::vector<double> latencies_us{};
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
     if (args.codec == "cujpegxl") {
-        const cujpegxl::bitstream::QuantParams qp{
-            cujpegxl::quant_params_for_distance(args.distance)};
         const std::size_t depth{args.pipeline_depth};
         cujpegxl::FrameEncoder encoder{args.device, cujpegxl::default_worker_threads(), depth};
         // Per slot of frames in flight: output buffer, stage timings, NVTX range.
@@ -385,7 +382,7 @@ int run(int argc, char** argv) {
             submitted[f] = std::chrono::steady_clock::now();
             ranges[f % depth] = nvtxRangeStartA("cujpegxl_encode");
             if (!encoder.submit(img.d_luma, args.width, img.d_chroma, args.width, args.width,
-                                args.height, args.distance, qp, outputs[f % depth].data(),
+                                args.height, args.distance, outputs[f % depth].data(),
                                 outputs[f % depth].size(),
                                 args.profile ? &stages[f % depth] : nullptr)) {
                 die("cujpegxl submit failed");

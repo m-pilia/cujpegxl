@@ -182,8 +182,7 @@ cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegx
     if (!frame_encoder.submit(reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
                               reinterpret_cast<const std::uint8_t*>(input->chroma),
                               input->chroma_pitch, config.width, config.height, config.distance,
-                              cujpegxl::quant_params_for_distance(config.distance), output->data,
-                              output->capacity)) {
+                              output->data, output->capacity)) {
         return CUJPEGXL_INTERNAL_ERROR;
     }
     encoder->outputs[(encoder->oldest_output + in_flight) % encoder->outputs.size()] = output;

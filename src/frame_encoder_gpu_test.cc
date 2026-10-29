@@ -109,7 +109,7 @@ bool submit(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w, std::s
             float distance, std::vector<std::uint8_t>& file) {
     file.assign(max_encoded_size(w, h), 0);
     return encoder.submit(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, w, h,
-                          distance, quant_params_for_distance(distance), file.data(), file.size());
+                          distance, file.data(), file.size());
 }
 
 std::vector<std::uint8_t> encode(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w,

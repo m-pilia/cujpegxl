@@ -179,7 +179,10 @@ int main(int argc, char** argv) {
     std::int8_t* d_acs{device_alloc<std::int8_t>(blocks)};
     std::int8_t* d_mx{device_alloc<std::int8_t>(cmw * cmh)};
     std::int8_t* d_mb{device_alloc<std::int8_t>(cmw * cmh)};
+    float* d_adaptive_field{device_alloc<float>(blocks)};
+    std::uint32_t* d_field_histogram{device_alloc<std::uint32_t>(ADAPTIVE_FIELD_BINS)};
     std::int32_t* d_qf{device_alloc<std::int32_t>(blocks)};
+    QuantCalibration* d_calibration{device_alloc<QuantCalibration>(1)};
     std::int16_t* d_ac16{device_alloc<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK)};
     std::int32_t* d_dc32{device_alloc<std::int32_t>(3 * blocks)};
     std::int32_t* d_nz_grid{device_alloc<std::int32_t>(3 * blocks)};
@@ -190,9 +193,6 @@ int main(int argc, char** argv) {
     AcClustering* d_clustering{device_alloc<AcClustering>(1)};
     std::uint32_t* d_dc_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
     std::uint32_t* d_am_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-
-    const QuantCalibration cal{calibrate_quant(args.distance)};
-    const bitstream::QuantParams qp{cal.global_scale, cal.quant_dc};
 
     std::uint8_t* d_fb_scratch{
         device_alloc<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height))};
@@ -272,12 +272,14 @@ int main(int argc, char** argv) {
         timed(s_fe, record, [&] {
             const ChromaTexture chroma{d_chroma, width, width, height, nullptr};
             encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
-                            d_qf, nullptr);
+                            d_adaptive_field, d_field_histogram, d_qf, d_calibration, nullptr);
         });
         timed(s_qz, record, [&] {
-            quantize_residual(d_coeffs, d_acs, d_qf, width, height, args.distance, d_mx, d_mb,
+            quantize_residual(d_coeffs, d_acs, d_qf, d_calibration, width, height, d_mx, d_mb,
                               d_ac16, d_dc32, d_nz_exact, d_nz_grid, nullptr);
         });
+        QuantCalibration calibration{};
+        cudaMemcpy(&calibration, d_calibration, sizeof(QuantCalibration), cudaMemcpyDeviceToHost);
 
         // Entropy sub-stages, serialized.
         timed(s_ach, record, [&] {
@@ -319,7 +321,10 @@ int main(int argc, char** argv) {
                                         d_pre_bits, d_mid, d_mid_off, d_mid_bits, nullptr);
         });
         std::vector<std::uint8_t> dc_global;
-        timed(s_dcg, record, [&] { dc_global = bitstream::build_dc_global(qp); });
+        timed(s_dcg, record, [&] {
+            dc_global = bitstream::build_dc_global(
+                bitstream::QuantParams{calibration.global_scale, calibration.quant_dc});
+        });
         timed(s_dce, record, [&] {
             dc_encode_groups(d_dc32, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                              d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,

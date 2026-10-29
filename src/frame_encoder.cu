@@ -169,7 +169,10 @@ struct FrameBuffers {
     std::int8_t* acs{nullptr};
     std::int8_t* ytox_map{nullptr};
     std::int8_t* ytob_map{nullptr};
+    float* adaptive_field{nullptr};
+    std::uint32_t* field_histogram{nullptr};
     std::int32_t* quant_field{nullptr};
+    QuantCalibration* calibration{nullptr};
     std::int16_t* ac{nullptr};
     std::int32_t* dc{nullptr};
     std::int32_t* nz_exact{nullptr};
@@ -216,7 +219,10 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .acs = carver.take<std::int8_t>(blocks),
         .ytox_map = carver.take<std::int8_t>(color_tiles),
         .ytob_map = carver.take<std::int8_t>(color_tiles),
+        .adaptive_field = carver.take<float>(blocks),
+        .field_histogram = carver.take<std::uint32_t>(ADAPTIVE_FIELD_BINS),
         .quant_field = carver.take<std::int32_t>(blocks),
+        .calibration = carver.take<QuantCalibration>(1),
         .ac = carver.take<std::int16_t>(3 * blocks * COEFFS_PER_BLOCK),
         .dc = carver.take<std::int32_t>(3 * blocks),
         .nz_exact = carver.take<std::int32_t>(3 * blocks),
@@ -281,6 +287,7 @@ struct Slot {
 
     DeviceArena arena;
     FrameBuffers device{};
+    PinnedBuffer<QuantCalibration> calibration;
     PinnedBuffer<AcClustering> clustering;
     PinnedBuffer<std::uint32_t> layout;
     PinnedBuffer<std::uint32_t> dc_sizes;
@@ -291,7 +298,6 @@ struct Slot {
 
     std::size_t width{0};
     std::size_t height{0};
-    bitstream::QuantParams qp{};
     std::uint8_t* out_file{nullptr};
     std::size_t out_capacity{0};
     std::vector<StageTiming>* stats{nullptr};
@@ -370,11 +376,6 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height) {
            TOC_ENTRY_BOUND * num_sections;
 }
 
-bitstream::QuantParams quant_params_for_distance(float distance) {
-    const QuantCalibration cal{calibrate_quant(distance)};
-    return bitstream::QuantParams{cal.global_scale, cal.quant_dc};
-}
-
 // Frame k uses slot k % depth. The caller thread enqueues a frame's device work
 // in submit(); the driver thread then runs each frame's host stage in order, on
 // the worker pool as its thread 0.
@@ -441,8 +442,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     ArenaCarver measure{0};
     carve_frame_buffers(measure, width, height);
-    if (!slot.arena.reserve(measure.size()) || !slot.clustering.reserve(1) ||
-        !slot.layout.reserve(layout_words) || !slot.dc_sizes.reserve(num_dc)) {
+    if (!slot.arena.reserve(measure.size()) || !slot.calibration.reserve(1) ||
+        !slot.clustering.reserve(1) || !slot.layout.reserve(layout_words) ||
+        !slot.dc_sizes.reserve(num_dc)) {
         return false;
     }
     ArenaCarver carver{reinterpret_cast<std::uintptr_t>(slot.arena.data())};
@@ -463,8 +465,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     const Clock::time_point frontend_start{Clock::now()};
     if (!encode_frontend(luma, luma_pitch, *slot.chroma, width, height, distance, d.coeffs, d.acs,
-                         d.quant_field, slot.stream) ||
-        !quantize_residual(d.coeffs, d.acs, d.quant_field, width, height, distance, d.ytox_map,
+                         d.adaptive_field, d.field_histogram, d.quant_field, d.calibration,
+                         slot.stream) ||
+        !quantize_residual(d.coeffs, d.acs, d.quant_field, d.calibration, width, height, d.ytox_map,
                            d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, slot.stream)) {
         return false;
     }
@@ -504,6 +507,8 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
                          slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
+        cudaMemcpyAsync(slot.calibration.data(), d.calibration, sizeof(QuantCalibration),
+                        cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
         cudaMemcpyAsync(slot.clustering.data(), d.clustering, sizeof(AcClustering),
                         cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
         cudaMemcpyAsync(slot.layout.data(), d.layout, layout_words * sizeof(std::uint32_t),
@@ -656,7 +661,9 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     entropy.gpu_us =
         std::chrono::duration<double, std::micro>(slot.layout_landed - slot.entropy_start).count();
     const Clock::time_point entropy_cpu_start{Clock::now()};
-    const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(slot.qp)};
+    const QuantCalibration& calibration{*slot.calibration.data()};
+    const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(
+        bitstream::QuantParams{calibration.global_scale, calibration.quant_dc})};
 
     const std::uint32_t* const token_offset{slot.layout.data()};
     const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
@@ -823,9 +830,8 @@ std::size_t FrameEncoder::in_flight() const {
 
 bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
                           const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                          std::size_t height, float distance, const bitstream::QuantParams& qp,
-                          std::uint8_t* out_file, std::size_t out_capacity,
-                          std::vector<StageTiming>* stats) {
+                          std::size_t height, float distance, std::uint8_t* out_file,
+                          std::size_t out_capacity, std::vector<StageTiming>* stats) {
     assert(in_flight() < pipeline_depth());
     State& s{*state_};
     if (bitstream::ac_group_count(width, height) <= 1) {
@@ -842,7 +848,6 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
     }
     slot.width = width;
     slot.height = height;
-    slot.qp = qp;
     slot.out_file = out_file;
     slot.out_capacity = out_capacity;
     slot.stats = stats;

@@ -191,7 +191,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     quantize_tile_kernel(const __half* __restrict__ coeffs, const std::int8_t* __restrict__ acs,
                          const std::int32_t* __restrict__ quant_field,
                          const LlfDcTerms* __restrict__ dc_terms, std::uint32_t bw,
-                         std::uint32_t bh, std::uint32_t tiles_x, float gsf, float dc_scale,
+                         std::uint32_t bh, std::uint32_t tiles_x,
+                         const QuantCalibration* __restrict__ calibration,
                          std::int8_t* __restrict__ ytox_map, std::int8_t* __restrict__ ytob_map,
                          std::int16_t* __restrict__ ac, std::int32_t* __restrict__ dc,
                          std::int32_t* __restrict__ nz_exact, std::int32_t* __restrict__ nz_grid) {
@@ -206,6 +207,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
 
     const std::uint32_t nblk{bw * bh};
     const std::uint32_t cplane{nblk * BLOCK_SLOTS};
+    const float gsf{calibration->global_scale_float};
+    const float dc_scale{gsf * static_cast<float>(calibration->quant_dc)};
     const std::uint32_t tid{threadIdx.x};
     const std::uint32_t warp{tid / 32};
     const std::uint32_t lane{tid % 32};
@@ -440,15 +443,12 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
 }  // namespace
 
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
-                       const std::int32_t* quant_field, std::size_t width, std::size_t height,
-                       float distance, std::int8_t* ytox_map, std::int8_t* ytob_map,
-                       std::int16_t* ac, std::int32_t* dc, std::int32_t* nz_exact,
-                       std::int32_t* nz_grid, cudaStream_t stream) {
+                       const std::int32_t* quant_field, const QuantCalibration* calibration,
+                       std::size_t width, std::size_t height, std::int8_t* ytox_map,
+                       std::int8_t* ytob_map, std::int16_t* ac, std::int32_t* dc,
+                       std::int32_t* nz_exact, std::int32_t* nz_grid, cudaStream_t stream) {
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
-    const QuantCalibration cal{calibrate_quant(distance)};
-    const float gsf{cal.global_scale_float};
-    const float dc_scale{cal.global_scale_float * static_cast<float>(cal.quant_dc)};
     const LlfDcTerms* dc_terms{llf_dc_terms_device()};
     if (dc_terms == nullptr) {
         return false;
@@ -457,8 +457,8 @@ bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
     const std::uint32_t tiles{tiles_x * static_cast<std::uint32_t>(ceil_div(bh, TILE_SIDE))};
     quantize_tile_kernel<<<tiles, QUANT_THREADS, 0, stream>>>(
         coeffs, acs, quant_field, dc_terms, static_cast<std::uint32_t>(bw),
-        static_cast<std::uint32_t>(bh), tiles_x, gsf, dc_scale, ytox_map, ytob_map, ac, dc,
-        nz_exact, nz_grid);
+        static_cast<std::uint32_t>(bh), tiles_x, calibration, ytox_map, ytob_map, ac, dc, nz_exact,
+        nz_grid);
     return cudaGetLastError() == cudaSuccess;
 }
 

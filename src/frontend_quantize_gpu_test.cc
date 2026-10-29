@@ -98,6 +98,10 @@ constexpr std::size_t CMW = (BW + 7) / 8;
 constexpr std::size_t CMH = (BH + 7) / 8;
 constexpr std::int32_t QUANT_FIELD = 40;
 
+QuantCalibration test_calibration() {
+    return calibrate_quant(initial_quant_dc(1.0f), K_AC_QUANT, 0.0f);
+}
+
 struct Quantized {
     std::vector<std::int8_t> ytox_map;
     std::vector<std::int8_t> ytob_map;
@@ -122,11 +126,13 @@ std::vector<T> download(const T* device, std::size_t count) {
     return host;
 }
 
-// Runs quantize_residual on `f` at distance 1 with a uniform quant field.
+// Runs quantize_residual on `f` with a uniform quant field under
+// test_calibration().
 [[nodiscard]] bool quantize(const Frame& f, Quantized& out) {
     __half* d_coeffs{upload(f.coeffs)};
     std::int8_t* d_acs{upload(f.acs)};
     std::int32_t* d_qf{upload(std::vector<std::int32_t>(NBLK, QUANT_FIELD))};
+    QuantCalibration* d_calibration{upload(std::vector<QuantCalibration>{test_calibration()})};
     std::int8_t* d_mx{nullptr};
     std::int8_t* d_mb{nullptr};
     std::int16_t* d_ac{nullptr};
@@ -140,8 +146,8 @@ std::vector<T> download(const T* device, std::size_t count) {
     cudaMalloc(&d_nz_exact, 3 * NBLK * sizeof(std::int32_t));
     cudaMalloc(&d_nz_grid, 3 * NBLK * sizeof(std::int32_t));
 
-    const bool ok{quantize_residual(d_coeffs, d_acs, d_qf, WIDTH, HEIGHT, 1.0f, d_mx, d_mb, d_ac,
-                                    d_dc, d_nz_exact, d_nz_grid, nullptr)};
+    const bool ok{quantize_residual(d_coeffs, d_acs, d_qf, d_calibration, WIDTH, HEIGHT, d_mx, d_mb,
+                                    d_ac, d_dc, d_nz_exact, d_nz_grid, nullptr)};
     out.ytox_map = download(d_mx, CMW * CMH);
     out.ytob_map = download(d_mb, CMW * CMH);
     out.ac = download(d_ac, 3 * CPLANE);
@@ -154,6 +160,7 @@ std::vector<T> download(const T* device, std::size_t count) {
     cudaFree(d_mx);
     cudaFree(d_mb);
     cudaFree(d_qf);
+    cudaFree(d_calibration);
     cudaFree(d_ac);
     cudaFree(d_dc);
     cudaFree(d_nz_exact);
@@ -172,7 +179,7 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
     const std::vector<std::int16_t>& ac{q.ac};
     const std::vector<std::int32_t>& dc{q.dc};
 
-    const QuantCalibration cal{calibrate_quant(1.0f)};
+    const QuantCalibration cal{test_calibration()};
     const float gsf{cal.global_scale_float};
     const float dc_scale{gsf * static_cast<float>(cal.quant_dc)};
     for (std::size_t by{0}; by < BH; ++by) {
@@ -266,7 +273,7 @@ TEST(FrontendQuantize, QuantizeResidualAppliesDeadzone) {
     Quantized q{};
     ASSERT_TRUE(quantize(f, q));
 
-    const float qgsf{static_cast<float>(QUANT_FIELD) * calibrate_quant(1.0f).global_scale_float};
+    const float qgsf{static_cast<float>(QUANT_FIELD) * test_calibration().global_scale_float};
     constexpr float TOLERANCE = 1e-3f;
     std::size_t zeroed[3]{};
     for (std::size_t by{0}; by < BH; ++by) {

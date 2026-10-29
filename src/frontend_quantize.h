@@ -10,6 +10,8 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
+#include "quant_calibration.h"
+
 namespace cujpegxl {
 
 // Chroma-from-luma estimation + residual + quantize + DC-via-LLF, one pass per
@@ -32,7 +34,8 @@ namespace cujpegxl {
 // dead zone of `ac_deadzone_threshold` and to 0 inside it. The
 // per-block quantizer strength is quant_field[block] * global_scale. `coeffs`
 // (three channel-major FP16 covered-block planes, see encode_frontend), `acs`
-// (the per-8x8 transform signal) and `quant_field` are device inputs; `ac`
+// (the per-8x8 transform signal), `quant_field` and `calibration` are device
+// inputs; `ac`
 // (three int16 covered-block planes) and `dc` (three int32 planes, one per 8x8
 // block) the outputs.
 //
@@ -45,10 +48,10 @@ namespace cujpegxl {
 // Deterministic. Enqueues on `stream` without waiting; returns false on a CUDA
 // error.
 bool quantize_residual(const __half* coeffs, const std::int8_t* acs,
-                       const std::int32_t* quant_field, std::size_t width, std::size_t height,
-                       float distance, std::int8_t* ytox_map, std::int8_t* ytob_map,
-                       std::int16_t* ac, std::int32_t* dc, std::int32_t* nz_exact,
-                       std::int32_t* nz_grid, cudaStream_t stream);
+                       const std::int32_t* quant_field, const QuantCalibration* calibration,
+                       std::size_t width, std::size_t height, std::int8_t* ytox_map,
+                       std::int8_t* ytob_map, std::int16_t* ac, std::int32_t* dc,
+                       std::int32_t* nz_exact, std::int32_t* nz_grid, cudaStream_t stream);
 
 }  // namespace cujpegxl
 

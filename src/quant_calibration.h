@@ -8,6 +8,12 @@
 #include <cmath>
 #include <cstdint>
 
+#if defined(__CUDACC__)
+#define CUJPEGXL_QC_HD __host__ __device__
+#else
+#define CUJPEGXL_QC_HD
+#endif
+
 namespace cujpegxl {
 
 // libjxl DC quantization reciprocals (kInvDCQuant), channels ordered X, Y, B to
@@ -55,58 +61,57 @@ constexpr float ac_deadzone_threshold(std::uint32_t side, std::uint32_t channel,
     return lowered < 0.5f ? 0.5f : lowered;
 }
 
-// Serialized quantizer state plus the derived float scales, computed from a
-// Butteraugli `distance` exactly as libjxl's encoder does for a uniform quant
-// field (no adaptive AQ): base AC field value kAcQuant/distance and DC value
-// from InitialQuantDC, folded into a global scale by ComputeGlobalScaleAndQuant.
-// See lib/jxl/quantizer.cc and lib/jxl/enc_adaptive_quantization.cc.
+// Serialized quantizer state plus the derived float scales.
 struct QuantCalibration {
     std::uint32_t global_scale;
     std::uint32_t quant_dc;
-    std::uint32_t raw_quant_field;  // uniform per-block AC quant integer (Q)
-    float global_scale_float;       // global_scale / 2^16
-    float inv_global_scale;         // 2^16 / global_scale
+    float global_scale_float;  // global_scale / 2^16
+    float inv_global_scale;    // 2^16 / global_scale
 };
 
-inline QuantCalibration calibrate_quant(float distance) {
-    const float quant_ac = K_AC_QUANT / distance;
-
+// libjxl's InitialQuantDC (lib/jxl/enc_adaptive_quantization.cc): the DC
+// quantizer of a Butteraugli `distance`.
+inline float initial_quant_dc(float distance) {
     const float bt_dc = std::max(
         0.5f * distance,
         std::min(distance, K_DC_MUL * std::pow((1.0f / K_DC_MUL) * distance, K_DC_QUANT_POW)));
-    const float quant_dc_float = std::min(K_DC_QUANT / bt_dc, 50.0f);
+    return std::min(K_DC_QUANT / bt_dc, 50.0f);
+}
 
-    // ComputeGlobalScaleAndQuant with a uniform field: median == quant_ac and
-    // median-absolute-deviation == 0.
-    float scale = static_cast<float>(K_GLOBAL_SCALE_DENOM) * quant_ac / K_QUANT_FIELD_TARGET;
-    if (scale < 1.0f) {
-        scale = 1.0f;
-    }
-    if (scale > static_cast<float>(1 << 15)) {
-        scale = static_cast<float>(1 << 15);
-    }
-    int global_scale = static_cast<int>(scale);
-    const int scaled_quant_dc = static_cast<int>(quant_dc_float * K_GLOBAL_SCALE_NUMERATOR * 1.6f);
+// libjxl's ComputeGlobalScaleAndQuant (lib/jxl/quantizer.cc): the global scale
+// puts the adaptive quant field's median minus its median absolute deviation at
+// K_QUANT_FIELD_TARGET, capped so that the DC quantizer `quant_dc_float` stays
+// representable.
+CUJPEGXL_QC_HD inline QuantCalibration calibrate_quant(float quant_dc_float, float quant_median,
+                                                       float quant_median_absd) {
+    float scale{static_cast<float>(K_GLOBAL_SCALE_DENOM) * (quant_median - quant_median_absd) /
+                K_QUANT_FIELD_TARGET};
+    scale = scale < 1.0f ? 1.0f : scale;
+    scale = scale > static_cast<float>(1 << 15) ? static_cast<float>(1 << 15) : scale;
+    std::int32_t global_scale{static_cast<std::int32_t>(scale)};
+    const std::int32_t scaled_quant_dc{
+        static_cast<std::int32_t>(quant_dc_float * K_GLOBAL_SCALE_NUMERATOR * 1.6f)};
     if (global_scale > scaled_quant_dc) {
         global_scale = scaled_quant_dc <= 0 ? 1 : scaled_quant_dc;
     }
 
-    const float inv_global_scale =
-        1.0f * static_cast<float>(K_GLOBAL_SCALE_DENOM) / static_cast<float>(global_scale);
-    float fval = quant_dc_float * inv_global_scale + 0.5f;
-    fval = std::min<float>(static_cast<float>(1 << 16), fval);
-    const int quant_dc = static_cast<int>(fval);
+    const float inv_global_scale{static_cast<float>(K_GLOBAL_SCALE_DENOM) /
+                                 static_cast<float>(global_scale)};
+    float fval{quant_dc_float * inv_global_scale + 0.5f};
+    fval = fval > static_cast<float>(1 << 16) ? static_cast<float>(1 << 16) : fval;
 
-    int q = static_cast<int>(std::lround(quant_ac * inv_global_scale));
-    q = std::max(1, std::min(K_QUANT_MAX, q));
+    return QuantCalibration{
+        .global_scale = static_cast<std::uint32_t>(global_scale),
+        .quant_dc = static_cast<std::uint32_t>(fval),
+        .global_scale_float = static_cast<float>(global_scale) * (1.0f / K_GLOBAL_SCALE_DENOM),
+        .inv_global_scale = inv_global_scale,
+    };
+}
 
-    QuantCalibration cal{};
-    cal.global_scale = static_cast<std::uint32_t>(global_scale);
-    cal.quant_dc = static_cast<std::uint32_t>(quant_dc);
-    cal.raw_quant_field = static_cast<std::uint32_t>(q);
-    cal.global_scale_float = static_cast<float>(global_scale) * (1.0f / K_GLOBAL_SCALE_DENOM);
-    cal.inv_global_scale = inv_global_scale;
-    return cal;
+// The integer quant field value of an adaptive quant field value `qf`.
+CUJPEGXL_QC_HD inline std::int32_t quant_field_value(float qf, float inv_global_scale) {
+    const std::int32_t qi{static_cast<std::int32_t>(qf * inv_global_scale + 0.5f)};
+    return qi < 1 ? 1 : (qi > K_QUANT_MAX ? K_QUANT_MAX : qi);
 }
 
 }  // namespace cujpegxl

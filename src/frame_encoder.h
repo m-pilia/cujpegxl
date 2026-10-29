@@ -9,8 +9,6 @@
 #include <memory>
 #include <vector>
 
-#include "src/bitstream/frame_assembly.h"
-
 namespace cujpegxl {
 
 // Per-stage instrumentation record. `gpu_us`/`cpu_us` are measured wall time of
@@ -47,11 +45,6 @@ SectionCapacities section_capacities(std::size_t width, std::size_t height);
 // buffer of this capacity, an encode never reports BUFFER_TOO_SMALL.
 std::size_t max_encoded_size(std::size_t width, std::size_t height);
 
-// Maps a Butteraugli `distance` to the serialized Quantizer state written into
-// the codestream. Placeholder linear mapping, not yet calibrated against cjxl's
-// Butteraugli semantics.
-bitstream::QuantParams quant_params_for_distance(float distance);
-
 // The device encoder of the C ABI, a pipeline of frames: submit() enqueues a
 // frame's device work and returns, a host thread then entropy-codes and
 // assembles it, and receive() returns the results in submission order. Up to
@@ -82,7 +75,7 @@ public:
     // `luma`/`chroma` are device addresses (see nv12_to_xyb). The chroma texture
     // requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
     // plane is first copied into an aligned buffer. `distance` drives
-    // quantization; `qp` is the quantizer state written into the codestream.
+    // quantization.
     // width and height must be multiples of 8 (single-AC-group frames use the
     // combined-section layout and are not handled here).
     //
@@ -99,8 +92,8 @@ public:
     [[nodiscard]] bool submit(const std::uint8_t* luma, std::size_t luma_pitch,
                               const std::uint8_t* chroma, std::size_t chroma_pitch,
                               std::size_t width, std::size_t height, float distance,
-                              const bitstream::QuantParams& qp, std::uint8_t* out_file,
-                              std::size_t out_capacity, std::vector<StageTiming>* stats = nullptr);
+                              std::uint8_t* out_file, std::size_t out_capacity,
+                              std::vector<StageTiming>* stats = nullptr);
 
     // Waits for the oldest frame in flight and returns its result. Requires
     // in_flight() > 0. The file size is known before the first write to

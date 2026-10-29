@@ -105,8 +105,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
     cujpegxl::FrameEncoder encoder{device, cujpegxl::default_worker_threads(), 1};
-    if (!encoder.submit(d_luma, width, d_chroma, width, width, height, distance,
-                        cujpegxl::quant_params_for_distance(distance), out_file.data(),
+    if (!encoder.submit(d_luma, width, d_chroma, width, width, height, distance, out_file.data(),
                         out_file.size())) {
         die("submit failed");
     }
