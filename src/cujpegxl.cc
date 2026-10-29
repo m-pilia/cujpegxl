@@ -8,7 +8,7 @@
 #include <new>
 #include <vector>
 
-#include "cujpegxl/capability.h"
+#include "device_support.h"
 #include "frame_encoder.h"
 #include "src/bitstream/frame_assembly.h"
 #include "worker_pool.h"
@@ -23,18 +23,6 @@ struct cujpegxl_encoder {
 };
 
 namespace {
-
-cujpegxl_backend to_c_backend(cujpegxl::Backend backend) {
-    switch (backend) {
-        case cujpegxl::Backend::FP32_SIMT:
-            return CUJPEGXL_BACKEND_FP32_SIMT;
-        case cujpegxl::Backend::FP16_TENSOR:
-            return CUJPEGXL_BACKEND_FP16_TENSOR;
-        case cujpegxl::Backend::UNKNOWN:
-            return CUJPEGXL_BACKEND_UNKNOWN;
-    }
-    return CUJPEGXL_BACKEND_UNKNOWN;
-}
 
 // Rejects configs the device pipeline cannot encode. Block-size (multiple of 8)
 // and multi-AC-group constraints are resolution errors; a non-positive distance
@@ -81,32 +69,10 @@ const char* cujpegxl_status_string(cujpegxl_status status) {
             return "pipeline-full";
         case CUJPEGXL_PIPELINE_EMPTY:
             return "pipeline-empty";
+        case CUJPEGXL_UNSUPPORTED_DEVICE:
+            return "unsupported-device";
     }
     return "internal-error";
-}
-
-const char* cujpegxl_backend_string(cujpegxl_backend backend) {
-    switch (backend) {
-        case CUJPEGXL_BACKEND_FP32_SIMT:
-            return "fp32-simt";
-        case CUJPEGXL_BACKEND_FP16_TENSOR:
-            return "fp16-tensor";
-        case CUJPEGXL_BACKEND_UNKNOWN:
-            return "unknown";
-    }
-    return "unknown";
-}
-
-cujpegxl_status cujpegxl_query_backend(int32_t device_ordinal, cujpegxl_backend* out_backend) {
-    if (out_backend == nullptr) {
-        return CUJPEGXL_INVALID_ARGUMENT;
-    }
-    cujpegxl::DeviceCapability capability{};
-    if (!cujpegxl::query_device_capability(device_ordinal, &capability)) {
-        return CUJPEGXL_NO_DEVICE;
-    }
-    *out_backend = to_c_backend(cujpegxl::select_backend(capability));
-    return CUJPEGXL_OK;
 }
 
 cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* out_bytes) {
@@ -131,9 +97,13 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t d
     if (status != CUJPEGXL_OK) {
         return status;
     }
-    cujpegxl::DeviceCapability capability{};
-    if (!cujpegxl::query_device_capability(device_ordinal, &capability)) {
-        return CUJPEGXL_NO_DEVICE;
+    switch (cujpegxl::query_device_support(device_ordinal)) {
+        case cujpegxl::DeviceSupport::SUPPORTED:
+            break;
+        case cujpegxl::DeviceSupport::NO_DEVICE:
+            return CUJPEGXL_NO_DEVICE;
+        case cujpegxl::DeviceSupport::UNSUPPORTED:
+            return CUJPEGXL_UNSUPPORTED_DEVICE;
     }
     auto* encoder{new (std::nothrow) cujpegxl_encoder{
         *config,

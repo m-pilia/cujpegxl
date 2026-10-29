@@ -25,6 +25,12 @@ See examples for usage in Bazel ([examples/bazel_consumer](https://github.com/m-
 
 Python bindings are provided in [//python:pycujpegxl](https://github.com/m-pilia/cujpegxl/blob/master/python/BUILD.bazel). Currently they take host buffers as input and are meant primarily for evaluation, not for high-performance applications.
 
+Target CUDA architecture(s) can be specified with the `--@rules_cuda//cuda:archs` flag, e.g.:
+
+```sh
+bazelisk build //... '--@rules_cuda//cuda:archs=sm_86;sm_89'
+```
+
 ## Features
 
 Quality and compression rate are lower compared to the reference libjxl implementation. This is expected, as cujpegxl only implements a subset of the JPEG XL algorithm, excluding some parts of it (in particular, some GPU-unfriendly steps are intentionally omitted for performance reasons).

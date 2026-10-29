@@ -229,6 +229,14 @@ TEST(CujpegxlEncodeGpu, RejectsZeroPipelineDepth) {
     EXPECT_EQ(encoder, nullptr);
 }
 
+TEST(CujpegxlEncodeGpu, RejectsMissingDevice) {
+    const cujpegxl_config config{512, 512, 1.0f};
+    cujpegxl_encoder* encoder{nullptr};
+    EXPECT_EQ(cujpegxl_encoder_create(&config, 9999, 1, &encoder), CUJPEGXL_NO_DEVICE);
+    EXPECT_EQ(encoder, nullptr);
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
+
 // Frames come back in submission order with their own outputs; the second
 // frame, submitted after a configure, has the new distance.
 TEST(CujpegxlEncodeGpu, PipelinesFramesInOrder) {

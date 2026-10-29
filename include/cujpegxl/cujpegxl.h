@@ -32,14 +32,9 @@ typedef enum cujpegxl_status {
     CUJPEGXL_INTERNAL_ERROR = 5,
     CUJPEGXL_BUFFER_TOO_SMALL = 6,
     CUJPEGXL_PIPELINE_FULL = 7,
-    CUJPEGXL_PIPELINE_EMPTY = 8
+    CUJPEGXL_PIPELINE_EMPTY = 8,
+    CUJPEGXL_UNSUPPORTED_DEVICE = 9
 } cujpegxl_status;
-
-typedef enum cujpegxl_backend {
-    CUJPEGXL_BACKEND_UNKNOWN = 0,
-    CUJPEGXL_BACKEND_FP32_SIMT = 1,
-    CUJPEGXL_BACKEND_FP16_TENSOR = 2
-} cujpegxl_backend;
 
 typedef struct cujpegxl_encoder cujpegxl_encoder;
 
@@ -70,9 +65,6 @@ typedef struct cujpegxl_output {
 
 uint32_t cujpegxl_api_version(void);
 const char* cujpegxl_status_string(cujpegxl_status status);
-const char* cujpegxl_backend_string(cujpegxl_backend backend);
-
-cujpegxl_status cujpegxl_query_backend(int32_t device_ordinal, cujpegxl_backend* out_backend);
 
 /* Worst-case codestream size (in bytes) for `config`, so a caller can
  * preallocate the output buffers of `cujpegxl_encoder_submit`. */
@@ -82,7 +74,8 @@ cujpegxl_status cujpegxl_max_output_size(const cujpegxl_config* config, size_t* 
  * flight, submitted and not yet received: the device work of a frame runs while
  * the host entropy-codes the frames submitted before it. Each frame in flight
  * holds its own device and pinned host memory. The output does not depend on
- * the depth. An encoder is not thread-safe. */
+ * the depth. An encoder is not thread-safe. CUJPEGXL_UNSUPPORTED_DEVICE if the
+ * library was not built for an architecture that can run on the device. */
 cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t device_ordinal,
                                         uint32_t pipeline_depth, cujpegxl_encoder** out_encoder);
 /* Applies to the frames submitted afterwards. */

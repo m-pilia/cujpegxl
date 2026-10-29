@@ -12,19 +12,11 @@ RUNTIME_COPTS = [
     "-fno-rtti",
 ]
 
-cc_library(
-    name = "capability",
-    srcs = ["capability.cc"],
-    hdrs = ["capability.h"],
-    copts = RUNTIME_COPTS,
-    include_prefix = "cujpegxl",
-)
-
 cuda_library(
-    name = "capability_cuda",
-    srcs = ["capability_cuda.cu"],
+    name = "device_support",
+    srcs = ["device_support.cu"],
+    hdrs = ["device_support.h"],
     copts = RUNTIME_COPTS,
-    deps = [":capability"],
 )
 
 cc_library(
@@ -438,8 +430,7 @@ cc_library(
     srcs = ["cujpegxl.cc"],
     copts = RUNTIME_COPTS,
     deps = [
-        ":capability",
-        ":capability_cuda",
+        ":device_support",
         ":frame_encoder",
         ":worker_pool",
         "//:cujpegxl_headers",
@@ -458,27 +449,5 @@ cc_test(
         "@googletest//:gtest_main",
         "@libjxl//lib:jpegxl",
         "@libjxl//lib:jpegxl_private",
-    ],
-)
-
-cc_test(
-    name = "capability_test",
-    srcs = ["capability_test.cc"],
-    deps = [
-        ":capability",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "query_backend_gpu_test",
-    srcs = ["query_backend_gpu_test.cc"],
-    tags = ["gpu"],
-    deps = [
-        ":capability",
-        ":capability_cuda",
-        ":cujpegxl_lib",
-        "//:cujpegxl_headers",
-        "@googletest//:gtest_main",
     ],
 )

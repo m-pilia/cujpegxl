@@ -18,16 +18,6 @@ namespace py = pybind11;
 
 namespace {
 
-std::string query_backend(std::int32_t device_ordinal) {
-    cujpegxl_backend backend{CUJPEGXL_BACKEND_UNKNOWN};
-    const cujpegxl_status status{cujpegxl_query_backend(device_ordinal, &backend)};
-    if (status != CUJPEGXL_OK) {
-        throw std::runtime_error(std::string("query_backend failed: ") +
-                                 cujpegxl_status_string(status));
-    }
-    return cujpegxl_backend_string(backend);
-}
-
 const std::uint8_t* nv12_planes(const py::array_t<std::uint8_t>& nv12, std::uint32_t width,
                                 std::uint32_t height) {
     const py::buffer_info info{nv12.request()};
@@ -82,7 +72,6 @@ PYBIND11_MODULE(pycujpegxl, m) {
     m.doc() = "Thin Python bindings over the cujpegxl C ABI.";
     m.attr("API_VERSION") = py::int_(cujpegxl_api_version());
     m.def("api_version", &cujpegxl_api_version);
-    m.def("query_backend", &query_backend, py::arg("device_ordinal") = 0);
     m.def("encode", &encode, py::arg("nv12"), py::arg("width"), py::arg("height"),
           py::arg("distance") = 1.0f, py::arg("device_ordinal") = 0);
     m.def("encode_with_stats", &encode_with_stats, py::arg("nv12"), py::arg("width"),
