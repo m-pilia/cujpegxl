@@ -53,8 +53,6 @@ const char* cujpegxl_status_string(cujpegxl_status status) {
     switch (status) {
         case CUJPEGXL_OK:
             return "ok";
-        case CUJPEGXL_NOT_IMPLEMENTED:
-            return "not-implemented";
         case CUJPEGXL_INVALID_ARGUMENT:
             return "invalid-argument";
         case CUJPEGXL_UNSUPPORTED_RESOLUTION:
