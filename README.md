@@ -40,7 +40,6 @@ Notable exclusions include:
 - LZ77 pre-pass is omitted.
 - No non-square, <8 and >32 transforms.
 - No iterative Butteraugli rate control.
-- No optimized coefficient orders.
 
 Some numerical approximations are made for performance reasons, trading a bit of quality for speed:
 - Huffman codes limited to 15 bit.
