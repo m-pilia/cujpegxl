@@ -111,9 +111,7 @@ TEST(CujpegxlEncodeGpu, EncodesDeviceNv12AndDecodes) {
 
     std::vector<std::uint8_t> buffer(bound, 0);
     cujpegxl_output output{buffer.data(), 0, buffer.size()};
-    const cujpegxl_nv12_input input{reinterpret_cast<std::uintptr_t>(nv12.luma),
-                                    reinterpret_cast<std::uintptr_t>(nv12.chroma), nv12.luma_pitch,
-                                    nv12.chroma_pitch};
+    const cujpegxl_nv12_input input{nv12.luma, nv12.chroma, nv12.luma_pitch, nv12.chroma_pitch};
 
     ASSERT_EQ(cujpegxl_encoder_submit(encoder, &input, &output), CUJPEGXL_OK);
     cujpegxl_output* received{nullptr};
@@ -142,9 +140,7 @@ TEST(CujpegxlEncodeGpu, TooSmallBufferReports) {
 
     std::vector<std::uint8_t> buffer(16, 0);
     cujpegxl_output output{buffer.data(), 0, buffer.size()};
-    const cujpegxl_nv12_input input{reinterpret_cast<std::uintptr_t>(nv12.luma),
-                                    reinterpret_cast<std::uintptr_t>(nv12.chroma), nv12.luma_pitch,
-                                    nv12.chroma_pitch};
+    const cujpegxl_nv12_input input{nv12.luma, nv12.chroma, nv12.luma_pitch, nv12.chroma_pitch};
 
     ASSERT_EQ(cujpegxl_encoder_submit(encoder, &input, &output), CUJPEGXL_OK);
     cujpegxl_output* received{nullptr};
@@ -186,9 +182,7 @@ TEST(CujpegxlEncodeGpu, PipelinesFramesInOrder) {
 
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(config.width, config.height, nv12));
-    const cujpegxl_nv12_input input{reinterpret_cast<std::uintptr_t>(nv12.luma),
-                                    reinterpret_cast<std::uintptr_t>(nv12.chroma), nv12.luma_pitch,
-                                    nv12.chroma_pitch};
+    const cujpegxl_nv12_input input{nv12.luma, nv12.chroma, nv12.luma_pitch, nv12.chroma_pitch};
     std::size_t bound{0};
     ASSERT_EQ(cujpegxl_max_output_size(&config, &bound), CUJPEGXL_OK);
     std::vector<std::vector<std::uint8_t>> buffers(3, std::vector<std::uint8_t>(bound, 0));

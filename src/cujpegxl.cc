@@ -166,7 +166,7 @@ cujpegxl_status cujpegxl_encoder_configure(cujpegxl_encoder* encoder,
 cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegxl_nv12_input* input,
                                         cujpegxl_output* output) {
     if (encoder == nullptr || input == nullptr || output == nullptr || output->data == nullptr ||
-        input->luma == 0 || input->chroma == 0) {
+        input->luma == nullptr || input->chroma == nullptr) {
         return CUJPEGXL_INVALID_ARGUMENT;
     }
     const cujpegxl_config& config{encoder->config};
@@ -179,8 +179,8 @@ cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegx
     if (in_flight == frame_encoder.pipeline_depth()) {
         return CUJPEGXL_PIPELINE_FULL;
     }
-    if (!frame_encoder.submit(reinterpret_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
-                              reinterpret_cast<const std::uint8_t*>(input->chroma),
+    if (!frame_encoder.submit(static_cast<const std::uint8_t*>(input->luma), input->luma_pitch,
+                              static_cast<const std::uint8_t*>(input->chroma),
                               input->chroma_pitch, config.width, config.height, config.distance,
                               output->data, output->capacity)) {
         return CUJPEGXL_INTERNAL_ERROR;

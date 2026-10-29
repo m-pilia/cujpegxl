@@ -8,7 +8,7 @@
  *
  * This header is deliberately free of any CUDA types or includes so that
  * non-CUDA consumers can compile and link against the shared library without a
- * CUDA toolkit. Device memory is passed as opaque integer addresses. */
+ * CUDA toolkit. */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -21,7 +21,7 @@ extern "C" {
  * intentionally diverge from the C++ naming rules. */
 /* NOLINTBEGIN(modernize-use-using,readability-identifier-naming) */
 
-#define CUJPEGXL_API_VERSION 4u
+#define CUJPEGXL_API_VERSION 5u
 
 typedef enum cujpegxl_status {
     CUJPEGXL_OK = 0,
@@ -50,11 +50,10 @@ typedef struct cujpegxl_config {
     int32_t device_ordinal;
 } cujpegxl_config;
 
-/* NV12 (BT.709 full range) device input. `luma`/`chroma` are raw device
- * addresses held as integers to keep this header CUDA-free. */
+/* NV12 (BT.709 full range) input. `luma`/`chroma` are device pointers. */
 typedef struct cujpegxl_nv12_input {
-    uintptr_t luma;
-    uintptr_t chroma;
+    const void* luma;
+    const void* chroma;
     size_t luma_pitch;
     size_t chroma_pitch;
 } cujpegxl_nv12_input;

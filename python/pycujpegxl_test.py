@@ -8,8 +8,8 @@ import pycujpegxl
 
 class PyCujpegxlTest(unittest.TestCase):
     def test_api_version(self):
-        self.assertEqual(pycujpegxl.api_version(), 4)
-        self.assertEqual(pycujpegxl.API_VERSION, 4)
+        self.assertEqual(pycujpegxl.api_version(), 5)
+        self.assertEqual(pycujpegxl.API_VERSION, 5)
 
     def test_query_backend_is_exposed(self):
         self.assertTrue(callable(pycujpegxl.query_backend))
