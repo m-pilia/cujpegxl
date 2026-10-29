@@ -9,6 +9,8 @@
 #include <memory>
 #include <vector>
 
+#include <cuda_runtime_api.h>
+
 namespace cujpegxl {
 
 // Per-stage instrumentation record. `gpu_us`/`cpu_us` are measured wall time of
@@ -74,8 +76,9 @@ public:
     //
     // `luma`/`chroma` are device addresses (see nv12_to_xyb). The chroma texture
     // requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
-    // plane is first copied into an aligned buffer. `distance` drives
-    // quantization.
+    // plane is first copied into an aligned buffer. The image is read after the
+    // work enqueued on `input_stream`, a stream of the encoder's device, before
+    // the call. `distance` drives quantization.
     // width and height must be multiples of 8 (single-AC-group frames use the
     // combined-section layout and are not handled here).
     //
@@ -91,8 +94,8 @@ public:
     // "assembly" stage timings; the front end is then waited for in submit().
     [[nodiscard]] bool submit(const std::uint8_t* luma, std::size_t luma_pitch,
                               const std::uint8_t* chroma, std::size_t chroma_pitch,
-                              std::size_t width, std::size_t height, float distance,
-                              std::uint8_t* out_file, std::size_t out_capacity,
+                              cudaStream_t input_stream, std::size_t width, std::size_t height,
+                              float distance, std::uint8_t* out_file, std::size_t out_capacity,
                               std::vector<StageTiming>* stats = nullptr);
 
     // Waits for the oldest frame in flight and returns its result. Requires

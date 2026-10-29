@@ -34,8 +34,8 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
     if (ok) {
         out.resize(max_encoded_size(width, height));
         FrameEncoder encoder{device_ordinal, default_worker_threads(), 1};
-        ok = encoder.submit(d_luma, width, d_chroma, width, width, height, distance, out.data(),
-                            out.size(), stats);
+        ok = encoder.submit(d_luma, width, d_chroma, width, nullptr, width, height, distance,
+                            out.data(), out.size(), stats);
         if (ok) {
             const EncodeResult result{encoder.receive()};
             ok = result.status == EncodeStatus::OK;

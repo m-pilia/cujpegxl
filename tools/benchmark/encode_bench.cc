@@ -381,8 +381,8 @@ int run(int argc, char** argv) {
             stages[f % depth].clear();
             submitted[f] = std::chrono::steady_clock::now();
             ranges[f % depth] = nvtxRangeStartA("cujpegxl_encode");
-            if (!encoder.submit(img.d_luma, args.width, img.d_chroma, args.width, args.width,
-                                args.height, args.distance, outputs[f % depth].data(),
+            if (!encoder.submit(img.d_luma, args.width, img.d_chroma, args.width, nullptr,
+                                args.width, args.height, args.distance, outputs[f % depth].data(),
                                 outputs[f % depth].size(),
                                 args.profile ? &stages[f % depth] : nullptr)) {
                 die("cujpegxl submit failed");

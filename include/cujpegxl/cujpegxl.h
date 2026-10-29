@@ -50,12 +50,17 @@ typedef struct cujpegxl_config {
     int32_t device_ordinal;
 } cujpegxl_config;
 
-/* NV12 (BT.709 full range) input. `luma`/`chroma` are device pointers. */
+/* NV12 (BT.709 full range) input. `luma`/`chroma` are device pointers.
+ * `stream` is a CUDA stream of the encoder's device: the encoder reads the
+ * planes after the work enqueued on it before `cujpegxl_encoder_submit`, so the
+ * caller does not need to synchronize after writing them. NULL is the legacy
+ * default stream. */
 typedef struct cujpegxl_nv12_input {
     const void* luma;
     const void* chroma;
     size_t luma_pitch;
     size_t chroma_pitch;
+    void* stream;
 } cujpegxl_nv12_input;
 
 typedef struct cujpegxl_output {

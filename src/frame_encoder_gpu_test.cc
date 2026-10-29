@@ -108,7 +108,7 @@ testing::AssertionResult decode_dims(const std::vector<std::uint8_t>& file, std:
 bool submit(FrameEncoder& encoder, const DeviceNv12& nv12, std::size_t w, std::size_t h,
             float distance, std::vector<std::uint8_t>& file) {
     file.assign(max_encoded_size(w, h), 0);
-    return encoder.submit(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, w, h,
+    return encoder.submit(nv12.luma, nv12.luma_pitch, nv12.chroma, nv12.chroma_pitch, nullptr, w, h,
                           distance, file.data(), file.size());
 }
 

@@ -283,6 +283,7 @@ struct Slot {
     cudaStream_t stream{nullptr};
     cudaStream_t dc_stream{nullptr};
     cudaStream_t copy_stream{nullptr};
+    cudaEvent_t input_ready{nullptr};
     cudaEvent_t forked{nullptr};
     cudaEvent_t layout_copied{nullptr};
     cudaEvent_t dc_sizes_copied{nullptr};
@@ -326,8 +327,8 @@ bool Slot::init() {
     ready = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
             cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
             cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            create_event(forked) && create_event(layout_copied) && create_event(dc_sizes_copied) &&
-            create_event(dc_body_copied);
+            create_event(input_ready) && create_event(forked) && create_event(layout_copied) &&
+            create_event(dc_sizes_copied) && create_event(dc_body_copied);
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
         ready = ready && create_event(batch_packed[b]) && create_event(batch_copied[b]);
     }
@@ -341,7 +342,8 @@ void Slot::release() {
             e = nullptr;
         }
     };
-    for (cudaEvent_t* e : {&forked, &layout_copied, &dc_sizes_copied, &dc_body_copied}) {
+    for (cudaEvent_t* e :
+         {&input_ready, &forked, &layout_copied, &dc_sizes_copied, &dc_body_copied}) {
         destroy_event(*e);
     }
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
@@ -404,7 +406,8 @@ struct FrameEncoder::State {
     }
 
     bool enqueue_frame(Slot& slot, const std::uint8_t* luma, std::size_t luma_pitch,
-                       const std::uint8_t* chroma, std::size_t chroma_pitch, float distance);
+                       const std::uint8_t* chroma, std::size_t chroma_pitch,
+                       cudaStream_t input_stream, float distance);
     void drive();
     EncodeResult code_frame(Slot& slot, std::uint64_t frame);
     bool start_copies(Slot& slot, bool wait);
@@ -439,7 +442,8 @@ struct FrameEncoder::State {
 
 bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
                                         std::size_t luma_pitch, const std::uint8_t* chroma,
-                                        std::size_t chroma_pitch, float distance) {
+                                        std::size_t chroma_pitch, cudaStream_t input_stream,
+                                        float distance) {
     const std::size_t width{slot.width};
     const std::size_t height{slot.height};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
@@ -456,6 +460,12 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     ArenaCarver carver{reinterpret_cast<std::uintptr_t>(slot.arena.data())};
     slot.device = carve_frame_buffers(carver, width, height);
     const FrameBuffers& d{slot.device};
+
+    // Only `slot.stream` reads the image; the other streams fork from it later.
+    if (cudaEventRecord(slot.input_ready, input_stream) != cudaSuccess ||
+        cudaStreamWaitEvent(slot.stream, slot.input_ready, 0) != cudaSuccess) {
+        return false;
+    }
 
     const std::uint8_t* chroma_src{chroma};
     std::size_t chroma_src_pitch{chroma_pitch};
@@ -847,9 +857,10 @@ std::size_t FrameEncoder::in_flight() const {
 }
 
 bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
-                          const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
-                          std::size_t height, float distance, std::uint8_t* out_file,
-                          std::size_t out_capacity, std::vector<StageTiming>* stats) {
+                          const std::uint8_t* chroma, std::size_t chroma_pitch,
+                          cudaStream_t input_stream, std::size_t width, std::size_t height,
+                          float distance, std::uint8_t* out_file, std::size_t out_capacity,
+                          std::vector<StageTiming>* stats) {
     assert(in_flight() < pipeline_depth());
     State& s{*state_};
     if (bitstream::ac_group_count(width, height) <= 1) {
@@ -870,7 +881,7 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
     slot.out_capacity = out_capacity;
     slot.stats = stats;
     slot.copies_started = false;
-    if (!s.enqueue_frame(slot, luma, luma_pitch, chroma, chroma_pitch, distance)) {
+    if (!s.enqueue_frame(slot, luma, luma_pitch, chroma, chroma_pitch, input_stream, distance)) {
         return false;
     }
     {
