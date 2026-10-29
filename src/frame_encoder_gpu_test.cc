@@ -142,9 +142,8 @@ TEST_P(EncodeLadder, DecodesWithLibjxl) {
     EXPECT_EQ(ys, h);
 }
 
-// The ladder rungs are integer 4K downscales with dimensions multiple of 8
-// (540p is excluded upstream, 540 not being a multiple of 8), plus a small
-// multi-group frame and a partial-edge frame (dimensions not multiples of 256).
+// The ladder rungs, plus a small multi-group frame and a partial-edge frame
+// (dimensions not multiples of 256).
 INSTANTIATE_TEST_SUITE_P(Ladder, EncodeLadder,
                          testing::Values(std::make_pair(std::size_t{640}, std::size_t{384}),
                                          std::make_pair(std::size_t{1280}, std::size_t{720}),

@@ -21,9 +21,12 @@ namespace {
 const std::uint8_t* nv12_planes(const py::array_t<std::uint8_t>& nv12, std::uint32_t width,
                                 std::uint32_t height) {
     const py::buffer_info info{nv12.request()};
-    const std::size_t expected{static_cast<std::size_t>(width) * height * 3 / 2};
+    const std::size_t expected{static_cast<std::size_t>(width) * height +
+                               cujpegxl::pybind_support::nv12_chroma_bytes(width, height)};
     if (static_cast<std::size_t>(info.size) != expected) {
-        throw std::invalid_argument("nv12 array must hold width*height*3/2 bytes");
+        throw std::invalid_argument(
+            "nv12 array must hold width*height luma bytes and (height+1)/2 chroma rows of the "
+            "width rounded up to even");
     }
     if ((nv12.flags() & py::array::c_style) == 0) {
         throw std::invalid_argument("nv12 array must be C-contiguous");

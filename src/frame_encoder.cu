@@ -364,7 +364,7 @@ enum class Placement : std::uint8_t { PENDING, PLACE, SKIP };
 }  // namespace
 
 SectionCapacities section_capacities(std::size_t width, std::size_t height) {
-    const std::size_t blocks{(width / 8) * (height / 8)};
+    const std::size_t blocks{(padded_to_blocks(width) / 8) * (padded_to_blocks(height) / 8)};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
     return SectionCapacities{3 * blocks * 384 + num_ac * 64 + 4096,
@@ -444,8 +444,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
                                         std::size_t luma_pitch, const std::uint8_t* chroma,
                                         std::size_t chroma_pitch, cudaStream_t input_stream,
                                         float distance) {
-    const std::size_t width{slot.width};
-    const std::size_t height{slot.height};
+    // The stages after the front end cover the frame padded to whole blocks.
+    const std::size_t width{padded_to_blocks(slot.width)};
+    const std::size_t height{padded_to_blocks(slot.height)};
     const std::size_t num_ac{bitstream::ac_group_count(width, height)};
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
     const std::size_t layout_words{3 * num_ac + 2};
@@ -471,18 +472,19 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     std::size_t chroma_src_pitch{chroma_pitch};
     if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
         chroma_src_pitch = aligned_chroma_pitch(width);
-        if (cudaMemcpy2DAsync(d.aligned_chroma, chroma_src_pitch, chroma, chroma_pitch, width,
-                              height / 2, cudaMemcpyDeviceToDevice, slot.stream) != cudaSuccess) {
+        if (cudaMemcpy2DAsync(d.aligned_chroma, chroma_src_pitch, chroma, chroma_pitch,
+                              (slot.width + 1) / 2 * 2, (slot.height + 1) / 2,
+                              cudaMemcpyDeviceToDevice, slot.stream) != cudaSuccess) {
             return false;
         }
         chroma_src = d.aligned_chroma;
     }
-    slot.chroma.emplace(chroma_src, chroma_src_pitch, width, height, slot.stream);
+    slot.chroma.emplace(chroma_src, chroma_src_pitch, slot.width, slot.height, slot.stream);
 
     const Clock::time_point frontend_start{Clock::now()};
-    if (!encode_frontend(luma, luma_pitch, *slot.chroma, width, height, distance, d.coeffs, d.acs,
-                         d.adaptive_field, d.field_histogram, d.quant_field, d.calibration,
-                         slot.stream) ||
+    if (!encode_frontend(luma, luma_pitch, *slot.chroma, slot.width, slot.height, distance,
+                         d.coeffs, d.acs, d.adaptive_field, d.field_histogram, d.quant_field,
+                         d.calibration, slot.stream) ||
         !quantize_residual(d.coeffs, d.acs, d.quant_field, d.calibration, width, height, d.ytox_map,
                            d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, d.order_stats,
                            slot.stream)) {

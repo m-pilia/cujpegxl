@@ -290,9 +290,6 @@ int run(int argc, char** argv) {
     if (args.width % 2 != 0 || args.height % 2 != 0) {
         die("dims must be even (NV12 4:2:0 constraint)");
     }
-    if (args.width % 8 != 0 || args.height % 8 != 0) {
-        die("dims must be multiples of 8 (cujpegxl block size constraint)");
-    }
     if (args.iterations < 1) {
         die("--iterations must be >= 1");
     }

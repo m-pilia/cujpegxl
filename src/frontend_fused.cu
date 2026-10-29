@@ -924,8 +924,8 @@ ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitc
     resource.resType = cudaResourceTypePitch2D;
     resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
     resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
-    resource.res.pitch2D.width = width / 2;
-    resource.res.pitch2D.height = height / 2;
+    resource.res.pitch2D.width = (width + 1) / 2;
+    resource.res.pitch2D.height = (height + 1) / 2;
     resource.res.pitch2D.pitchInBytes = chroma_pitch;
 
     cudaTextureDesc texture{};
@@ -950,8 +950,8 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
                      std::int8_t* acs, float* adaptive_field, std::uint32_t* field_histogram,
                      std::int32_t* quant_field, QuantCalibration* calibration,
                      cudaStream_t stream) {
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
+    const std::size_t bw{padded_to_blocks(width) / 8};
+    const std::size_t bh{padded_to_blocks(height) / 8};
     const std::uint32_t blocks{static_cast<std::uint32_t>(bw * bh)};
 
     const float scale{K_AC_QUANT / distance};

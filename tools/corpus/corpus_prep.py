@@ -44,8 +44,6 @@ class Rung:
         return FULL_4K_HEIGHT // self.factor
 
 
-# The 540p rung (960x540) is excluded: 540 is not a multiple of 8, which the
-# VarDCT block pipeline requires. Every supported rung is a clean multiple of 8.
 LADDER: tuple[Rung, ...] = (
     Rung("2160p", 1),
     Rung("1080p", 2),

@@ -47,11 +47,6 @@ class CorpusPrepTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             cp.rung_by_name("540p")
 
-    def test_ladder_dims_are_block_aligned(self):
-        for rung in cp.LADDER:
-            self.assertEqual(rung.width % 8, 0)
-            self.assertEqual(rung.height % 8, 0)
-
 
 if __name__ == "__main__":
     unittest.main()

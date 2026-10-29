@@ -17,7 +17,6 @@ The project is still in an early development stage, and further iterations are r
 
 - Current quality/size ratio is close to the reference JPEG XL at mid compression rate, but it falls off a bit at high or low compression settings. Substantially better than JPEG, with 40-60% better compression rate at equal quality, and 5-50% better quality (SSIMULACRA2) at equal compression rate (especially better at higher compression rates), but inferior to the libjxl JPEG XL implementation (on average 15% worse compression rate at comparable quality).
 - Performance is currently limited (it achieves sustained 270 fps at 4K resolution on a GTX 1080Ti + Ryzen 7 2700X). The future ambition would be to sustain 15 fps at 4K resolution using a limited slice (ideally <10%) of an embedded/constrained device (e.g. a Jetson Orin Nano). Tegra- and RTX-specific optimizations (FP16 calculations, tensor core usage, etc.) are not implemented yet.
-- Only 3840x2160, 1920x1080, and 1280x720 input resolutions are currently supported.
 
 ## Usage
 
@@ -54,6 +53,7 @@ Some numerical approximations are made for performance reasons, trading a bit of
 
 Some features are not implemented:
 - Modular mode and lossless compression.
+- Single-group frames (or, in general, inputs 256x256 or smaller).
 - Multi-pass encoding.
 - Reference frames.
 - Input pixel formats other than YUV420 NV12.

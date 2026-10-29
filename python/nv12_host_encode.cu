@@ -9,6 +9,17 @@
 #include "src/worker_pool.h"
 
 namespace cujpegxl::pybind_support {
+namespace {
+
+std::size_t nv12_chroma_row_bytes(std::uint32_t width) {
+    return (static_cast<std::size_t>(width) + 1) / 2 * 2;
+}
+
+}  // namespace
+
+std::size_t nv12_chroma_bytes(std::uint32_t width, std::uint32_t height) {
+    return nv12_chroma_row_bytes(width) * ((static_cast<std::size_t>(height) + 1) / 2);
+}
 
 bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std::uint32_t width,
                       std::uint32_t height, float distance, std::int32_t device_ordinal,
@@ -17,7 +28,7 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
         return false;
     }
     const std::size_t luma_bytes{static_cast<std::size_t>(width) * height};
-    const std::size_t chroma_bytes{static_cast<std::size_t>(width) * (height / 2)};
+    const std::size_t chroma_bytes{nv12_chroma_bytes(width, height)};
 
     std::uint8_t* d_luma{nullptr};
     std::uint8_t* d_chroma{nullptr};
@@ -34,8 +45,8 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
     if (ok) {
         out.resize(max_encoded_size(width, height));
         FrameEncoder encoder{device_ordinal, default_worker_threads(), 1};
-        ok = encoder.submit(d_luma, width, d_chroma, width, nullptr, width, height, distance,
-                            out.data(), out.size(), stats);
+        ok = encoder.submit(d_luma, width, d_chroma, nv12_chroma_row_bytes(width), nullptr, width,
+                            height, distance, out.data(), out.size(), stats);
         if (ok) {
             const EncodeResult result{encoder.receive()};
             ok = result.status == EncodeStatus::OK;

@@ -37,6 +37,8 @@ typedef enum cujpegxl_status {
 
 typedef struct cujpegxl_encoder cujpegxl_encoder;
 
+/* Any width and height, as long as the frame is wider or taller than 256
+ * pixels (CUJPEGXL_UNSUPPORTED_RESOLUTION otherwise). */
 typedef struct cujpegxl_config {
     uint32_t width;
     uint32_t height;
@@ -44,11 +46,12 @@ typedef struct cujpegxl_config {
 } cujpegxl_config;
 
 /* NV12 (BT.709 full range) input. `luma`/`chroma` are device pointers. The
- * pitches are in bytes and at least the width: a row of the interleaved chroma
- * plane holds width / 2 U/V pairs, so it is also width bytes. `stream` is a CUDA stream of the encoder's device: the encoder reads the
- * planes after the work enqueued on it before `cujpegxl_encoder_submit`, so the
- * caller does not need to synchronize after writing them. NULL is the legacy
- * default stream. */
+ * pitches are in bytes: the luma pitch is at least the width, and the chroma
+ * plane holds (height + 1) / 2 rows of (width + 1) / 2 interleaved U/V pairs,
+ * so its pitch is at least the width rounded up to even. `stream` is a CUDA
+ * stream of the encoder's device: the encoder reads the planes after the work
+ * enqueued on it before `cujpegxl_encoder_submit`, so the caller does not need
+ * to synchronize after writing them. NULL is the legacy default stream. */
 typedef struct cujpegxl_nv12_input {
     const void* luma;
     const void* chroma;

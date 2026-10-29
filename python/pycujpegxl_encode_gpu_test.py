@@ -21,7 +21,7 @@ JXL_CONTAINER_PREFIX = b"\x00\x00\x00\x0cJXL "
 def synthetic_nv12(width: int, height: int) -> np.ndarray:
     y, x = np.mgrid[0:height, 0:width]
     luma = ((x * 3 + y * 5) & 0xFF).astype(np.uint8)
-    cy, cx = np.mgrid[0 : height // 2, 0:width]
+    cy, cx = np.mgrid[0 : (height + 1) // 2, 0 : (width + 1) // 2 * 2]
     chroma = ((cx * 7 + cy * 11) & 0xFF).astype(np.uint8)
     return np.concatenate([luma.reshape(-1), chroma.reshape(-1)])
 
@@ -38,6 +38,19 @@ class PyCujpegxlEncodeTest(unittest.TestCase):
     def test_encode_rejects_wrong_size(self):
         with self.assertRaises(ValueError):
             pycujpegxl.encode(self.nv12[:-1], WIDTH, HEIGHT)
+
+    def test_encode_odd_size(self):
+        width, height = 643, 389
+        nv12 = synthetic_nv12(width, height)
+        a = pycujpegxl.encode(nv12, width, height)
+        b = pycujpegxl.encode(nv12, width, height)
+        self.assertTrue(a.startswith(JXL_CONTAINER_PREFIX))
+        self.assertEqual(a, b)
+
+    def test_encode_rejects_odd_size_without_last_chroma_pair(self):
+        width, height = 643, 389
+        with self.assertRaises(ValueError):
+            pycujpegxl.encode(np.zeros(width * height * 3 // 2, np.uint8), width, height)
 
     def test_determinism_via_runner(self):
         a = dr.RunArtifact(data=pycujpegxl.encode(self.nv12, WIDTH, HEIGHT))

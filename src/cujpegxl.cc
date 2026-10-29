@@ -24,16 +24,12 @@ struct cujpegxl_encoder {
 
 namespace {
 
-// Rejects configs the device pipeline cannot encode. Block-size (multiple of 8)
-// and multi-AC-group constraints are resolution errors; a non-positive distance
-// is an argument error.
+// Rejects configs the device pipeline cannot encode. Frames of at most one AC
+// group (empty ones included) are resolution errors; a non-positive distance is
+// an argument error.
 cujpegxl_status validate_config(const cujpegxl_config& config) {
     if (!(config.distance > 0.0f) || !std::isfinite(config.distance)) {
         return CUJPEGXL_INVALID_ARGUMENT;
-    }
-    if (config.width == 0 || config.height == 0 || config.width % 8 != 0 ||
-        config.height % 8 != 0) {
-        return CUJPEGXL_UNSUPPORTED_RESOLUTION;
     }
     if (cujpegxl::bitstream::ac_group_count(config.width, config.height) <= 1) {
         return CUJPEGXL_UNSUPPORTED_RESOLUTION;
@@ -138,7 +134,8 @@ cujpegxl_status cujpegxl_encoder_submit(cujpegxl_encoder* encoder, const cujpegx
     if (status != CUJPEGXL_OK) {
         return status;
     }
-    if (input->luma_pitch < config.width || input->chroma_pitch < config.width) {
+    const std::size_t chroma_row_bytes{(std::size_t{config.width} + 1) / 2 * 2};
+    if (input->luma_pitch < config.width || input->chroma_pitch < chroma_row_bytes) {
         return CUJPEGXL_INVALID_ARGUMENT;
     }
     cujpegxl::FrameEncoder& frame_encoder{encoder->frame_encoder};

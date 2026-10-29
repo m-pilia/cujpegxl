@@ -124,11 +124,11 @@ void write_coeff_orders(BitWriter& w, const CoeffOrders& orders) {
 }  // namespace
 
 std::size_t ac_group_count(std::size_t width, std::size_t height) {
-    return ceil_div(width / 8, AC_GROUP_BLOCKS) * ceil_div(height / 8, AC_GROUP_BLOCKS);
+    return ceil_div(width, 8 * AC_GROUP_BLOCKS) * ceil_div(height, 8 * AC_GROUP_BLOCKS);
 }
 
 std::size_t dc_group_count(std::size_t width, std::size_t height) {
-    return ceil_div(width / 8, DC_GROUP_BLOCKS) * ceil_div(height / 8, DC_GROUP_BLOCKS);
+    return ceil_div(width, 8 * DC_GROUP_BLOCKS) * ceil_div(height, 8 * DC_GROUP_BLOCKS);
 }
 
 std::vector<std::uint8_t> build_dc_global(const QuantParams& qp) {

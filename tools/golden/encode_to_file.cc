@@ -91,7 +91,9 @@ int main(int argc, char** argv) {
     }
 
     const std::size_t luma_bytes{static_cast<std::size_t>(width) * height};
-    const std::size_t chroma_bytes{static_cast<std::size_t>(width) * (height / 2)};
+    // (height+1)/2 interleaved chroma rows of the width rounded up to even.
+    const std::size_t chroma_pitch{(static_cast<std::size_t>(width) + 1) / 2 * 2};
+    const std::size_t chroma_bytes{chroma_pitch * ((static_cast<std::size_t>(height) + 1) / 2)};
     const std::vector<std::uint8_t> host{read_file(input, luma_bytes + chroma_bytes)};
 
     check_cuda(cudaSetDevice(device), "cudaSetDevice");
@@ -105,7 +107,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
     cujpegxl::FrameEncoder encoder{device, cujpegxl::default_worker_threads(), 1};
-    if (!encoder.submit(d_luma, width, d_chroma, width, nullptr, width, height, distance,
+    if (!encoder.submit(d_luma, width, d_chroma, chroma_pitch, nullptr, width, height, distance,
                         out_file.data(), out_file.size())) {
         die("submit failed");
     }

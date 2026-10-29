@@ -44,6 +44,12 @@ inline bool acs_is_first_block(std::int8_t signal) {
 // N packs its N*N coefficients across the slots of its covered blocks.
 constexpr std::size_t COEFFS_PER_BLOCK = 64;
 
+// An image extent padded to whole 8x8 blocks. The block pipeline covers the
+// padded frame, whose pixels past the image edge replicate the edge pixels.
+CUJPEGXL_VL_HD inline std::size_t padded_to_blocks(std::size_t pixels) {
+    return (pixels + 7) / 8 * 8;
+}
+
 // Side lengths, in 8x8 blocks, of the square AC groups (256px) and DC groups
 // (2048px) tiling a frame; edge groups are partial.
 constexpr std::size_t AC_GROUP_BLOCKS = 32;

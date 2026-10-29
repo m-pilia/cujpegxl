@@ -15,7 +15,7 @@
 namespace cujpegxl {
 
 // Linearly filtered texture over a device NV12 chroma plane (interleaved Cb/Cr,
-// (width/2) pairs per row over height/2 rows at `chroma_pitch`, which must be
+// (width+1)/2 pairs per row over (height+1)/2 rows at `chroma_pitch`, which must be
 // 32-byte aligned), as the front end samples it. Destruction first waits for
 // `stream`, where the front end reads the texture.
 class ChromaTexture {
@@ -52,7 +52,8 @@ inline constexpr std::uint32_t ADAPTIVE_FIELD_BINS = 4096;
 // integers under `calibration`, whose global scale is libjxl's for the
 // adaptive field's median and median absolute deviation, estimated from a
 // histogram in `field_histogram` (ADAPTIVE_FIELD_BINS entries of scratch).
-// width and height must be multiples of 8. All pointers are device addresses.
+// The outputs cover the frame padded to whole blocks (see padded_to_blocks).
+// All pointers are device addresses.
 // Deterministic. Enqueues on `stream` without waiting; returns false on a
 // launch error.
 bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,

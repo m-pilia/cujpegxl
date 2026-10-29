@@ -21,7 +21,7 @@ import pycujpegxl
 def synthetic_nv12(width: int, height: int) -> np.ndarray:
     y, x = np.mgrid[0:height, 0:width]
     luma = ((x * 3 + y * 5) & 0xFF).astype(np.uint8)
-    cy, cx = np.mgrid[0 : height // 2, 0:width]
+    cy, cx = np.mgrid[0 : (height + 1) // 2, 0 : (width + 1) // 2 * 2]
     chroma = ((cx * 7 + cy * 11) & 0xFF).astype(np.uint8)
     return np.concatenate([luma.reshape(-1), chroma.reshape(-1)])
 

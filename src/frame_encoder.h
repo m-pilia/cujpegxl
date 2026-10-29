@@ -78,9 +78,9 @@ public:
     // requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
     // plane is first copied into an aligned buffer. The image is read after the
     // work enqueued on `input_stream`, a stream of the encoder's device, before
-    // the call. `distance` drives quantization.
-    // width and height must be multiples of 8 (single-AC-group frames use the
-    // combined-section layout and are not handled here).
+    // the call. `distance` drives quantization. The chroma plane holds
+    // (width+1)/2 pairs per row over (height+1)/2 rows. Single-AC-group frames
+    // use the combined-section layout and are not handled here.
     //
     // The device runs the transform selection, chroma-from-luma estimate,
     // residual+quantize, codes the DcGroups and tokenizes the AC groups; the
