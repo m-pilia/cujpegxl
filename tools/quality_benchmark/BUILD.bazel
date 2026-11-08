@@ -67,6 +67,7 @@ py_library(
         ":pynvjpeg",
         "//python:pycujpegxl",
         "//tools/corpus:corpus_prep_lib",
+        "//tools/corpus:jxl_dir_lib",
         requirement("numpy"),
         requirement("pillow"),
     ],

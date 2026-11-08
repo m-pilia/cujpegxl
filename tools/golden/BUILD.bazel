@@ -26,6 +26,7 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tools/corpus:corpus_prep_lib",
+        "//tools/corpus:jxl_dir_lib",
         requirement("numpy"),
         requirement("pillow"),
     ],

@@ -10,13 +10,12 @@ import golden_hash as gh
 
 
 def _job(frame: str, rung: str, distance: float) -> gh.Job:
-    return gh.Job(frame=frame, rung=rung, width=1920, height=1080,
-                  distance=distance, nv12=pathlib.Path(f"/dev/null/{frame}"))
+    return gh.Job(frame=frame, rung=rung, width=1920, height=1080, distance=distance)
 
 
 def _fake_encoder(payload: bytes = b"") -> gh.EncodeFn:
-    def encode(nv12: pathlib.Path, width: int, height: int, distance: float) -> bytes:
-        return f"{nv12.name}|{width}x{height}|{distance}".encode() + payload
+    def encode(job: gh.Job) -> bytes:
+        return f"{job.frame}|{job.width}x{job.height}|{job.distance}".encode() + payload
     return encode
 
 
@@ -66,6 +65,22 @@ class RunTest(unittest.TestCase):
             manifest = pathlib.Path(tmp) / "golden.json"
             gh.run("capture", jobs, _fake_encoder(), manifest)
             self.assertEqual(gh.run("verify", jobs, _fake_encoder(payload=b"x"), manifest), 1)
+
+
+class MakeReaderTest(unittest.TestCase):
+    def test_reads_each_job_from_its_named_file(self):
+        jobs = [_job("a", "1080p", 1.0), _job("a", "2160p", 2.5)]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp)
+            (directory / "a_1080p_d=1.0.jxl").write_bytes(b"first")
+            (directory / "a_2160p_d=2.5.jxl").write_bytes(b"second")
+            read = gh.make_reader(directory, jobs)
+            self.assertEqual([read(job) for job in jobs], [b"first", b"second"])
+
+    def test_missing_file_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                gh.make_reader(pathlib.Path(tmp), [_job("a", "1080p", 1.0)])
 
 
 if __name__ == "__main__":

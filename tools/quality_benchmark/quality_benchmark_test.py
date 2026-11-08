@@ -245,5 +245,28 @@ class LoadCachedRowsTest(unittest.TestCase):
         self.assertIn("2160p a.png nvjpeg q=70", str(ctx.exception))
 
 
+class FileCujpegxlTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+        self.rung = cp.rung_by_name("2160p")
+        self.frames = [self.tmp / "a.png"]
+
+    def test_reads_the_file_named_by_frame_rung_and_distance(self):
+        (self.tmp / "a_2160p_d=0.5.jxl").write_bytes(b"half")
+        (self.tmp / "a_2160p_d=1.0.jxl").write_bytes(b"one")
+        read = qb.file_cujpegxl(self.tmp, self.frames, self.rung, (0.5, 1.0))
+        nv12 = np.zeros(0, dtype=np.uint8)
+        self.assertEqual(read("a", self.rung, nv12, 0.5), b"half")
+        self.assertEqual(read("a", self.rung, nv12, 1.0), b"one")
+
+    def test_rejects_directory_missing_requested_files(self):
+        (self.tmp / "a_2160p_d=0.5.jxl").write_bytes(b"half")
+        with self.assertRaises(FileNotFoundError) as ctx:
+            qb.file_cujpegxl(self.tmp, self.frames, self.rung, (0.5, 1.0))
+        self.assertIn("a_2160p_d=1.0.jxl", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

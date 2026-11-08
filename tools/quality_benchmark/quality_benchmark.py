@@ -19,6 +19,10 @@ cujpegxl and libjxl share the butteraugli-distance axis (so they are directly
 comparable at a given distance); nvJPEG's quality axis is reported as its own
 curve. Compression ratio uses the raw RGB byte count (W*H*3) as the baseline so
 it is consistent across codecs and independent of PNG's lossless compression.
+
+With --jxl-dir the cujpegxl files are read from a directory of files encoded
+elsewhere (e.g. on another device), named as in tools/corpus/jxl_dir, instead of
+being encoded here.
 """
 
 from __future__ import annotations
@@ -29,11 +33,13 @@ import json
 import pathlib
 import sys
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 from PIL import Image
 
 import corpus_prep as cp
+import jxl_dir
 import pycujpegxl
 import pylibjxl
 import pynvjpeg
@@ -77,6 +83,30 @@ class BenchConfig:
     distances: tuple[float, ...] = DEFAULT_DISTANCES
     qualities: tuple[int, ...] = DEFAULT_QUALITIES
     device: int = 0
+
+
+# Produce the cujpegxl .jxl of one frame (source PNG stem) at one rung and
+# distance, from its NV12 buffer or from a pre-encoded file.
+CujpegxlFn = Callable[[str, cp.Rung, np.ndarray, float], bytes]
+
+
+def device_cujpegxl(device: int) -> CujpegxlFn:
+    def encode(frame: str, rung: cp.Rung, nv12: np.ndarray, distance: float) -> bytes:
+        return pycujpegxl.encode(nv12, rung.width, rung.height, distance, device)
+
+    return encode
+
+
+def file_cujpegxl(directory: pathlib.Path, frames: list[pathlib.Path], rung: cp.Rung,
+                  distances: tuple[float, ...]) -> CujpegxlFn:
+    """Read the .jxl files of `directory`; every requested file must exist."""
+    paths = jxl_dir.jxl_paths(
+        directory, [(frame.stem, rung.name, d) for frame in frames for d in distances])
+
+    def read(frame: str, rung: cp.Rung, nv12: np.ndarray, distance: float) -> bytes:
+        return paths[(frame, rung.name, distance)].read_bytes()
+
+    return read
 
 
 def bits_per_pixel(coded_bytes: int, width: int, height: int) -> float:
@@ -134,6 +164,7 @@ def bench_image(
     source: pathlib.Path,
     rung: cp.Rung,
     cfg: BenchConfig,
+    cujpegxl: CujpegxlFn,
     cached: dict[tuple[str, str, str, str], Row] | None = None,
 ) -> list[Row]:
     name = source.name
@@ -148,7 +179,7 @@ def bench_image(
     rows: list[Row] = []
 
     for distance in cfg.distances:
-        jxl = pycujpegxl.encode(nv12_arr, width, height, distance, cfg.device)
+        jxl = cujpegxl(source.stem, rung, nv12_arr, distance)
         decoded = pylibjxl.decode(jxl)
         rows.append(_row(name, rung.name, "cujpegxl", f"d={distance}", len(jxl),
                          width, height, reference, decoded))
@@ -277,6 +308,12 @@ def main(argv: list[str] | None = None) -> int:
         "nvJPEG rows (must cover the requested images, distances, and "
         "qualities) and only recompute cujpegxl.",
     )
+    parser.add_argument(
+        "--jxl-dir",
+        type=pathlib.Path,
+        default=None,
+        help="Score the cujpegxl .jxl files in this directory instead of encoding.",
+    )
     args = parser.parse_args(argv)
 
     cfg = BenchConfig(
@@ -291,10 +328,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.cached_input is not None
         else None
     )
+    cujpegxl = (
+        file_cujpegxl(args.jxl_dir, frames, rung, cfg.distances)
+        if args.jxl_dir is not None
+        else device_cujpegxl(cfg.device)
+    )
 
     all_rows: list[Row] = []
     for source in frames:
-        all_rows.extend(bench_image(source, rung, cfg, cached))
+        all_rows.extend(bench_image(source, rung, cfg, cujpegxl, cached))
 
     print(_format_table(all_rows))
 

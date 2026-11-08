@@ -25,6 +25,19 @@ py_binary(
     ],
 )
 
+py_library(
+    name = "jxl_dir_lib",
+    srcs = ["jxl_dir.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "jxl_dir_test",
+    srcs = ["jxl_dir_test.py"],
+    deps = [":jxl_dir_lib"],
+)
+
 py_test(
     name = "corpus_prep_test",
     srcs = ["corpus_prep_test.py"],

@@ -12,10 +12,14 @@ Any diff fails the gate.
 The NV12 corpus is generated from data/*.png with tools/corpus/corpus_prep and
 each frame is emitted to a .jxl by //tools/golden:encode_to_file. Encoding is
 deterministic per device, so one encode per (frame, rung, distance) suffices.
+With --jxl-dir the .jxl files are instead read from a directory of files encoded
+elsewhere (e.g. on another device), named as in tools/corpus/jxl_dir.
 
 Usage:
   bazelisk run //tools/golden:golden_hash -- capture --manifest $PWD/golden.json
   bazelisk run //tools/golden:golden_hash -- verify  --manifest $PWD/golden.json
+  bazelisk run //tools/golden:golden_hash -- verify  --manifest $PWD/golden.json \
+      --jxl-dir $PWD/encoded
 """
 
 from __future__ import annotations
@@ -31,12 +35,10 @@ import tempfile
 from typing import Callable
 
 import corpus_prep as cp
+import jxl_dir
 
 DEFAULT_RUNGS: tuple[str, ...] = ("1080p", "2160p")
 DEFAULT_DISTANCES: tuple[float, ...] = (1.0,)
-
-# Encode one NV12 file (path, width, height, distance) to its .jxl bytes.
-EncodeFn = Callable[[pathlib.Path, int, int, float], bytes]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,11 +48,14 @@ class Job:
     width: int
     height: int
     distance: float
-    nv12: pathlib.Path
+
+
+# Produce the .jxl bytes of one job, by encoding it or by reading a pre-encoded file.
+EncodeFn = Callable[[Job], bytes]
 
 
 def entry_for(job: Job, encode: EncodeFn) -> dict:
-    data = encode(job.nv12, job.width, job.height, job.distance)
+    data = encode(job)
     return {
         "frame": job.frame,
         "rung": job.rung,
@@ -109,17 +114,32 @@ def resolve_encoder() -> pathlib.Path:
     )
 
 
-def make_encoder(binary: pathlib.Path, device: int) -> EncodeFn:
-    def encode(nv12: pathlib.Path, width: int, height: int, distance: float) -> bytes:
+def make_encoder(binary: pathlib.Path, device: int, frames: list[pathlib.Path],
+                 nv12_dir: pathlib.Path) -> EncodeFn:
+    """Encode each job with encode_to_file from its NV12 frame, generated into `nv12_dir`."""
+    sources = {source.stem: source for source in frames}
+    nv12_paths: dict[tuple[str, str], pathlib.Path] = {}
+
+    def nv12_for(job: Job) -> pathlib.Path:
+        key = (job.frame, job.rung)
+        if key not in nv12_paths:
+            rung_dir = nv12_dir / job.rung
+            rung_dir.mkdir(parents=True, exist_ok=True)
+            source = sources[job.frame]
+            nv12_paths[key], _ = cp.write_rung_nv12(source, cp.load_rgb(source),
+                                                    cp.rung_by_name(job.rung), rung_dir)
+        return nv12_paths[key]
+
+    def encode(job: Job) -> bytes:
         with tempfile.TemporaryDirectory() as scratch:
             out = pathlib.Path(scratch) / "out.jxl"
             cmd = [
                 str(binary),
-                f"--dims={width}x{height}",
-                f"--distance={distance}",
+                f"--dims={job.width}x{job.height}",
+                f"--distance={job.distance}",
                 f"--device={device}",
                 f"--output={out}",
-                str(nv12),
+                str(nv12_for(job)),
             ]
             completed = subprocess.run(cmd, check=False, capture_output=True, text=True)
             if completed.returncode != 0:
@@ -131,24 +151,25 @@ def make_encoder(binary: pathlib.Path, device: int) -> EncodeFn:
     return encode
 
 
-def build_jobs(frames: list[pathlib.Path], rungs: list[cp.Rung], distances: list[float],
-               nv12_dir: pathlib.Path) -> list[Job]:
-    jobs: list[Job] = []
-    for rung in rungs:
-        rung_dir = nv12_dir / rung.name
-        rung_dir.mkdir(parents=True, exist_ok=True)
-        for source in frames:
-            nv12_path, _ = cp.write_rung_nv12(source, cp.load_rgb(source), rung, rung_dir)
-            for distance in distances:
-                jobs.append(Job(
-                    frame=source.stem,
-                    rung=rung.name,
-                    width=rung.width,
-                    height=rung.height,
-                    distance=distance,
-                    nv12=nv12_path,
-                ))
-    return jobs
+def make_reader(directory: pathlib.Path, jobs: list[Job]) -> EncodeFn:
+    """Read each job's .jxl from `directory`; every job's file must exist."""
+    paths = jxl_dir.jxl_paths(directory, [(job.frame, job.rung, job.distance) for job in jobs])
+
+    def read(job: Job) -> bytes:
+        return paths[(job.frame, job.rung, job.distance)].read_bytes()
+
+    return read
+
+
+def build_jobs(frames: list[pathlib.Path], rungs: list[cp.Rung],
+               distances: list[float]) -> list[Job]:
+    return [
+        Job(frame=source.stem, rung=rung.name, width=rung.width, height=rung.height,
+            distance=distance)
+        for rung in rungs
+        for source in frames
+        for distance in distances
+    ]
 
 
 def run(mode: str, jobs: list[Job], encode: EncodeFn, manifest_path: pathlib.Path) -> int:
@@ -188,21 +209,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--encoder", type=pathlib.Path, default=None,
                         help="Path to the encode_to_file binary (auto-detected if omitted).")
+    parser.add_argument("--jxl-dir", type=pathlib.Path, default=None,
+                        help="Hash the .jxl files in this directory instead of encoding.")
     args = parser.parse_args(argv)
 
     frames = cp.data_frames(args.data_dir)
     rungs = [cp.rung_by_name(name) for name in args.rungs]
+    jobs = build_jobs(frames, rungs, args.distances)
+    if args.jxl_dir is not None:
+        return run(args.mode, jobs, make_reader(args.jxl_dir, jobs), args.manifest)
+
     binary = args.encoder if args.encoder is not None else resolve_encoder()
     if not binary.exists():
         parser.error(f"encode_to_file binary not found at {binary}")
-    encode = make_encoder(binary, args.device)
-
     if args.nv12_dir is not None:
-        jobs = build_jobs(frames, rungs, args.distances, args.nv12_dir)
-        return run(args.mode, jobs, encode, args.manifest)
+        return run(args.mode, jobs, make_encoder(binary, args.device, frames, args.nv12_dir),
+                   args.manifest)
     with tempfile.TemporaryDirectory() as tmp:
-        jobs = build_jobs(frames, rungs, args.distances, pathlib.Path(tmp))
-        return run(args.mode, jobs, encode, args.manifest)
+        return run(args.mode, jobs, make_encoder(binary, args.device, frames, pathlib.Path(tmp)),
+                   args.manifest)
 
 
 if __name__ == "__main__":
