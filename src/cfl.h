@@ -4,9 +4,10 @@
 #ifndef CUJPEGXL_SRC_CFL_H_
 #define CUJPEGXL_SRC_CFL_H_
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
+
+#include "round_to_int.h"
 
 namespace cujpegxl {
 
@@ -48,16 +49,16 @@ CUJPEGXL_CFL_HD inline int cfl_clamp_map(int m) {
 // base 0, ytob base 1, so the estimator passes the regression slope and the
 // slope-minus-one respectively.
 CUJPEGXL_CFL_HD inline int cfl_quantize_factor(float delta_over_base) {
-    return cfl_clamp_map(static_cast<int>(lrintf(delta_over_base * CFL_COLOR_FACTOR)));
+    return cfl_clamp_map(round_to_int(delta_over_base * CFL_COLOR_FACTOR));
 }
 
 // Converts the least-squares regression sums of a tile to color-map values:
 // Y-to-X from the slope Sxy/Syy, Y-to-B from the residual-over-base slope
 // Sby/Syy. A degenerate (zero-energy) tile maps to the base.
-CUJPEGXL_CFL_HD inline void cfl_maps_from_sums(double sxy, double syy, double sby, int* ytox_map,
+CUJPEGXL_CFL_HD inline void cfl_maps_from_sums(float sxy, float syy, float sby, int* ytox_map,
                                                int* ytob_map) {
-    const float fx{syy > 0.0 ? static_cast<float>(sxy / syy) : 0.0f};
-    const float db{syy > 0.0 ? static_cast<float>(sby / syy) : 0.0f};
+    const float fx{syy > 0.0f ? sxy / syy : 0.0f};
+    const float db{syy > 0.0f ? sby / syy : 0.0f};
     *ytox_map = cfl_quantize_factor(fx);
     *ytob_map = cfl_quantize_factor(db);
 }

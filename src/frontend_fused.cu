@@ -763,10 +763,10 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
     for (int i{tid}; i < PAD_SAMPLES; i += FRONTEND_THREADS) {
         const int lx{i % PAD};
         const int ly{i / PAD};
-        long gx{static_cast<long>(px0) + lx - HALO};
-        long gy{static_cast<long>(py0) + ly - HALO};
-        gx = gx < 0 ? 0 : (gx >= static_cast<long>(width) ? static_cast<long>(width) - 1 : gx);
-        gy = gy < 0 ? 0 : (gy >= static_cast<long>(height) ? static_cast<long>(height) - 1 : gy);
+        int gx{static_cast<int>(px0) + lx - HALO};
+        int gy{static_cast<int>(py0) + ly - HALO};
+        gx = gx < 0 ? 0 : (gx >= static_cast<int>(width) ? static_cast<int>(width) - 1 : gx);
+        gy = gy < 0 ? 0 : (gy >= static_cast<int>(height) ? static_cast<int>(height) - 1 : gy);
         const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
         const float2 c{tex2D<float2>(chroma_tex, (gx + 0.5f) * 0.5f, (gy + 0.5f) * 0.5f)};
         float xo{};

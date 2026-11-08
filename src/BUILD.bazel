@@ -106,9 +106,16 @@ cc_library(
 )
 
 cc_library(
+    name = "round_to_int",
+    hdrs = ["round_to_int.h"],
+    copts = RUNTIME_COPTS,
+)
+
+cc_library(
     name = "cfl",
     hdrs = ["cfl.h"],
     copts = RUNTIME_COPTS,
+    deps = [":round_to_int"],
 )
 
 cc_library(
@@ -167,6 +174,7 @@ cuda_library(
         ":coeff_order",
         ":exact_div",
         ":quant_consts",
+        ":round_to_int",
         ":vardct_layout",
     ],
 )

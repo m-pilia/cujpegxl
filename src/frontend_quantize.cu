@@ -13,6 +13,7 @@
 #include "dequant_weight_pairs.h"
 #include "exact_div.cuh"
 #include "quant_calibration.h"
+#include "round_to_int.h"
 #include "vardct_layout.h"
 
 namespace cujpegxl {
@@ -37,7 +38,7 @@ __device__ inline DequantWeightPair dequant_weight(int side, int channel, int ra
 }
 
 __device__ inline int quantize_deadzone(float steps, float threshold) {
-    return fabsf(steps) < threshold ? 0 : static_cast<int>(lrintf(steps));
+    return fabsf(steps) < threshold ? 0 : round_to_int(steps);
 }
 
 // LlfDcTerms of every covered block of a DCT16 (entries 0-3) and a DCT32
@@ -330,12 +331,11 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         const float dcq_x{DC_INV_QUANT[0] * dc_scale};
         const float dcq_y{DC_INV_QUANT[1] * dc_scale};
         const float dcq_b{DC_INV_QUANT[2] * dc_scale};
-        const int qdc_y{static_cast<int>(lrintf(dc_value[1] * dcq_y))};
+        const int qdc_y{round_to_int(dc_value[1] * dcq_y)};
         const float y_dc_round{static_cast<float>(qdc_y) / dcq_y};
         dc[nblk + blk] = qdc_y;
-        dc[blk] = static_cast<int>(lrintf(dc_value[0] * dcq_x));
-        dc[2 * nblk + blk] =
-            static_cast<int>(lrintf((dc_value[2] - CFL_BASE_B * y_dc_round) * dcq_b));
+        dc[blk] = round_to_int(dc_value[0] * dcq_x);
+        dc[2 * nblk + blk] = round_to_int((dc_value[2] - CFL_BASE_B * y_dc_round) * dcq_b);
     }
 
     float y_round[QUANT_STEPS][2];

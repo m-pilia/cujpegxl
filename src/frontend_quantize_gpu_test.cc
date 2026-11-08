@@ -363,7 +363,8 @@ TEST(FrontendQuantize, QuantizeResidualEstimatesCflMaps) {
     for (std::size_t tile{0}; tile < CMW * CMH; ++tile) {
         int want_x{0};
         int want_b{0};
-        cfl_maps_from_sums(sxy[tile], syy[tile], sby[tile], &want_x, &want_b);
+        cfl_maps_from_sums(static_cast<float>(sxy[tile]), static_cast<float>(syy[tile]),
+                           static_cast<float>(sby[tile]), &want_x, &want_b);
         EXPECT_NEAR(q.ytox_map[tile], want_x, 1) << "tile " << tile;
         EXPECT_NEAR(q.ytob_map[tile], want_b, 1) << "tile " << tile;
     }
