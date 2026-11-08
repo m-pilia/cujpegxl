@@ -15,6 +15,9 @@
 // frame is the interval between consecutive completions, the steady-state
 // throughput; the latency of each frame, from submission to completion, is
 // reported separately. At depth 1 the two coincide up to the loop overhead.
+// The process CPU time per frame, of all threads, is reported over the same
+// window as the time per frame: from the completion of the last warmup frame to
+// the completion of the last frame.
 //
 // For cujpegxl the tool additionally supports a --profile mode intended for
 // capture under NVIDIA Nsight Systems (nsys) or Nsight Compute (ncu): it
@@ -32,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -255,6 +259,14 @@ void free_image(BenchImage& img) {
     img.planar.reset();
 }
 
+double process_cpu_us() {
+    timespec ts{};
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) != 0) {
+        die("clock_gettime(CLOCK_PROCESS_CPUTIME_ID) failed");
+    }
+    return static_cast<double>(ts.tv_sec) * 1e6 + static_cast<double>(ts.tv_nsec) * 1e-3;
+}
+
 void print_header(const Args& a, std::size_t image_count) {
     std::printf("encode_bench\n");
     std::printf("  codec:      %s\n", a.codec.c_str());
@@ -330,6 +342,7 @@ int run(int argc, char** argv) {
     std::vector<double> times_us{};
     times_us.reserve(static_cast<std::size_t>(args.iterations));
     std::vector<double> latencies_us{};
+    double window_cpu_us{0.0};
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
     if (args.codec == "cujpegxl") {
         const std::size_t depth{args.pipeline_depth};
@@ -342,6 +355,7 @@ int run(int argc, char** argv) {
         const std::size_t num_frames{static_cast<std::size_t>(args.warmup + args.iterations)};
         std::vector<std::chrono::steady_clock::time_point> submitted(num_frames);
         std::chrono::steady_clock::time_point last_completion{};
+        double window_start_cpu_us{0.0};
         std::size_t next_received{0};
 
         // The first encode after handle creation pays one-time CUDA context
@@ -363,13 +377,18 @@ int run(int argc, char** argv) {
                     std::chrono::duration<double, std::micro>(now - last_completion).count());
                 latencies_us.push_back(latency);
             }
+            if (f + 1 == static_cast<std::size_t>(args.warmup)) {
+                window_start_cpu_us = process_cpu_us();
+            }
             if (f + 1 == num_frames) {
                 cujpegxl_stages = stages[f % depth];
+                window_cpu_us = process_cpu_us() - window_start_cpu_us;
             }
             last_completion = now;
         };
         check_cuda(cudaDeviceSynchronize(), "pre-stream sync");
         last_completion = std::chrono::steady_clock::now();
+        window_start_cpu_us = process_cpu_us();
         for (std::size_t f{0}; f < num_frames; ++f) {
             if (encoder.in_flight() == depth) {
                 receive_one();
@@ -428,6 +447,8 @@ int run(int argc, char** argv) {
                     benchmark_stats::mean_of(latencies_us),
                     benchmark_stats::percentile_of(latencies_us, 0.50),
                     *std::max_element(latencies_us.begin(), latencies_us.end()));
+        std::printf("  cpu:        %.0f   (process CPU time per frame)\n",
+                    window_cpu_us / static_cast<double>(latencies_us.size()));
     }
 
     if (args.profile && args.codec == "cujpegxl" && !cujpegxl_stages.empty()) {
