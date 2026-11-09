@@ -210,6 +210,9 @@ llvm = use_extension(
 llvm.toolchain(
     extra_compile_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
     extra_link_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
+    # rules_cuda appends the toolchain's flags after a cuda_library's copts,
+    # where the default opt `-O2` would override their `-O3`.
+    extra_opt_compile_flags = {"": ["-O3"]},
     llvm_version = "19.1.0",
     # CUDA's crt headers reject libc++ on x86; host and CUDA host-side objects
     # must use the same C++ standard library.
