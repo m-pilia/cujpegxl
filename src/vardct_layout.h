@@ -62,13 +62,16 @@ constexpr std::size_t DC_GROUP_BLOCKS = 256;
 // raster order (bw blocks per row). The N*N coefficients fill the covered blocks
 // row-major: covered ordinal q = raw / COEFFS_PER_BLOCK selects covered block
 // (by + q/side, bx + q%side); the low bits raw % COEFFS_PER_BLOCK are the slot.
+// The side is 1, 2 or 4 (log2 = block_dim / 16), so a block_dim known only at
+// run time splits q with shifts instead of a division.
 CUJPEGXL_VL_HD inline std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx,
                                                      std::size_t by, std::size_t bw,
                                                      std::size_t raw_index) {
-    const std::size_t side{covered_blocks_side(block_dim)};
+    const std::size_t side_log2{block_dim / 16};
     const std::size_t q{raw_index / COEFFS_PER_BLOCK};
     const std::size_t slot{raw_index % COEFFS_PER_BLOCK};
-    const std::size_t block{(by + q / side) * bw + (bx + q % side)};
+    const std::size_t block{(by + (q >> side_log2)) * bw +
+                            (bx + (q & ((std::size_t{1} << side_log2) - 1)))};
     return block * COEFFS_PER_BLOCK + slot;
 }
 
