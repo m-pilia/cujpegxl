@@ -189,6 +189,7 @@ struct FrameBuffers {
     std::uint32_t* layout{nullptr};
     std::uint16_t* entries{nullptr};
     std::uint64_t* raw{nullptr};
+    std::uint32_t* chunk_counter{nullptr};
     std::uint32_t* dc_hist{nullptr};
     std::uint32_t* am_hist{nullptr};
     std::uint8_t* fb_scratch{nullptr};
@@ -241,6 +242,7 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .layout = carver.take<std::uint32_t>(3 * num_ac + 2),
         .entries = carver.take<std::uint16_t>(ac_max_tokens(width, height)),
         .raw = carver.take<std::uint64_t>(ac_max_raw_words(width, height)),
+        .chunk_counter = carver.take<std::uint32_t>(1),
         .dc_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
         .am_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
         .fb_scratch = carver.take<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height)),
@@ -525,7 +527,7 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     if (!ac_coeff_orders(d.order_stats, d.coeff_orders, slot.stream) ||
         !ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
-                            d.context_hist, d.item_sizes, arch, slot.stream) ||
+                            d.context_hist, d.item_sizes, d.chunk_counter, arch, slot.stream) ||
         !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
                          slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
@@ -548,7 +550,7 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         if ((g0 != g1 &&
              !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
                              d.clustering->context_map, d.item_sizes, d.chunk_base, d.layout, g0,
-                             g1, d.entries, d.raw, slot.stream)) ||
+                             g1, d.entries, d.raw, d.chunk_counter, slot.stream)) ||
             cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
             return false;
         }

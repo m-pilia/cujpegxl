@@ -52,13 +52,15 @@ bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStre
 // AC_CONTEXT_ALPHABET uint32 (context * AC_CONTEXT_ALPHABET + symbol; zeroed by
 // the call). `item_sizes` (device, 3 * width/8 * height/8) receives each
 // block/channel item's token count (low 32 bits) and raw bit count (high 32
-// bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. `arch` is the
-// tuning of the device's running code (see query_device_support). Deterministic
-// (integer atomics). Returns false on a CUDA error.
+// bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B.
+// `chunk_counter` (device, one uint32) is scratch. `arch` is the tuning of the
+// device's running code (see query_device_support). Deterministic (integer
+// atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
                         std::size_t height, std::uint32_t* context_histograms,
-                        std::uint64_t* item_sizes, GpuArch arch, cudaStream_t stream);
+                        std::uint64_t* item_sizes, std::uint32_t* chunk_counter, GpuArch arch,
+                        cudaStream_t stream);
 
 std::size_t ac_cluster_scratch_bytes();
 
@@ -97,14 +99,16 @@ bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::si
 // Phase 4: writes the token streams of AC groups [group_begin, group_end) at
 // their `layout` positions: entries into `entries` (device uint16) and raw bits
 // into `raw` (device 64-bit words; the groups' words are zeroed by the call).
-// `context_map` (device, AC_NUM_CONTEXTS) is the AcClustering's. The other
-// inputs are those of phases 1 and 3. Deterministic.
+// `context_map` (device, AC_NUM_CONTEXTS) is the AcClustering's. `chunk_counter`
+// (device, one uint32) is scratch. The other inputs are those of phases 1 and 3.
+// Deterministic.
 bool ac_pack_tokens(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                     const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
                     std::size_t height, const std::uint8_t* context_map,
                     const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
                     const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
-                    std::uint16_t* entries, std::uint64_t* raw, cudaStream_t stream);
+                    std::uint16_t* entries, std::uint64_t* raw, std::uint32_t* chunk_counter,
+                    cudaStream_t stream);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
 // image, including partial edge groups. width/height must be multiples of 8.

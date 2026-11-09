@@ -212,6 +212,7 @@ int main(int argc, char** argv) {
     std::uint32_t* d_layout{device_alloc<std::uint32_t>(layout_words)};
     std::uint16_t* d_entries{device_alloc<std::uint16_t>(ac_max_tokens(width, height))};
     std::uint64_t* d_raw{device_alloc<std::uint64_t>(ac_max_raw_words(width, height))};
+    std::uint32_t* d_chunk_counter{device_alloc<std::uint32_t>(1)};
     std::uint8_t* d_dc_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint16_t* d_dc_bits{device_alloc<std::uint16_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
     std::uint8_t* d_am_depth{device_alloc<std::uint8_t>(num_dc * bitstream::HISTOGRAM_STRIDE)};
@@ -291,7 +292,7 @@ int main(int argc, char** argv) {
         timed(s_aco, record, [&] { ac_coeff_orders(d_order_stats, d_coeff_orders, nullptr); });
         timed(s_ach, record, [&] {
             ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
-                               d_context_hist, d_item_sizes, arch, nullptr);
+                               d_context_hist, d_item_sizes, d_chunk_counter, arch, nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
@@ -303,7 +304,7 @@ int main(int argc, char** argv) {
         timed(s_acp, record, [&] {
             ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
                            d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, 0,
-                           num_ac, d_entries, d_raw, nullptr);
+                           num_ac, d_entries, d_raw, d_chunk_counter, nullptr);
         });
         timed(s_act, record, [&] {
             cudaMemcpy(h_clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost);
