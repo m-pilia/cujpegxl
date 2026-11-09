@@ -1113,6 +1113,7 @@ constexpr unsigned int AC_CHUNK_THREADS = 128;
 constexpr std::size_t AC_GROUP_ITEMS = AC_GROUP_BLOCKS * AC_GROUP_BLOCKS * 3;
 constexpr int AC_GROUP_CHUNKS = static_cast<int>(AC_GROUP_ITEMS / 32);
 constexpr unsigned int AC_LAYOUT_THREADS = 256;
+constexpr unsigned int AC_PACK_MIN_BLOCKS = 10;
 
 // Raw bits of an AC token: a coefficient token's value is pack_signed of an
 // int16 (at most 13 raw bits), a count token's at most 1008 (7 raw bits).
@@ -1220,15 +1221,14 @@ __device__ std::uint16_t token_entry(const std::uint8_t* context_map, std::uint3
 // Writes the tokens of the chunk's items at their layout positions: each lane
 // its item's non-zero-count token, then the warp each item's coefficient
 // tokens, the active lanes in scan order.
-__global__ void ac_pack_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                               const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                               const std::uint16_t* orders, std::size_t bw, std::size_t bh,
-                               std::size_t nblocks, std::size_t xg, std::size_t group_begin,
-                               std::size_t group_end, const std::uint8_t* context_map,
-                               const unsigned long long* item_sizes,
-                               const unsigned long long* chunk_base, const std::uint32_t* layout,
-                               std::size_t num_groups, std::uint16_t* entries,
-                               unsigned long long* raw) {
+__global__ void __launch_bounds__(AC_CHUNK_THREADS, AC_PACK_MIN_BLOCKS)
+    ac_pack_kernel(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
+                   const std::int32_t* nz_exact, const std::uint16_t* orders, std::size_t bw,
+                   std::size_t bh, std::size_t nblocks, std::size_t xg, std::size_t group_begin,
+                   std::size_t group_end, const std::uint8_t* context_map,
+                   const unsigned long long* item_sizes, const unsigned long long* chunk_base,
+                   const std::uint32_t* layout, std::size_t num_groups, std::uint16_t* entries,
+                   unsigned long long* raw) {
     const std::size_t q{group_begin * AC_GROUP_CHUNKS +
                         (static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x) / 32};
     if (q >= group_end * AC_GROUP_CHUNKS) {
