@@ -3,6 +3,7 @@
 
 #include "entropy.h"
 
+#include <algorithm>
 #include <mutex>
 #include <vector>
 
@@ -912,40 +913,57 @@ __device__ unsigned long long pack_sizes(std::uint32_t tokens, std::uint32_t raw
 
 // Each warp takes 32 consecutive block/channel items: every lane counts its own
 // item's non-zero-count token, then the warp tokenizes the coefficients of the
-// items with non-zeros cooperatively, one item at a time. Each thread block
-// covers `items_per_cta` items. The context histograms are too large for
-// shared memory, so the tokens are counted with global atomics. The kernel also
-// records every item's size (pack_sizes of its tokens and raw bits) at its index
-// block * 3 + slot.
+// items with non-zeros cooperatively, one item at a time. The warps of the grid
+// stride over the items, so one wave of resident thread blocks covers the frame.
+// The context histograms are too large for shared memory, and the global atomics
+// that count the tokens bound the kernel through L2 traffic. Most tokens have a
+// small symbol, so each thread block counts the first `private_symbols` symbols
+// of every context in shared memory and adds those counts to the global
+// histograms at the end. The kernel also records every item's size (pack_sizes of
+// its tokens and raw bits) at its index block * 3 + slot.
 struct HistogramLaunch {
     unsigned int threads;
-    unsigned int items_per_cta;
+    std::uint32_t private_symbols;
 };
 constexpr PerArch<HistogramLaunch> HISTOGRAM_LAUNCH{
-    .default_entry = {.threads = 512, .items_per_cta = 1024},
-    .sm87 = {.threads = 512, .items_per_cta = 1024},
+    .default_entry = {.threads = 512, .private_symbols = 1},
+    .sm87 = {.threads = 1024, .private_symbols = 3},
 };
 
-__global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
-                                 const std::int32_t* nz_grid, const std::int32_t* nz_exact,
-                                 const std::uint16_t* orders, std::size_t bw, std::size_t bh,
-                                 std::size_t nblocks, std::uint32_t* context_histograms,
-                                 unsigned long long* item_sizes) {
+constexpr std::size_t histogram_shared_bytes(const HistogramLaunch& launch) {
+    return AC_NUM_CONTEXTS * launch.private_symbols * sizeof(std::uint32_t);
+}
+
+__global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
+    histogram_kernel(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
+                     const std::int32_t* nz_exact, const std::uint16_t* orders, std::size_t bw,
+                     std::size_t bh, std::size_t nblocks, std::uint32_t* context_histograms,
+                     unsigned long long* item_sizes) {
+    constexpr std::uint32_t PRIVATE_SYMBOLS{HISTOGRAM_LAUNCH[COMPILED_ARCH].private_symbols};
+    constexpr std::uint32_t PRIVATE_BINS{AC_NUM_CONTEXTS * PRIVATE_SYMBOLS};
+    extern __shared__ std::uint32_t private_bins[];
+    for (std::uint32_t i{threadIdx.x}; i < PRIVATE_BINS; i += blockDim.x) {
+        private_bins[i] = 0;
+    }
+    __syncthreads();
     const unsigned int lane{threadIdx.x % 32};
     const std::size_t total{3 * bw * bh};
-    constexpr unsigned int ITEMS_PER_CTA{HISTOGRAM_LAUNCH[COMPILED_ARCH].items_per_cta};
-    const std::size_t first{static_cast<std::size_t>(blockIdx.x) * ITEMS_PER_CTA};
-    const std::size_t last{min(first + ITEMS_PER_CTA, total)};
     const auto count = [&](bool active, std::uint32_t symbol, std::uint32_t, std::uint32_t,
                            std::uint32_t context) {
         if (active) {
-            atomicAdd(&context_histograms[context * AC_CONTEXT_ALPHABET + symbol], 1u);
+            if (symbol < PRIVATE_SYMBOLS) {
+                atomicAdd(&private_bins[context * PRIVATE_SYMBOLS + symbol], 1u);
+            } else {
+                atomicAdd(&context_histograms[context * AC_CONTEXT_ALPHABET + symbol], 1u);
+            }
         }
     };
-    for (std::size_t base{first + (threadIdx.x / 32) * 32}; base < last; base += blockDim.x) {
+    const std::size_t stride{static_cast<std::size_t>(gridDim.x) * blockDim.x};
+    for (std::size_t base{static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x - lane};
+         base < total; base += stride) {
         const std::size_t idx{base + lane};
         const std::size_t block{idx / 3};
-        const int side{idx < last ? (acs == nullptr ? 8 : acs[block]) : ACS_COVERED};
+        const int side{idx < total ? (acs == nullptr ? 8 : acs[block]) : ACS_COVERED};
         const int c{CHANNEL_ORDER[idx % 3]};
         std::uint32_t nzeros{0};
         std::uint32_t tokens{0};
@@ -987,8 +1005,16 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
                 raw_bits += item_raw_bits;
             }
         }
-        if (idx < last) {
+        if (idx < total) {
             item_sizes[idx] = pack_sizes(tokens, raw_bits);
+        }
+    }
+    __syncthreads();
+    for (std::uint32_t i{threadIdx.x}; i < PRIVATE_BINS; i += blockDim.x) {
+        if (private_bins[i] != 0) {
+            atomicAdd(&context_histograms[(i / PRIVATE_SYMBOLS) * AC_CONTEXT_ALPHABET +
+                                          i % PRIVATE_SYMBOLS],
+                      private_bins[i]);
         }
     }
 }
@@ -1681,10 +1707,25 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const st
                         stream) != cudaSuccess) {
         return false;
     }
-    const std::size_t total{3 * bw * bh};
+    const std::size_t shared_bytes{histogram_shared_bytes(launch)};
+    int device{0};
+    int sms{0};
+    int blocks_per_sm{0};
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess ||
+        cudaFuncSetAttribute(&histogram_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             static_cast<int>(shared_bytes)) != cudaSuccess ||
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, &histogram_kernel,
+                                                      static_cast<int>(launch.threads),
+                                                      shared_bytes) != cudaSuccess ||
+        blocks_per_sm == 0) {
+        return false;
+    }
+    const std::size_t total{3 * nblocks};
     const unsigned int blocks{
-        static_cast<unsigned int>((total + launch.items_per_cta - 1) / launch.items_per_cta)};
-    histogram_kernel<<<blocks, launch.threads, 0, stream>>>(
+        static_cast<unsigned int>(std::min(static_cast<std::size_t>(sms * blocks_per_sm),
+                                           (total + launch.threads - 1) / launch.threads))};
+    histogram_kernel<<<blocks, launch.threads, shared_bytes, stream>>>(
         ac, acs, nz_grid, nz_exact, orders->order, bw, bh, nblocks, context_histograms,
         reinterpret_cast<unsigned long long*>(item_sizes));
     return cudaGetLastError() == cudaSuccess;
