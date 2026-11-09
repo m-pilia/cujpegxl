@@ -12,11 +12,17 @@ RUNTIME_COPTS = [
     "-fno-rtti",
 ]
 
+cc_library(
+    name = "gpu_arch",
+    hdrs = ["gpu_arch.h"],
+)
+
 cuda_library(
     name = "device_support",
     srcs = ["device_support.cu"],
     hdrs = ["device_support.h"],
     copts = RUNTIME_COPTS,
+    deps = [":gpu_arch"],
 )
 
 cc_library(
@@ -303,6 +309,7 @@ cuda_library(
         ":ac_context",
         ":coeff_order",
         ":dc_predict",
+        ":gpu_arch",
         ":vardct_layout",
         ":warp_scan",
         "//src/bitstream",
@@ -318,6 +325,7 @@ cuda_library(
         ":ac_clustering",
         ":coeff_order",
         ":coeff_order_reference",
+        ":device_support",
         ":entropy",
         ":vardct_layout",
     ],
@@ -388,6 +396,7 @@ cuda_library(
         ":entropy",
         ":frontend_fused",
         ":frontend_quantize",
+        ":gpu_arch",
         ":prefix_build",
         ":quant_consts",
         ":vardct_layout",
@@ -402,6 +411,7 @@ cc_test(
     srcs = ["frame_encoder_gpu_test.cc"],
     tags = ["gpu"],
     deps = [
+        ":device_support",
         ":frame_encoder",
         "//src/bitstream:frame_assembly",
         "@googletest//:gtest_main",

@@ -45,6 +45,7 @@
 #include <cuda_runtime.h>
 #include <nvtx3/nvToolsExt.h>
 
+#include "src/device_support.h"
 #include "src/frame_encoder.h"
 #include "src/worker_pool.h"
 #include "tools/benchmark/benchmark_stats.h"
@@ -346,7 +347,12 @@ int run(int argc, char** argv) {
     std::vector<cujpegxl::StageTiming> cujpegxl_stages{};
     if (args.codec == "cujpegxl") {
         const std::size_t depth{args.pipeline_depth};
-        cujpegxl::FrameEncoder encoder{args.device, cujpegxl::default_worker_threads(), depth};
+        const cujpegxl::DeviceQuery device{cujpegxl::query_device_support(args.device)};
+        if (device.support != cujpegxl::DeviceSupport::SUPPORTED) {
+            die("unsupported device");
+        }
+        cujpegxl::FrameEncoder encoder{args.device, device.arch, cujpegxl::default_worker_threads(),
+                                       depth};
         // Per slot of frames in flight: output buffer, stage timings, NVTX range.
         std::vector<std::vector<std::uint8_t>> outputs(
             depth, std::vector<std::uint8_t>(cujpegxl::max_encoded_size(args.width, args.height)));

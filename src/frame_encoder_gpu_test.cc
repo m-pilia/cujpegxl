@@ -18,10 +18,15 @@
 
 #include <gtest/gtest.h>
 
+#include "device_support.h"
 #include "frame_encoder.h"
 
 namespace cujpegxl {
 namespace {
+
+GpuArch device_arch() {
+    return query_device_support(0).arch;
+}
 
 struct DeviceNv12 {
     std::uint8_t* luma{nullptr};
@@ -132,7 +137,7 @@ TEST_P(EncodeLadder, DecodesWithLibjxl) {
     const std::size_t h{GetParam().second};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder encoder{0, 4, 1};
+    FrameEncoder encoder{0, device_arch(), 4, 1};
     const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
     ASSERT_GT(file.size(), 0u);
     std::uint32_t xs{0};
@@ -154,7 +159,7 @@ TEST(Encode, Deterministic) {
     const std::size_t h{720};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder encoder{0, 4, 1};
+    FrameEncoder encoder{0, device_arch(), 4, 1};
     const std::vector<std::uint8_t> a{encode(encoder, nv12, w, h)};
     const std::vector<std::uint8_t> b{encode(encoder, nv12, w, h)};
     EXPECT_EQ(a, b);
@@ -165,10 +170,10 @@ TEST(Encode, IndependentOfWorkerThreads) {
     const std::size_t h{1080};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12));
-    FrameEncoder single{0, 1, 1};
+    FrameEncoder single{0, device_arch(), 1, 1};
     const std::vector<std::uint8_t> expected{encode(single, nv12, w, h)};
     for (std::size_t threads : {2, 3, 8}) {
-        FrameEncoder encoder{0, threads, 1};
+        FrameEncoder encoder{0, device_arch(), threads, 1};
         EXPECT_EQ(encode(encoder, nv12, w, h), expected) << threads << " threads";
     }
 }
@@ -180,7 +185,7 @@ TEST(Encode, FlatImageDecodes) {
     const std::size_t h{384};
     DeviceNv12 nv12{};
     ASSERT_TRUE(upload_nv12(w, h, nv12, true));
-    FrameEncoder encoder{0, 4, 1};
+    FrameEncoder encoder{0, device_arch(), 4, 1};
     const std::vector<std::uint8_t> file{encode(encoder, nv12, w, h)};
     std::uint32_t xs{0};
     std::uint32_t ys{0};
@@ -207,7 +212,7 @@ protected:
     static constexpr std::size_t NUM_FRAMES{std::size(FRAMES)};
 
     void SetUp() override {
-        FrameEncoder serial{0, 4, 1};
+        FrameEncoder serial{0, device_arch(), 4, 1};
         for (std::size_t i{0}; i < NUM_FRAMES; ++i) {
             const PipelineFrame& f{FRAMES[i]};
             images_[i] = std::make_unique<DeviceNv12>();
@@ -220,7 +225,7 @@ protected:
     // Encodes the frames `rounds` times over, keeping `depth` in flight, and
     // checks each against its serial encode.
     void expect_serial_output(std::size_t threads, std::size_t depth, std::size_t rounds) {
-        FrameEncoder encoder{0, threads, depth};
+        FrameEncoder encoder{0, device_arch(), threads, depth};
         std::vector<std::vector<std::uint8_t>> files(depth);
         std::size_t received{0};
         const auto receive_one = [&] {
@@ -265,7 +270,7 @@ TEST_F(Pipeline, IndependentOfWorkerThreads) {
 TEST_F(Pipeline, DestructionCompletesFramesInFlight) {
     std::vector<std::vector<std::uint8_t>> files(3);
     {
-        FrameEncoder encoder{0, 4, 3};
+        FrameEncoder encoder{0, device_arch(), 4, 3};
         for (std::size_t i{0}; i < files.size(); ++i) {
             const PipelineFrame& f{FRAMES[i]};
             ASSERT_TRUE(submit(encoder, *images_[i], f.width, f.height, f.distance, files[i]));

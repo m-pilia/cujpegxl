@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include "src/device_support.h"
 #include "src/frame_encoder.h"
 #include "src/worker_pool.h"
 
@@ -24,7 +25,8 @@ std::size_t nv12_chroma_bytes(std::uint32_t width, std::uint32_t height) {
 bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std::uint32_t width,
                       std::uint32_t height, float distance, std::int32_t device_ordinal,
                       std::vector<std::uint8_t>& out, std::vector<StageTiming>* stats) {
-    if (cudaSetDevice(device_ordinal) != cudaSuccess) {
+    const DeviceQuery device{query_device_support(device_ordinal)};
+    if (device.support != DeviceSupport::SUPPORTED) {
         return false;
     }
     const std::size_t luma_bytes{static_cast<std::size_t>(width) * height};
@@ -44,7 +46,7 @@ bool encode_nv12_host(const std::uint8_t* luma, const std::uint8_t* chroma, std:
             cudaMemcpy(d_chroma, chroma, chroma_bytes, cudaMemcpyHostToDevice) == cudaSuccess};
     if (ok) {
         out.resize(max_encoded_size(width, height));
-        FrameEncoder encoder{device_ordinal, default_worker_threads(), 1};
+        FrameEncoder encoder{device_ordinal, device.arch, default_worker_threads(), 1};
         ok = encoder.submit(d_luma, width, d_chroma, nv12_chroma_row_bytes(width), nullptr, width,
                             height, distance, out.data(), out.size(), stats);
         if (ok) {

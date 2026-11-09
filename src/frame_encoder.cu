@@ -388,8 +388,9 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height) {
 // in submit(); the driver thread then runs each frame's host stage in order, on
 // the worker pool as its thread 0.
 struct FrameEncoder::State {
-    State(int device_ordinal, std::size_t worker_threads, std::size_t pipeline_depth)
+    State(int device_ordinal, GpuArch arch, std::size_t worker_threads, std::size_t pipeline_depth)
         : device{device_ordinal},
+          arch{arch},
           depth{pipeline_depth},
           slots{std::make_unique<Slot[]>(pipeline_depth)},
           pool{worker_threads},
@@ -415,6 +416,7 @@ struct FrameEncoder::State {
     bool release_batches(Slot& slot, bitstream::StreamQueue& queue);
 
     const int device;
+    const GpuArch arch;
     const std::size_t depth;
     const std::unique_ptr<Slot[]> slots;
     WorkerPool pool;
@@ -523,7 +525,7 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     if (!ac_coeff_orders(d.order_stats, d.coeff_orders, slot.stream) ||
         !ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
-                            d.context_hist, d.item_sizes, slot.stream) ||
+                            d.context_hist, d.item_sizes, arch, slot.stream) ||
         !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
                          slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
@@ -841,9 +843,9 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     return result;
 }
 
-FrameEncoder::FrameEncoder(std::int32_t device_ordinal, std::size_t worker_threads,
+FrameEncoder::FrameEncoder(std::int32_t device_ordinal, GpuArch arch, std::size_t worker_threads,
                            std::size_t pipeline_depth)
-    : state_{std::make_unique<State>(device_ordinal, worker_threads, pipeline_depth)} {
+    : state_{std::make_unique<State>(device_ordinal, arch, worker_threads, pipeline_depth)} {
     assert(pipeline_depth >= 1);
 }
 

@@ -12,6 +12,7 @@
 #include "ac_clustering.h"
 #include "ac_context.h"
 #include "coeff_order.h"
+#include "gpu_arch.h"
 #include "vardct_layout.h"
 
 namespace cujpegxl {
@@ -51,12 +52,13 @@ bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStre
 // AC_CONTEXT_ALPHABET uint32 (context * AC_CONTEXT_ALPHABET + symbol; zeroed by
 // the call). `item_sizes` (device, 3 * width/8 * height/8) receives each
 // block/channel item's token count (low 32 bits) and raw bit count (high 32
-// bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. Deterministic
+// bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B. `arch` is the
+// tuning of the device's running code (see query_device_support). Deterministic
 // (integer atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
                         std::size_t height, std::uint32_t* context_histograms,
-                        std::uint64_t* item_sizes, cudaStream_t stream);
+                        std::uint64_t* item_sizes, GpuArch arch, cudaStream_t stream);
 
 std::size_t ac_cluster_scratch_bytes();
 

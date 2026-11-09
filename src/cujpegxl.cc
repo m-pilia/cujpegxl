@@ -91,7 +91,8 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t d
     if (status != CUJPEGXL_OK) {
         return status;
     }
-    switch (cujpegxl::query_device_support(device_ordinal)) {
+    const cujpegxl::DeviceQuery device{cujpegxl::query_device_support(device_ordinal)};
+    switch (device.support) {
         case cujpegxl::DeviceSupport::SUPPORTED:
             break;
         case cujpegxl::DeviceSupport::NO_DEVICE:
@@ -101,7 +102,8 @@ cujpegxl_status cujpegxl_encoder_create(const cujpegxl_config* config, int32_t d
     }
     auto* encoder{new (std::nothrow) cujpegxl_encoder{
         *config,
-        cujpegxl::FrameEncoder{device_ordinal, cujpegxl::default_worker_threads(), pipeline_depth},
+        cujpegxl::FrameEncoder{device_ordinal, device.arch, cujpegxl::default_worker_threads(),
+                               pipeline_depth},
         std::vector<cujpegxl_output*>(pipeline_depth, nullptr), 0}};
     if (encoder == nullptr) {
         return CUJPEGXL_INTERNAL_ERROR;

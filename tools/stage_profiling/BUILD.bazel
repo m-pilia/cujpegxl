@@ -14,6 +14,7 @@ cc_binary(
         "//src:ac_clustering",
         "//src:ac_context",
         "//src:coeff_order",
+        "//src:device_support",
         "//src:entropy",
         "//src:frame_encoder",
         "//src:frontend_fused",

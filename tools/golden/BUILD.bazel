@@ -11,6 +11,7 @@ cc_binary(
     tags = ["gpu"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src:device_support",
         "//src:frame_encoder",
         "//src:worker_pool",
     ],

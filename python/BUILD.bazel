@@ -13,6 +13,7 @@ cuda_library(
     hdrs = ["nv12_host_encode.h"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src:device_support",
         "//src:frame_encoder",
         "//src:worker_pool",
     ],

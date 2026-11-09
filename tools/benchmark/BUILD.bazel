@@ -45,6 +45,7 @@ cc_binary(
     deps = [
         ":benchmark_stats",
         ":nvjpeg_encoder",
+        "//src:device_support",
         "//src:frame_encoder",
         "//src:worker_pool",
     ] + select({

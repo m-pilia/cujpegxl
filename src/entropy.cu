@@ -11,6 +11,7 @@
 #include "ac_context.h"
 #include "coeff_order.h"
 #include "dc_predict.h"
+#include "gpu_arch.h"
 #include "src/bitstream/token_stream.h"
 #include "vardct_layout.h"
 #include "warp_scan.cuh"
@@ -912,12 +913,18 @@ __device__ unsigned long long pack_sizes(std::uint32_t tokens, std::uint32_t raw
 // Each warp takes 32 consecutive block/channel items: every lane counts its own
 // item's non-zero-count token, then the warp tokenizes the coefficients of the
 // items with non-zeros cooperatively, one item at a time. Each thread block
-// covers HIST_ITEMS_PER_CTA items. The context histograms are too large for
+// covers `items_per_cta` items. The context histograms are too large for
 // shared memory, so the tokens are counted with global atomics. The kernel also
 // records every item's size (pack_sizes of its tokens and raw bits) at its index
 // block * 3 + slot.
-constexpr unsigned int HIST_THREADS = 512;
-constexpr unsigned int HIST_ITEMS_PER_CTA = 1024;
+struct HistogramLaunch {
+    unsigned int threads;
+    unsigned int items_per_cta;
+};
+constexpr PerArch<HistogramLaunch> HISTOGRAM_LAUNCH{
+    .default_entry = {.threads = 512, .items_per_cta = 1024},
+    .sm87 = {.threads = 512, .items_per_cta = 1024},
+};
 
 __global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                  const std::int32_t* nz_grid, const std::int32_t* nz_exact,
@@ -926,8 +933,9 @@ __global__ void histogram_kernel(const std::int16_t* ac, const std::int8_t* acs,
                                  unsigned long long* item_sizes) {
     const unsigned int lane{threadIdx.x % 32};
     const std::size_t total{3 * bw * bh};
-    const std::size_t first{static_cast<std::size_t>(blockIdx.x) * HIST_ITEMS_PER_CTA};
-    const std::size_t last{min(first + HIST_ITEMS_PER_CTA, total)};
+    constexpr unsigned int ITEMS_PER_CTA{HISTOGRAM_LAUNCH[COMPILED_ARCH].items_per_cta};
+    const std::size_t first{static_cast<std::size_t>(blockIdx.x) * ITEMS_PER_CTA};
+    const std::size_t last{min(first + ITEMS_PER_CTA, total)};
     const auto count = [&](bool active, std::uint32_t symbol, std::uint32_t, std::uint32_t,
                            std::uint32_t context) {
         if (active) {
@@ -1662,8 +1670,9 @@ bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStre
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
                         std::size_t height, std::uint32_t* context_histograms,
-                        std::uint64_t* item_sizes, cudaStream_t stream) {
+                        std::uint64_t* item_sizes, GpuArch arch, cudaStream_t stream) {
     ensure_constants();
+    const HistogramLaunch& launch{HISTOGRAM_LAUNCH[arch]};
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t nblocks{bw * bh};
@@ -1674,8 +1683,8 @@ bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const st
     }
     const std::size_t total{3 * bw * bh};
     const unsigned int blocks{
-        static_cast<unsigned int>((total + HIST_ITEMS_PER_CTA - 1) / HIST_ITEMS_PER_CTA)};
-    histogram_kernel<<<blocks, HIST_THREADS, 0, stream>>>(
+        static_cast<unsigned int>((total + launch.items_per_cta - 1) / launch.items_per_cta)};
+    histogram_kernel<<<blocks, launch.threads, 0, stream>>>(
         ac, acs, nz_grid, nz_exact, orders->order, bw, bh, nblocks, context_histograms,
         reinterpret_cast<unsigned long long*>(item_sizes));
     return cudaGetLastError() == cudaSuccess;

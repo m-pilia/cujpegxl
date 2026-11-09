@@ -47,6 +47,7 @@
 #include "src/bitstream/frame_assembly.h"
 #include "src/bitstream/token_stream.h"
 #include "src/coeff_order.h"
+#include "src/device_support.h"
 #include "src/entropy.h"
 #include "src/frame_encoder.h"
 #include "src/frontend_fused.h"
@@ -159,7 +160,7 @@ int main(int argc, char** argv) {
     std::printf("frames=%zu dims=%zux%zu distance=%.2f iters=%d\n", frames.size(), width, height,
                 args.distance, args.iterations);
 
-    cudaSetDevice(0);
+    const GpuArch arch{query_device_support(0).arch};
     // Mirrors frame_encoder.cu: without it every sync returns the entropy wrappers'
     // cudaMallocAsync scratch to the driver and the next frame re-allocates it.
     cudaMemPool_t pool{};
@@ -290,7 +291,7 @@ int main(int argc, char** argv) {
         timed(s_aco, record, [&] { ac_coeff_orders(d_order_stats, d_coeff_orders, nullptr); });
         timed(s_ach, record, [&] {
             ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
-                               d_context_hist, d_item_sizes, nullptr);
+                               d_context_hist, d_item_sizes, arch, nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,

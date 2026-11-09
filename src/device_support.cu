@@ -10,25 +10,23 @@
 namespace cujpegxl {
 namespace {
 
-// All the library's kernels are built for the same architectures, so loading
-// this kernel succeeds exactly on the devices the encoder can run on.
 __global__ void probe_kernel() {}
 
 }  // namespace
 
-// A failed call is also left as the thread's last CUDA error; it is cleared so
-// that the caller's own error checks do not report it.
-DeviceSupport query_device_support(std::int32_t ordinal) {
+DeviceQuery query_device_support(std::int32_t ordinal) {
     if (cudaSetDevice(ordinal) != cudaSuccess) {
         cudaGetLastError();
-        return DeviceSupport::NO_DEVICE;
+        return {.support = DeviceSupport::NO_DEVICE};
     }
     cudaFuncAttributes attributes{};
     if (cudaFuncGetAttributes(&attributes, probe_kernel) != cudaSuccess) {
         cudaGetLastError();
-        return DeviceSupport::UNSUPPORTED;
+        return {.support = DeviceSupport::UNSUPPORTED};
     }
-    return DeviceSupport::SUPPORTED;
+    // Every kernel is built for the same architectures as the probe, so the
+    // driver picks the same image for all of them.
+    return {.support = DeviceSupport::SUPPORTED, .arch = gpu_arch(attributes.ptxVersion)};
 }
 
 }  // namespace cujpegxl

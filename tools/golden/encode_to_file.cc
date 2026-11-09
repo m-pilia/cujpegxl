@@ -14,6 +14,7 @@
 
 #include <cuda_runtime.h>
 
+#include "src/device_support.h"
 #include "src/frame_encoder.h"
 #include "src/worker_pool.h"
 
@@ -96,7 +97,10 @@ int main(int argc, char** argv) {
     const std::size_t chroma_bytes{chroma_pitch * ((static_cast<std::size_t>(height) + 1) / 2)};
     const std::vector<std::uint8_t> host{read_file(input, luma_bytes + chroma_bytes)};
 
-    check_cuda(cudaSetDevice(device), "cudaSetDevice");
+    const cujpegxl::DeviceQuery query{cujpegxl::query_device_support(device)};
+    if (query.support != cujpegxl::DeviceSupport::SUPPORTED) {
+        die("unsupported device");
+    }
     std::uint8_t* d_luma{nullptr};
     std::uint8_t* d_chroma{nullptr};
     check_cuda(cudaMalloc(&d_luma, luma_bytes), "cudaMalloc luma");
@@ -106,7 +110,7 @@ int main(int argc, char** argv) {
                "H2D chroma");
 
     std::vector<std::uint8_t> out_file(cujpegxl::max_encoded_size(width, height));
-    cujpegxl::FrameEncoder encoder{device, cujpegxl::default_worker_threads(), 1};
+    cujpegxl::FrameEncoder encoder{device, query.arch, cujpegxl::default_worker_threads(), 1};
     if (!encoder.submit(d_luma, width, d_chroma, chroma_pitch, nullptr, width, height, distance,
                         out_file.data(), out_file.size())) {
         die("submit failed");

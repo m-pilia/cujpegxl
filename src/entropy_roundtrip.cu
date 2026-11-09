@@ -9,6 +9,7 @@
 
 #include "ac_clustering.h"
 #include "coeff_order_reference.h"
+#include "device_support.h"
 #include "entropy.h"
 #include "vardct_layout.h"
 
@@ -136,8 +137,10 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
                 cudaSuccess};
 
     ok = ok && ac_coeff_orders(d_stats, d_orders, nullptr);
+    std::int32_t device{0};
+    ok = ok && cudaGetDevice(&device) == cudaSuccess;
     ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, d_orders, width, height,
-                                  d_hist, d_item_sizes, nullptr);
+                                  d_hist, d_item_sizes, query_device_support(device).arch, nullptr);
     ok = ok && ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base,
                                d_layout, nullptr);
     ok = ok && ac_cluster_contexts(d_hist, d_cluster_scratch, d_clustering, nullptr);

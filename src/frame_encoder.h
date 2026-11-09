@@ -11,6 +11,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include "gpu_arch.h"
+
 namespace cujpegxl {
 
 // Per-stage instrumentation record. `gpu_us`/`cpu_us` are measured wall time of
@@ -56,9 +58,10 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height);
 // frames before it. submit() and receive() must not be called concurrently.
 class FrameEncoder {
 public:
-    // Frames are encoded on `device_ordinal`. `worker_threads` (at least 1)
-    // host threads code one frame at a time; `pipeline_depth` is at least 1.
-    FrameEncoder(std::int32_t device_ordinal, std::size_t worker_threads,
+    // Frames are encoded on `device_ordinal`, whose running code image is tuned
+    // for `arch` (see query_device_support). `worker_threads` (at least 1) host
+    // threads code one frame at a time; `pipeline_depth` is at least 1.
+    FrameEncoder(std::int32_t device_ordinal, GpuArch arch, std::size_t worker_threads,
                  std::size_t pipeline_depth);
     FrameEncoder(const FrameEncoder&) = delete;
     FrameEncoder& operator=(const FrameEncoder&) = delete;
