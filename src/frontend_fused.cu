@@ -499,8 +499,18 @@ __device__ inline int region_row_index(int k) {
 // with the even or odd frequencies (w % 2); the DCT8s put column w % 2 (rows)
 // or channel w % 2 (coefficients) on all lanes.
 
+// The X (0) and B (1) buffers of the X/B pass. Selecting a channel per lane
+// from an array of pointers would place the array on the stack, and the
+// accesses through the loaded pointers would lose their address space.
+template <typename T>
+struct ChannelPair {
+    T* x;
+    T* b;
+    __device__ T* operator[](int c) const { return c == 0 ? x : b; }
+};
+
 // Horizontal pass of the X and B transforms of the region into rows.
-__device__ __forceinline__ void region_rows(const float* const (&sharp)[2], float* const (&rows)[2],
+__device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, ChannelPair<float> rows,
                                             std::uint32_t layout, std::size_t rbx, std::size_t rby,
                                             std::size_t bw, std::size_t bh, int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
@@ -546,9 +556,9 @@ __device__ __forceinline__ void region_rows(const float* const (&sharp)[2], floa
 
 // Vertical pass of the X and B transforms of the region from rows into
 // coefficients.
-__device__ __forceinline__ void region_coeffs(const float* const (&rows)[2], std::uint32_t layout,
+__device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std::uint32_t layout,
                                               std::size_t rbx, std::size_t rby, std::size_t bw,
-                                              std::size_t bh, float* const (&coeffs)[2], int warp,
+                                              std::size_t bh, ChannelPair<float> coeffs, int warp,
                                               int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
@@ -594,10 +604,10 @@ __device__ __forceinline__ void region_coeffs(const float* const (&rows)[2], std
 // Stores the region's X and B coefficients to the covered-block planes, eight
 // consecutive entries per thread: channel tid / 128, entries from
 // 8 (tid % 128).
-__device__ __forceinline__ void store_region_coeffs(const float* const (&coeffs)[2],
+__device__ __forceinline__ void store_region_coeffs(ChannelPair<const float> coeffs,
                                                     std::uint32_t layout, std::size_t rbx,
                                                     std::size_t rby, std::size_t bw, std::size_t bh,
-                                                    __half* const (&dst)[2], int tid) {
+                                                    ChannelPair<__half> dst, int tid) {
     const int c{tid / 128};
     const int k{8 * (tid % 128)};
     const float* src{coeffs[c] + region_row_index(k)};
