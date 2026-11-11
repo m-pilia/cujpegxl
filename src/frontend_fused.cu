@@ -13,6 +13,7 @@
 #include "dequant_weight_pairs.h"
 #include "exact_div.cuh"
 #include "gaborish.h"
+#include "gpu_arch.h"
 #include "quant_calibration.h"
 #include "transform_select_impl.cuh"
 #include "vardct_layout.h"
@@ -79,10 +80,12 @@ static_assert(COEFFS_B_OFFSET % 16 == 8 && REGION_ROWS_FLOATS <= SHARP_B_OFFSET 
               COEFFS_B_OFFSET + REGION_ROWS_FLOATS <= RESIDENT_X_B_OFFSET);
 constexpr std::size_t WORKSPACE_FLOATS = RESIDENT_X_B_OFFSET + 2 * PAD_SAMPLES;
 constexpr std::size_t WORKSPACE_BYTES = WORKSPACE_FLOATS * sizeof(float);
-// Four resident blocks per SM: sm_61 has 96 KB of shared memory per SM, and
-// FRONTEND_BLOCKS_PER_SM * FRONTEND_THREADS threads leave 64 registers each.
-constexpr int FRONTEND_BLOCKS_PER_SM = 4;
-static_assert(FRONTEND_BLOCKS_PER_SM * WORKSPACE_BYTES <= 96 * 1024);
+// Resident blocks per SM. sm_61 has 96 KB of shared memory per SM, and 4 blocks
+// leave 64 registers per thread. sm_87 has 164 KB, minus 1 KB reserved per
+// block, and 5 blocks leave 48 registers per thread.
+constexpr PerArch<int> FRONTEND_BLOCKS_PER_SM{.default_entry = 4, .sm87 = 5};
+static_assert(FRONTEND_BLOCKS_PER_SM.default_entry * WORKSPACE_BYTES <= 96 * 1024);
+static_assert(FRONTEND_BLOCKS_PER_SM.sm87 * (WORKSPACE_BYTES + 1024) <= 164 * 1024);
 
 // Loads the N floats at `src` and computes F of their 1D DCT frequencies (N
 // times A, see dct_impl.cuh) into out[i], frequency i * N / F + part: all of
@@ -745,7 +748,7 @@ __global__ void __launch_bounds__(FIELD_THREADS)
     }
 }
 
-__global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM)
+__global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPILED_ARCH])
     frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
                           cudaTextureObject_t chroma_tex, std::size_t width, std::size_t height,
                           std::size_t bw, std::size_t bh, float km0, float km1, float km2,

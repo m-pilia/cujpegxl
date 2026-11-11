@@ -298,6 +298,7 @@ cuda_library(
     deps = [
         ":dct_impl",
         ":exact_div",
+        ":gpu_arch",
         ":quant_consts",
         ":transform_select_impl",
         ":vardct_layout",
