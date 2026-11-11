@@ -127,12 +127,21 @@ __device__ inline float lane_group_sum(float v) {
     return v;
 }
 
-// Full-mask warp sum, valid on lane 0. Pairs lanes like a halving tree
-// v[i] += v[i + s] for s = 16..1; the adds are non-contractible, so callers can
+// Full-mask warp sums of a, b and c as one reduce-scatter: the result is the sum
+// of a on lane 0, of b on lane 8 and of c on lane 16. Each sum pairs lanes like
+// a halving tree v[i] += v[i + s] for s = 16..1 (xor partners form the same
+// pairs, and the adds are commutative and non-contractible), so callers can
 // reproduce a shared-memory tree reduction bit for bit.
-__device__ inline float warp_reduce_sum(float v) {
-    for (int off{16}; off > 0; off >>= 1) {
-        v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, off));
+__device__ inline float warp_reduce_sum3(float a, float b, float c, int lane) {
+    // At s = 16 the lower half keeps a and the upper half c, while b is summed
+    // on every lane; at s = 8 the lanes with bit 3 set take over b.
+    const bool upper{(lane & 16) != 0};
+    float v{__fadd_rn(upper ? c : a, __shfl_xor_sync(0xffffffffu, upper ? a : c, 16))};
+    b = __fadd_rn(b, __shfl_xor_sync(0xffffffffu, b, 16));
+    const bool keeps_b{(lane & 8) != 0};
+    v = __fadd_rn(keeps_b ? b : v, __shfl_xor_sync(0xffffffffu, keeps_b ? v : b, 8));
+    for (int off{4}; off > 0; off >>= 1) {
+        v = __fadd_rn(v, __shfl_xor_sync(0xffffffffu, v, off));
     }
     return v;
 }
@@ -865,14 +874,9 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         const float pye{yv + kOffset + fabsf(xv)};
         const float blue_part{bv > pye ? fminf(bv - pye, kLimit) : 0.0f};
 
-        const float hf_red{warp_reduce_sum(hf_part)};
-        const float gamma_red{warp_reduce_sum(gamma_part)};
-        const float blue_red{warp_reduce_sum(blue_part)};
-        if (lane == 0) {
-            float* red{sh_red + hb * 3};
-            red[0] = hf_red;
-            red[1] = gamma_red;
-            red[2] = blue_red;
+        const float red{warp_reduce_sum3(hf_part, gamma_part, blue_part, lane)};
+        if (lane < 24 && lane % 8 == 0) {
+            sh_red[hb * 3 + lane / 8] = red;
         }
     }
     __syncthreads();
