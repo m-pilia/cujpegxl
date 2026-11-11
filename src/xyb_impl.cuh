@@ -34,9 +34,25 @@ constexpr float CB_TO_B{1.8556f};
 
 constexpr float CHROMA_CENTER{128.0f / 255.0f};
 
+// libdevice's __powf and cbrtf without its handling of denormal, zero, negative
+// and infinite operands: the flushing lg2 and ex2 give libdevice's results while
+// the lg2 operand is normal and the ex2 operand is at least -126.
+__device__ inline float pow_normal(float base, float exponent) {
+    return __nvvm_ex2_approx_ftz_f(exponent * __nvvm_lg2_approx_ftz_f(base));
+}
+
+// cbrtf(v) for positive normal v: libdevice's estimate and Newton step.
+__device__ inline float cbrt_normal(float v) {
+    constexpr float THIRD{1.0f / 3.0f};
+    const float estimate{__nvvm_ex2_approx_ftz_f(THIRD * __nvvm_lg2_approx_ftz_f(v))};
+    const float residual{fmaf(__nvvm_rcp_approx_ftz_f(estimate * estimate), -v, estimate)};
+    return fmaf(residual, -THIRD, estimate);
+}
+
+// The power's base is at least 0.055 / 1.055 for encoded in [0, 1].
 __device__ inline float srgb_to_linear(float encoded) {
     return encoded <= 0.04045f ? encoded * (1.0f / 12.92f)
-                               : __powf((encoded + 0.055f) * (1.0f / 1.055f), 2.4f);
+                               : pow_normal((encoded + 0.055f) * (1.0f / 1.055f), 2.4f);
 }
 
 __device__ inline float clamp01(float v) {
@@ -59,10 +75,11 @@ __device__ inline void nv12_pixel_to_xyb(float yv, float cb_tex, float cr_tex, f
     float m1{fmaxf(M10 * r + M11 * g + M12 * b + OPSIN_BIAS, 0.0f)};
     float m2{fmaxf(M20 * r + M21 * g + M22 * b + OPSIN_BIAS, 0.0f)};
 
-    const float neg_cbrt_bias{-cbrtf(OPSIN_BIAS)};
-    m0 = cbrtf(m0) + neg_cbrt_bias;
-    m1 = cbrtf(m1) + neg_cbrt_bias;
-    m2 = cbrtf(m2) + neg_cbrt_bias;
+    // r, g and b are non-negative, so m0..m2 are at least OPSIN_BIAS.
+    const float neg_cbrt_bias{-cbrt_normal(OPSIN_BIAS)};
+    m0 = cbrt_normal(m0) + neg_cbrt_bias;
+    m1 = cbrt_normal(m1) + neg_cbrt_bias;
+    m2 = cbrt_normal(m2) + neg_cbrt_bias;
 
     out_x = 0.5f * (m0 - m1);
     out_y = 0.5f * (m0 + m1);

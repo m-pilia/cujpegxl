@@ -42,6 +42,25 @@ cuda_library(
     deps = [":xyb_impl"],
 )
 
+cuda_library(
+    name = "xyb_math_check",
+    testonly = True,
+    srcs = ["xyb_math_check.cu"],
+    hdrs = ["xyb_math_check.h"],
+    copts = RUNTIME_COPTS,
+    deps = [":xyb_impl"],
+)
+
+cc_test(
+    name = "xyb_impl_gpu_test",
+    srcs = ["xyb_impl_gpu_test.cc"],
+    tags = ["gpu"],
+    deps = [
+        ":xyb_math_check",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "dct_impl",
     hdrs = ["dct_impl.cuh"],
