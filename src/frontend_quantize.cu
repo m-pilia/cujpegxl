@@ -349,21 +349,22 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         const TilePosition at_pos{tile_pos[p]};
         const std::uint64_t llf_mask{tile_llf_mask[p]};
         const float2 qgsf{tile_qgsf[p]};
-        std::int16_t qy[2]{};
+        const AcDeadzone deadzone{ac_deadzone(at_pos.side, 1)};
+        std::int16_t qy[2];
 #pragma unroll
         for (std::uint32_t j{0}; j < 2; ++j) {
             const std::uint32_t slot{2 * lane + j};
-            y_round[k][j] = 0.0f;
-            if (!((llf_mask >> slot) & 1)) {
-                const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
-                const float yr{__half2float(tile_coeffs[1][p * BLOCK_SLOTS + slot])};
-                const DequantWeightPair wy{dequant_weight(at_pos.side, 1, static_cast<int>(raw))};
-                const int qy_int{quantize_deadzone(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight),
-                                                   ac_deadzone_threshold(at_pos.side, 1, raw))};
-                y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
-                qy[j] = static_cast<std::int16_t>(qy_int);
-                nonzero_mask |= qy_int != 0 ? nonzero_bit(1, k, j) : 0u;
-            }
+            const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
+            // An LLF slot quantizes a zero coefficient, which yields 0 and a
+            // zero roundtrip without a branch.
+            const bool llf{((llf_mask >> slot) & 1) != 0};
+            const float yr{llf ? 0.0f : __half2float(tile_coeffs[1][p * BLOCK_SLOTS + slot])};
+            const DequantWeightPair wy{dequant_weight(at_pos.side, 1, static_cast<int>(raw))};
+            const int qy_int{quantize_deadzone(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight),
+                                               deadzone.threshold(raw))};
+            y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
+            qy[j] = static_cast<std::int16_t>(qy_int);
+            nonzero_mask |= qy_int != 0 ? nonzero_bit(1, k, j) : 0u;
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[cplane + blk * BLOCK_SLOTS + 2 * lane]) =
@@ -408,28 +409,27 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         const TilePosition at_pos{tile_pos[p]};
         const std::uint64_t llf_mask{tile_llf_mask[p]};
         const float qgsf{tile_qgsf[p].x};
-        std::int16_t qx[2]{};
-        std::int16_t qb[2]{};
+        // X and B share their dead zone.
+        const AcDeadzone deadzone{ac_deadzone(at_pos.side, 0)};
+        std::int16_t qx[2];
+        std::int16_t qb[2];
 #pragma unroll
         for (std::uint32_t j{0}; j < 2; ++j) {
             const std::uint32_t slot{2 * lane + j};
-            if (!((llf_mask >> slot) & 1)) {
-                const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
-                const float xr{__half2float(tile_coeffs[0][p * BLOCK_SLOTS + slot])};
-                const float br{__half2float(tile_coeffs[2][p * BLOCK_SLOTS + slot])};
-                // X and B share their dead zone.
-                const float threshold{ac_deadzone_threshold(at_pos.side, 0, raw)};
-                const DequantWeightPair wx{dequant_weight(at_pos.side, 0, static_cast<int>(raw))};
-                qx[j] = static_cast<std::int16_t>(quantize_deadzone(
-                    div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight),
-                    threshold));
-                const DequantWeightPair wb{dequant_weight(at_pos.side, 2, static_cast<int>(raw))};
-                qb[j] = static_cast<std::int16_t>(quantize_deadzone(
-                    div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight),
-                    threshold));
-                nonzero_mask |= (qx[j] != 0 ? nonzero_bit(0, k, j) : 0u) |
-                                (qb[j] != 0 ? nonzero_bit(2, k, j) : 0u);
-            }
+            const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
+            // As for Y; the slot's Y roundtrip is zero.
+            const bool llf{((llf_mask >> slot) & 1) != 0};
+            const float xr{llf ? 0.0f : __half2float(tile_coeffs[0][p * BLOCK_SLOTS + slot])};
+            const float br{llf ? 0.0f : __half2float(tile_coeffs[2][p * BLOCK_SLOTS + slot])};
+            const float threshold{deadzone.threshold(raw)};
+            const DequantWeightPair wx{dequant_weight(at_pos.side, 0, static_cast<int>(raw))};
+            qx[j] = static_cast<std::int16_t>(quantize_deadzone(
+                div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight), threshold));
+            const DequantWeightPair wb{dequant_weight(at_pos.side, 2, static_cast<int>(raw))};
+            qb[j] = static_cast<std::int16_t>(quantize_deadzone(
+                div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight), threshold));
+            nonzero_mask |=
+                (qx[j] != 0 ? nonzero_bit(0, k, j) : 0u) | (qb[j] != 0 ? nonzero_bit(2, k, j) : 0u);
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[blk * BLOCK_SLOTS + 2 * lane]) = make_short2(qx[0], qx[1]);

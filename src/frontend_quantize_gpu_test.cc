@@ -218,7 +218,7 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
                 const float b_rec{static_cast<float>(ac[2 * CPLANE + slot]) * wb / qgsf +
                                   ytob * y_round};
                 const float chroma_deadzone{
-                    ac_deadzone_threshold(side, 0, static_cast<std::uint32_t>(raw))};
+                    ac_deadzone(side, 0).threshold(static_cast<std::uint32_t>(raw))};
                 const float x_steps{ac[slot] == 0 ? chroma_deadzone : 0.5f};
                 const float b_steps{ac[2 * CPLANE + slot] == 0 ? chroma_deadzone : 0.5f};
                 EXPECT_LE(std::fabs(x_rec - xv), x_steps * wx / qgsf + 1e-4f);
@@ -260,17 +260,17 @@ TEST(FrontendQuantize, QuantizeResidualReconstructsWithinHalfStep) {
 // libjxl's per-quadrant thresholds: Y {0.56, 0.62}, X/B {0.58, 0.62} lowered by
 // 0.00744 per covered block from 4 covered blocks, floored at 0.5.
 TEST(FrontendQuantize, DeadzoneThresholdsMatchLibjxl) {
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 3 * 8 + 3), 0.56f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 3 * 8 + 4), 0.62f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 1, 4 * 8 + 3), 0.62f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 1, 15 * 32 + 15), 0.56f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 1, 31 * 32 + 31), 0.62f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 0, 1), 0.58f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(8, 2, 7 * 8 + 7), 0.62f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(16, 0, 7 * 16 + 7), 0.58f - 4 * 0.00744f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(16, 2, 8 * 16 + 7), 0.62f - 4 * 0.00744f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 0, 15 * 32 + 15), 0.5f);
-    EXPECT_FLOAT_EQ(ac_deadzone_threshold(32, 2, 15 * 32 + 16), 0.62f - 16 * 0.00744f);
+    EXPECT_FLOAT_EQ(ac_deadzone(8, 1).threshold(3 * 8 + 3), 0.56f);
+    EXPECT_FLOAT_EQ(ac_deadzone(8, 1).threshold(3 * 8 + 4), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone(8, 1).threshold(4 * 8 + 3), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone(32, 1).threshold(15 * 32 + 15), 0.56f);
+    EXPECT_FLOAT_EQ(ac_deadzone(32, 1).threshold(31 * 32 + 31), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone(8, 0).threshold(1), 0.58f);
+    EXPECT_FLOAT_EQ(ac_deadzone(8, 2).threshold(7 * 8 + 7), 0.62f);
+    EXPECT_FLOAT_EQ(ac_deadzone(16, 0).threshold(7 * 16 + 7), 0.58f - 4 * 0.00744f);
+    EXPECT_FLOAT_EQ(ac_deadzone(16, 2).threshold(8 * 16 + 7), 0.62f - 4 * 0.00744f);
+    EXPECT_FLOAT_EQ(ac_deadzone(32, 0).threshold(15 * 32 + 15), 0.5f);
+    EXPECT_FLOAT_EQ(ac_deadzone(32, 2).threshold(15 * 32 + 16), 0.62f - 16 * 0.00744f);
 }
 
 // Every AC coefficient quantizes to its nearest integer number of quant steps,
@@ -306,9 +306,9 @@ TEST(FrontendQuantize, QuantizeResidualAppliesDeadzone) {
                     const float residual{__half2float(f.coeffs[c * CPLANE + slot]) -
                                          ratio[c] * y_round};
                     const float steps{residual * qgsf / weight(side, static_cast<int>(c), raw)};
-                    const float threshold{ac_deadzone_threshold(static_cast<std::uint32_t>(side),
-                                                                static_cast<std::uint32_t>(c),
-                                                                static_cast<std::uint32_t>(raw))};
+                    const float threshold{
+                        ac_deadzone(static_cast<std::uint32_t>(side), static_cast<std::uint32_t>(c))
+                            .threshold(static_cast<std::uint32_t>(raw))};
                     const float magnitude{std::fabs(steps)};
                     if (std::fabs(magnitude - threshold) < TOLERANCE ||
                         std::fabs(magnitude - std::floor(magnitude) - 0.5f) < TOLERANCE) {

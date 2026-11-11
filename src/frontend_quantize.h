@@ -32,7 +32,7 @@ namespace cujpegxl {
 // ytob_ratio(map)*Yroundtrip; the LLF corner of each channel feeds dc_from_llf
 // (evaluated in FP32), quantized with the DC quantizer (X/Y direct, B minus
 // base*Y_dc_roundtrip). AC coefficients round to the nearest integer outside the
-// dead zone of `ac_deadzone_threshold` and to 0 inside it. The
+// dead zone of `ac_deadzone` and to 0 inside it. The
 // per-block quantizer strength is quant_field[block] * global_scale. `coeffs`
 // (three channel-major FP16 covered-block planes, see encode_frontend), `acs`
 // (the per-8x8 transform signal), `quant_field` and `calibration` are device

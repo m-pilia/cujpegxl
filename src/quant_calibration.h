@@ -40,25 +40,38 @@ inline constexpr int K_GLOBAL_SCALE_NUMERATOR = 4096;
 inline constexpr int K_QUANT_MAX = 256;
 
 // libjxl's QuantizeBlockAC dead zone (lib/jxl/enc_group.cc) with the thresholds
-// of its speed tiers that skip AdjustQuantBlockAC: an AC coefficient whose
-// magnitude in quant steps is below the threshold quantizes to 0. `raw` is the
-// coefficient's index fx * side + fy in its transform; the threshold is lower
-// in the low-frequency quadrant (fx, fy < side / 2), and X and B lower it for
-// transforms covering 4+ blocks, down to plain rounding (0.5).
-constexpr float ac_deadzone_threshold(std::uint32_t side, std::uint32_t channel,
-                                      std::uint32_t raw) {
-    // The bits of raw that are set iff fx >= side / 2 or fy >= side / 2.
-    const bool low_quadrant{(raw & (side / 2 * (side + 1))) == 0};
-    if (channel == 1) {
-        return low_quadrant ? 0.56f : 0.62f;
+// of its speed tiers that skip AdjustQuantBlockAC, for one transform side and
+// channel: an AC coefficient whose magnitude in quant steps is below the
+// threshold quantizes to 0. The threshold is lower in the low-frequency
+// quadrant (fx, fy < side / 2), and X and B lower it for transforms covering 4+
+// blocks, down to plain rounding (0.5).
+struct AcDeadzone {
+    // The bits of a raw index fx * side + fy that are set iff fx >= side / 2 or
+    // fy >= side / 2.
+    std::uint32_t high_quadrant_bits;
+    float low_quadrant_threshold;
+    float high_quadrant_threshold;
+
+    // `raw` is the coefficient's index fx * side + fy in its transform.
+    constexpr float threshold(std::uint32_t raw) const {
+        return (raw & high_quadrant_bits) == 0 ? low_quadrant_threshold : high_quadrant_threshold;
     }
-    const float base{low_quadrant ? 0.58f : 0.62f};
+};
+
+constexpr AcDeadzone ac_deadzone(std::uint32_t side, std::uint32_t channel) {
+    const std::uint32_t high_quadrant_bits{side / 2 * (side + 1)};
+    if (channel == 1) {
+        return {high_quadrant_bits, 0.56f, 0.62f};
+    }
     const std::uint32_t covered{side / 8 * (side / 8)};
     if (covered < 4) {
-        return base;
+        return {high_quadrant_bits, 0.58f, 0.62f};
     }
-    const float lowered{base - 0.00744f * static_cast<float>(covered)};
-    return lowered < 0.5f ? 0.5f : lowered;
+    const auto lowered = [covered](float base) {
+        const float t{base - 0.00744f * static_cast<float>(covered)};
+        return t < 0.5f ? 0.5f : t;
+    };
+    return {high_quadrant_bits, lowered(0.58f), lowered(0.62f)};
 }
 
 // Serialized quantizer state plus the derived float scales.
