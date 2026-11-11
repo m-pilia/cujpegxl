@@ -273,8 +273,9 @@ __device__ inline void store_half4(__half* dst, const float* v) {
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
 // Only the chosen transforms' Y coefficients are stored to y_plane.
 __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size_t rbx,
-                                           std::size_t rby, std::size_t bw, std::size_t bh,
-                                           float qgsf, float lambda, std::int8_t* __restrict__ acs,
+                                           std::size_t rby, std::size_t bw, int tile_bw,
+                                           int tile_bh, float qgsf, float lambda,
+                                           std::int8_t* __restrict__ acs,
                                            __half* __restrict__ y_plane, int tid) {
     const float* sharp_y{select};
     float* rows32{select};
@@ -344,7 +345,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         }
         dist = lane_group_sum<8>(dist);
         rate = lane_group_sum<8>(rate);
-        const bool inside{rbx + warp < bw && rby + rb < bh};
+        const bool inside{warp < tile_bw && rb < tile_bh};
         if (fx == 0) {
             cost8[8 * (rb / 2) + 4 * (warp / 2) + 2 * (rb % 2) + warp % 2] =
                 inside ? candidate_cost(8, dist, rate, lambda) : INF;
@@ -363,7 +364,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         }
         dist = lane_group_sum<16>(dist);
         rate = lane_group_sum<16>(rate);
-        const bool fit16{rbx + 2 * ch + 2 <= bw && rby + 2 * rb + 2 <= bh};
+        const bool fit16{2 * ch + 2 <= tile_bw && 2 * rb + 2 <= tile_bh};
         if (fx == 0) {
             cost16[2 * rb + ch] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
         }
@@ -390,19 +391,19 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
     // 2 dy + dx]; lane l < 16 then writes the signal of block (l % 4, l / 4).
     if (warp == 0 && lane < 16) {
         const int q{lane % 4};
-        const std::size_t qbx{rbx + 2 * static_cast<std::size_t>(q % 2)};
-        const std::size_t qby{rby + 2 * static_cast<std::size_t>(q / 2)};
+        const int qbx{2 * (q % 2)};
+        const int qby{2 * (q / 2)};
         float sum8{0.0f};
         bool any8{false};
         for (int dy{0}; dy < 2; ++dy) {
             for (int dx{0}; dx < 2; ++dx) {
-                if (qbx + dx < bw && qby + dy < bh) {
+                if (qbx + dx < tile_bw && qby + dy < tile_bh) {
                     sum8 += cost8[4 * q + 2 * dy + dx];
                     any8 = true;
                 }
             }
         }
-        const bool fit16{qbx + 2 <= bw && qby + 2 <= bh};
+        const bool fit16{qbx + 2 <= tile_bw && qby + 2 <= tile_bh};
         const float c16{cost16[q]};
         int choice{0};
         float quadrant_cost{0.0f};
@@ -422,22 +423,21 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
             split_cost += __shfl_sync(0xffffu, quadrant_cost, i);
             split_layout |= static_cast<std::uint32_t>(__shfl_sync(0xffffu, choice, i)) << (8 * i);
         }
-        const bool fit32{rbx + 4 <= bw && rby + 4 <= bh};
+        const bool fit32{tile_bw == TB && tile_bh == TB};
         const float cost32{
             candidate_cost(32, dist32[0] + dist32[1], rate32[0] + rate32[1], lambda)};
         const bool whole32{fit32 && cost32 <= split_cost + TRANSFORM_SELECT_SPLIT_EPS};
         const int dx{lane % 4};
         const int dy{lane / 4};
-        const std::size_t bx{rbx + static_cast<std::size_t>(dx)};
-        const std::size_t by{rby + static_cast<std::size_t>(dy)};
         const int side{whole32 ? 32 : quadrant_side(split_layout, 2 * (dy / 2) + dx / 2)};
         // The top-left block of a transform carries its side, the rest of its
         // footprint ACS_COVERED.
-        if (side != 0 && bx < bw && by < bh) {
+        if (side != 0 && dx < tile_bw && dy < tile_bh) {
             const int footprint_mask{side / 8 - 1};
-            acs[by * bw + bx] = (dx & footprint_mask) == 0 && (dy & footprint_mask) == 0
-                                    ? static_cast<std::int8_t>(side)
-                                    : ACS_COVERED;
+            acs[(rby + static_cast<std::size_t>(dy)) * bw + rbx + static_cast<std::size_t>(dx)] =
+                (dx & footprint_mask) == 0 && (dy & footprint_mask) == 0
+                    ? static_cast<std::int8_t>(side)
+                    : ACS_COVERED;
         }
         if (lane == 0) {
             *layout_word = whole32 ? WHOLE32_LAYOUT : split_layout;
@@ -461,11 +461,11 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
     } else if (warp < 4) {
         const int rb{lane / 8};
         const int fx{lane % 8};
-        const std::size_t bbx{rbx + static_cast<std::size_t>(warp)};
-        const std::size_t bby{rby + static_cast<std::size_t>(rb)};
-        if (quadrant_side(layout, 2 * (rb / 2) + warp / 2) == 8 && bbx < bw && bby < bh) {
-            store_half8(
-                y_plane + covered_plane_slot(8, bbx, bby, bw, static_cast<std::size_t>(8 * fx)), c);
+        if (quadrant_side(layout, 2 * (rb / 2) + warp / 2) == 8 && warp < tile_bw && rb < tile_bh) {
+            store_half8(y_plane + covered_plane_slot(8, rbx + static_cast<std::size_t>(warp),
+                                                     rby + static_cast<std::size_t>(rb), bw,
+                                                     static_cast<std::size_t>(8 * fx)),
+                        c);
         }
     } else if (warp < 6) {
         const int ch{warp - 4};
@@ -514,8 +514,8 @@ struct ChannelPair {
 
 // Horizontal pass of the X and B transforms of the region into rows.
 __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, ChannelPair<float> rows,
-                                            std::uint32_t layout, std::size_t rbx, std::size_t rby,
-                                            std::size_t bw, std::size_t bh, int warp, int lane) {
+                                            std::uint32_t layout, int tile_bw, int tile_bh,
+                                            int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
             const int c{warp / 2};
@@ -543,9 +543,7 @@ __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, Chan
             rows[c][region_row_index(256 * q + (2 * m + sub) * 16 + r)] = out[m];
         }
     } else if (n == 8) {
-        const std::size_t bx{rbx + static_cast<std::size_t>(2 * (q % 2) + sub)};
-        const std::size_t by{rby + static_cast<std::size_t>(2 * (q / 2) + r / 8)};
-        if (bx < bw && by < bh) {
+        if (2 * (q % 2) + sub < tile_bw && 2 * (q / 2) + r / 8 < tile_bh) {
             float out[8];
             dct_vector<8, 8>(src + 8 * sub, 0, out);
             const int k0{256 * q + 64 * (2 * (r / 8) + sub) + r % 8};
@@ -560,9 +558,8 @@ __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, Chan
 // Vertical pass of the X and B transforms of the region from rows into
 // coefficients.
 __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std::uint32_t layout,
-                                              std::size_t rbx, std::size_t rby, std::size_t bw,
-                                              std::size_t bh, ChannelPair<float> coeffs, int warp,
-                                              int lane) {
+                                              int tile_bw, int tile_bh, ChannelPair<float> coeffs,
+                                              int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
             const int c{warp / 2};
@@ -590,9 +587,7 @@ __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std
         }
     } else if (n == 8) {
         const int block{lane / 8};
-        const std::size_t bx{rbx + static_cast<std::size_t>(2 * (q % 2) + block % 2)};
-        const std::size_t by{rby + static_cast<std::size_t>(2 * (q / 2) + block / 2)};
-        if (bx < bw && by < bh) {
+        if (2 * (q % 2) + block % 2 < tile_bw && 2 * (q / 2) + block / 2 < tile_bh) {
             const int k0{256 * q + 8 * lane};
             float out[8];
             dct_vector<8, 8>(rows[sub] + region_row_index(k0), 0, out);
@@ -609,8 +604,8 @@ __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std
 // 8 (tid % 128).
 __device__ __forceinline__ void store_region_coeffs(ChannelPair<const float> coeffs,
                                                     std::uint32_t layout, std::size_t rbx,
-                                                    std::size_t rby, std::size_t bw, std::size_t bh,
-                                                    ChannelPair<__half> dst, int tid) {
+                                                    std::size_t rby, std::size_t bw, int tile_bw,
+                                                    int tile_bh, ChannelPair<__half> dst, int tid) {
     const int c{tid / 128};
     const int k{8 * (tid % 128)};
     const float* src{coeffs[c] + region_row_index(k)};
@@ -628,11 +623,11 @@ __device__ __forceinline__ void store_region_coeffs(ChannelPair<const float> coe
             dst[c] + covered_plane_slot(16, qbx, qby, bw, static_cast<std::size_t>(k % 256)), src);
     } else if (n == 8) {
         const int block{(k % 256) / 64};
-        const std::size_t bx{qbx + static_cast<std::size_t>(block % 2)};
-        const std::size_t by{qby + static_cast<std::size_t>(block / 2)};
-        if (bx < bw && by < bh) {
-            store_half8(
-                dst[c] + covered_plane_slot(8, bx, by, bw, static_cast<std::size_t>(k % 64)), src);
+        if (2 * (q % 2) + block % 2 < tile_bw && 2 * (q / 2) + block / 2 < tile_bh) {
+            store_half8(dst[c] + covered_plane_slot(8, qbx + static_cast<std::size_t>(block % 2),
+                                                    qby + static_cast<std::size_t>(block / 2), bw,
+                                                    static_cast<std::size_t>(k % 64)),
+                        src);
         }
     }
 }
@@ -768,20 +763,30 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
     const std::size_t tby0{static_cast<std::size_t>(blockIdx.y) * TB};
-    const std::size_t px0{tbx0 * 8};
-    const std::size_t py0{tby0 * 8};
+    // The tile's block columns and rows that lie inside the image.
+    const int tile_bw{static_cast<int>(min(bw - tbx0, std::size_t{TB}))};
+    const int tile_bh{static_cast<int>(min(bh - tby0, std::size_t{TB}))};
     const int tid{static_cast<int>(threadIdx.x)};
 
-    // Load the padded tile and compute XYB into shared memory.
-    for (int i{tid}; i < PAD_SAMPLES; i += FRONTEND_THREADS) {
-        const int lx{i % PAD};
-        const int ly{i / PAD};
-        int gx{static_cast<int>(px0) + lx - HALO};
-        int gy{static_cast<int>(py0) + ly - HALO};
-        gx = gx < 0 ? 0 : (gx >= static_cast<int>(width) ? static_cast<int>(width) - 1 : gx);
-        gy = gy < 0 ? 0 : (gy >= static_cast<int>(height) ? static_cast<int>(height) - 1 : gy);
-        const float yv{luma[static_cast<std::size_t>(gy) * luma_pitch + gx] * (1.0f / 255.0f)};
-        const float2 c{tex2D<float2>(chroma_tex, (gx + 0.5f) * 0.5f, (gy + 0.5f) * 0.5f)};
+    // Load the padded tile and compute XYB into shared memory. The fixed trip
+    // count lets the loop unroll fully. The clamped coordinates are
+    // non-negative, so the luma offset needs no sign extension.
+    const int gx0{static_cast<int>(tbx0) * 8 - HALO};
+    const int gy0{static_cast<int>(tby0) * 8 - HALO};
+    const int gx_max{static_cast<int>(width) - 1};
+    const int gy_max{static_cast<int>(height) - 1};
+#pragma unroll
+    for (int k{0}; k < (PAD_SAMPLES + FRONTEND_THREADS - 1) / FRONTEND_THREADS; ++k) {
+        const int i{tid + k * FRONTEND_THREADS};
+        if (i >= PAD_SAMPLES) {
+            break;
+        }
+        const std::uint32_t gx{static_cast<std::uint32_t>(min(max(gx0 + i % PAD, 0), gx_max))};
+        const std::uint32_t gy{static_cast<std::uint32_t>(min(max(gy0 + i / PAD, 0), gy_max))};
+        const float yv{luma[gy * luma_pitch + gx] * (1.0f / 255.0f)};
+        // The pixel centre in chroma texels, (g + 0.5) / 2 in one rounding.
+        const float2 c{tex2D<float2>(chroma_tex, fmaf(static_cast<float>(gx), 0.5f, 0.25f),
+                                     fmaf(static_cast<float>(gy), 0.5f, 0.25f))};
         float xo{};
         float yo{};
         float bo{};
@@ -832,7 +837,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         const int half{hb % 2};
         const int lbx{lb % TB};
         const int lby{lb / TB};
-        if (tbx0 + lbx >= bw || tby0 + lby >= bh) {
+        if (lbx >= tile_bw || lby >= tile_bh) {
             continue;
         }
         const int fx{lane % 8};
@@ -874,9 +879,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     if (tid < TB * TB) {
         const int lbx{tid % TB};
         const int lby{tid / TB};
-        const std::size_t gbx{tbx0 + static_cast<std::size_t>(lbx)};
-        const std::size_t gby{tby0 + static_cast<std::size_t>(lby)};
-        if (gbx < bw && gby < bh) {
+        if (lbx < tile_bw && lby < tile_bh) {
             const float* red{sh_red + tid * 6};
             const float hf_sum{red[0] + red[3]};
             const float gamma_overall{(red[1] + red[4]) * (0.5f / 64.0f)};
@@ -899,7 +902,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
             ov += blue_sum * 0.14207000358439159f;
 
             const float qval{expf(ov) * mul_pb + add_pb};
-            adaptive_field[gby * bw + gbx] = qval;
+            adaptive_field[(tby0 + static_cast<std::size_t>(lby)) * bw + tbx0 +
+                           static_cast<std::size_t>(lbx)] = qval;
             atomicAdd(&field_histogram[field_bin(qval)], 1u);
         }
     }
@@ -908,8 +912,9 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     __syncthreads();
 
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
-    const std::uint32_t layout{select_transforms(
-        workspace, tbx0, tby0, bw, bh, qgsf, TRANSFORM_SELECT_LAMBDA, acs, coeffs + cplane, tid)};
+    const std::uint32_t layout{select_transforms(workspace, tbx0, tby0, bw, tile_bw, tile_bh, qgsf,
+                                                 TRANSFORM_SELECT_LAMBDA, acs, coeffs + cplane,
+                                                 tid)};
     // Sharp B overlaps the selection rows.
     __syncthreads();
 
@@ -920,11 +925,11 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tbx0, tby0, bw, bh, warp, lane);
+    region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tile_bw, tile_bh, warp, lane);
     __syncthreads();
-    region_coeffs({raw_x, rows_b}, layout, tbx0, tby0, bw, bh, {sharp_x, coeffs_b}, warp, lane);
+    region_coeffs({raw_x, rows_b}, layout, tile_bw, tile_bh, {sharp_x, coeffs_b}, warp, lane);
     __syncthreads();
-    store_region_coeffs({sharp_x, coeffs_b}, layout, tbx0, tby0, bw, bh,
+    store_region_coeffs({sharp_x, coeffs_b}, layout, tbx0, tby0, bw, tile_bw, tile_bh,
                         {coeffs, coeffs + 2 * cplane}, tid);
 }
 
