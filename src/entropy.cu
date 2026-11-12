@@ -1453,7 +1453,8 @@ __device__ void grid_barrier(std::uint32_t* arrivals, std::uint32_t& barriers) {
 struct ClusterShared {
     std::int32_t table[AC_LOG2_TABLE_SIZE + 1];
     std::uint32_t counts[CLUSTER_HISTOGRAM_WORDS];
-    std::int32_t bin_log2[CLUSTER_HISTOGRAM_WORDS];
+    // Padded by a word so that lane j reading row j hits a distinct bank.
+    std::int32_t bin_log2[AC_MAX_CLUSTERS][AC_CONTEXT_ALPHABET + 1];
     std::int32_t total_log2[AC_MAX_CLUSTERS];
     std::uint32_t move_context[AC_MAX_CLUSTERS];
     std::uint32_t move_from[AC_MAX_CLUSTERS];
@@ -1543,8 +1544,8 @@ __device__ void cluster_log2(ClusterShared& sh, std::uint32_t alphabet) {
     for (std::uint32_t j{threadIdx.x / 32}; j < AC_MAX_CLUSTERS; j += blockDim.x / 32) {
         const std::uint32_t lo{sh.counts[j * AC_CONTEXT_ALPHABET + lane]};
         const std::uint32_t hi{sh.counts[j * AC_CONTEXT_ALPHABET + lane + 32]};
-        sh.bin_log2[j * AC_CONTEXT_ALPHABET + lane] = ac_smoothed_bin_log2(lo, sh.table);
-        sh.bin_log2[j * AC_CONTEXT_ALPHABET + lane + 32] = ac_smoothed_bin_log2(hi, sh.table);
+        sh.bin_log2[j][lane] = ac_smoothed_bin_log2(lo, sh.table);
+        sh.bin_log2[j][lane + 32] = ac_smoothed_bin_log2(hi, sh.table);
         const std::uint32_t total{warp_sum(lo + hi)};
         if (lane == 0) {
             sh.total_log2[j] = total != 0 ? ac_smoothed_total_log2(total, alphabet, sh.table) : -1;
@@ -1568,7 +1569,7 @@ __device__ void refill_empty_clusters(const std::uint32_t* context_histograms,
         const std::uint32_t cluster{load_coherent(&s.assignment[context])};
         const std::uint64_t excess{
             ac_refill_excess(context_ref(context_histograms, s, context), sh.total_log2[cluster],
-                             sh.bin_log2 + cluster * AC_CONTEXT_ALPHABET, sh.table)};
+                             sh.bin_log2[cluster], sh.table)};
         atomicMax(reinterpret_cast<unsigned long long*>(&s.refill_keys[cluster]),
                   static_cast<unsigned long long>(ac_refill_key(excess, context)));
     }
@@ -1650,8 +1651,7 @@ __global__ void cluster_contexts_kernel(const std::uint32_t* context_histograms,
                 if (sh.total_log2[j] < 0) {
                     return INT64_MAX;
                 }
-                return ac_coding_cost(histogram, sh.total_log2[j],
-                                      sh.bin_log2 + j * AC_CONTEXT_ALPHABET);
+                return ac_coding_cost(histogram, sh.total_log2[j], sh.bin_log2[j]);
             },
             [&](std::uint32_t context, std::uint32_t cluster) {
                 s.assignment[context] = static_cast<std::uint8_t>(cluster);
