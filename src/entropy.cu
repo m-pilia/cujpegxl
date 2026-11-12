@@ -137,18 +137,6 @@ __device__ std::uint32_t ac_predicted_nzeros_dev(const std::int32_t* nz_grid, in
     return ac_predict_nonzeros(has_left, has_top, topv, leftv);
 }
 
-__device__ GroupExtent dc_group_extent(std::size_t g, std::size_t bw, std::size_t bh,
-                                       std::size_t xdg) {
-    const std::size_t gx{g % xdg};
-    const std::size_t gy{g / xdg};
-    GroupExtent e{};
-    e.bx0 = gx * DC_GROUP_BLOCKS;
-    e.by0 = gy * DC_GROUP_BLOCKS;
-    e.gbw = min(DC_GROUP_BLOCKS, bw - e.bx0);
-    e.gbh = min(DC_GROUP_BLOCKS, bh - e.by0);
-    return e;
-}
-
 // The first-block lists are compacted one block row at a time: a thread block
 // per (block row, DcGroup column) with one thread per row position. A first
 // pass stores each row's count. The second pass places a position at the counts
@@ -248,9 +236,9 @@ constexpr int DC_CHUNKS = 128;
 // group's first-block block indices in raster order.
 struct DcCtx {
     const std::int32_t* dc;
-    std::size_t bw;
-    std::size_t nblocks;
-    std::size_t bx0, by0, gbw, gbh;
+    std::uint32_t bw;
+    std::uint32_t nblocks;
+    std::uint32_t bx0, by0, gbw, gbh;
     const std::uint8_t* dcd;
     const std::uint16_t* dcb;
     const std::uint8_t* amd;
@@ -263,27 +251,27 @@ struct DcCtx {
     const std::int8_t* acs;
     const std::int8_t* ytox_map;
     const std::int8_t* ytob_map;
-    std::size_t cmw;
+    std::uint32_t cmw;
     const std::size_t* fb_pos;  // this group's first-block block indices
-    std::size_t n;              // DC samples per channel = gbw*gbh
-    std::size_t cw, ch;         // CfL color-tile grid within the group
-    std::size_t count;          // first-blocks (ACS+QF columns)
-    std::size_t m;              // total items
+    std::uint32_t n;            // DC samples per channel = gbw*gbh
+    std::uint32_t cw, ch;       // CfL color-tile grid within the group
+    std::uint32_t count;        // first-blocks (ACS+QF columns)
+    std::uint32_t m;            // total items
 };
 
 // (symbol, extra bits) of the group's `j`-th AcMetadata sample, in channel/row
 // order: YtoX, YtoB, ACS row 0, QF row 1. Predictor::Zero, so each sample is
 // pack_signed of its raw value.
-__device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sym,
+__device__ void dc_acmeta_token(const DcCtx& c, std::uint32_t j, std::uint32_t& sym,
                                 std::uint32_t& rn, std::uint32_t& rw) {
-    const std::size_t cwch{c.cw * c.ch};
+    const std::uint32_t cwch{c.cw * c.ch};
     std::int32_t v{0};
     if (j < cwch) {
-        const std::size_t gt{(c.by0 / 8 + j / c.cw) * c.cmw + (c.bx0 / 8 + j % c.cw)};
+        const std::uint32_t gt{(c.by0 / 8 + j / c.cw) * c.cmw + (c.bx0 / 8 + j % c.cw)};
         v = c.ytox_map == nullptr ? 0 : c.ytox_map[gt];
     } else if (j < 2 * cwch) {
-        const std::size_t jj{j - cwch};
-        const std::size_t gt{(c.by0 / 8 + jj / c.cw) * c.cmw + (c.bx0 / 8 + jj % c.cw)};
+        const std::uint32_t jj{j - cwch};
+        const std::uint32_t gt{(c.by0 / 8 + jj / c.cw) * c.cmw + (c.bx0 / 8 + jj % c.cw)};
         v = c.ytob_map == nullptr ? 0 : c.ytob_map[gt];
     } else if (j < 2 * cwch + c.count) {
         const std::size_t block{c.fb_pos[j - 2 * cwch]};
@@ -295,26 +283,27 @@ __device__ void dc_acmeta_token(const DcCtx& c, std::size_t j, std::uint32_t& sy
     hybrid_encode(pack_signed(v), sym, rn, rw);
 }
 
-__device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t bw, std::size_t bh,
-                              std::size_t nblocks, std::size_t xdg, const std::int32_t* quant_field,
-                              const std::int8_t* acs, const std::int8_t* ytox_map,
-                              const std::int8_t* ytob_map, std::size_t cmw,
-                              const std::size_t* fb_pos, const std::size_t* fb_count,
-                              const std::uint8_t* dc_depth, const std::uint16_t* dc_bits,
-                              const std::uint8_t* acmeta_depth, const std::uint16_t* acmeta_bits,
-                              const std::uint8_t* blob_pre, const std::uint32_t* blob_pre_off,
+__device__ DcCtx build_dc_ctx(std::uint32_t g, const std::int32_t* dc, std::uint32_t bw,
+                              std::uint32_t bh, std::uint32_t nblocks, std::uint32_t xdg,
+                              const std::int32_t* quant_field, const std::int8_t* acs,
+                              const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+                              std::uint32_t cmw, const std::size_t* fb_pos,
+                              const std::size_t* fb_count, const std::uint8_t* dc_depth,
+                              const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+                              const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
+                              const std::uint32_t* blob_pre_off,
                               const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
                               const std::uint32_t* blob_mid_off,
                               const std::uint32_t* blob_mid_bits) {
-    const GroupExtent e{dc_group_extent(g, bw, bh, xdg)};
+    constexpr std::uint32_t side{DC_GROUP_BLOCKS};
     DcCtx c{};
     c.dc = dc;
     c.bw = bw;
     c.nblocks = nblocks;
-    c.bx0 = e.bx0;
-    c.by0 = e.by0;
-    c.gbw = e.gbw;
-    c.gbh = e.gbh;
+    c.bx0 = (g % xdg) * side;
+    c.by0 = (g / xdg) * side;
+    c.gbw = min(side, bw - c.bx0);
+    c.gbh = min(side, bh - c.by0);
     c.dcd = dc_depth + g * AC_HISTOGRAM_SIZE;
     c.dcb = dc_bits + g * AC_HISTOGRAM_SIZE;
     c.amd = acmeta_depth + g * AC_HISTOGRAM_SIZE;
@@ -329,25 +318,25 @@ __device__ DcCtx build_dc_ctx(std::size_t g, const std::int32_t* dc, std::size_t
     c.ytob_map = ytob_map;
     c.cmw = cmw;
     c.fb_pos = fb_pos + g * DC_FIRST_BLOCK_STRIDE;
-    c.n = e.gbw * e.gbh;
-    c.cw = (e.gbw + 7) / 8;
-    c.ch = (e.gbh + 7) / 8;
-    c.count = fb_count[g];
+    c.n = c.gbw * c.gbh;
+    c.cw = (c.gbw + 7) / 8;
+    c.ch = (c.gbh + 7) / 8;
+    c.count = static_cast<std::uint32_t>(fb_count[g]);
     c.m = 3 * c.n + 2 + 2 * c.cw * c.ch + 2 * c.count;
     return c;
 }
 
 // Bit count of item k in the section's item ordering.
-__device__ std::uint32_t dc_item_bits(const DcCtx& c, std::size_t k) {
+__device__ std::uint32_t dc_item_bits(const DcCtx& c, std::uint32_t k) {
     if (k == 0) {
         return c.pre_bits;
     }
     if (k < 1 + 3 * c.n) {
-        const std::size_t i{k - 1};
-        const std::size_t bp{i % c.n};
+        const std::uint32_t i{k - 1};
+        const std::uint32_t bp{i % c.n};
         const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::size_t bx{c.bx0 + bp % c.gbw};
-        const std::size_t by{c.by0 + bp / c.gbw};
+        const std::uint32_t bx{c.bx0 + bp % c.gbw};
+        const std::uint32_t by{c.by0 + bp / c.gbw};
         const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
         const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
@@ -429,17 +418,17 @@ struct RunBitWriter {
 };
 
 // Emits item k at the writer's current position.
-__device__ void dc_item_emit(const DcCtx& c, std::size_t k, RunBitWriter& w) {
+__device__ void dc_item_emit(const DcCtx& c, std::uint32_t k, RunBitWriter& w) {
     if (k == 0) {
         w.put_blob(c.pre, c.pre_bits);
         return;
     }
     if (k < 1 + 3 * c.n) {
-        const std::size_t i{k - 1};
-        const std::size_t bp{i % c.n};
+        const std::uint32_t i{k - 1};
+        const std::uint32_t bp{i % c.n};
         const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::size_t bx{c.bx0 + bp % c.gbw};
-        const std::size_t by{c.by0 + bp / c.gbw};
+        const std::uint32_t bx{c.bx0 + bp % c.gbw};
+        const std::uint32_t by{c.by0 + bp / c.gbw};
         const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
         const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
         std::uint32_t sym{}, rn{}, rw{};
@@ -621,26 +610,27 @@ dim3 group_hist_grid(std::size_t rows, std::size_t bh, std::size_t xdg) {
 }
 
 // Item range [k_lo, k_hi) of group `c` owned by chunk `cb`.
-__device__ void dc_chunk_range(const DcCtx& c, std::size_t cb, std::size_t& k_lo,
-                               std::size_t& k_hi) {
-    const std::size_t chunk{(c.m + DC_CHUNKS - 1) / DC_CHUNKS};
+__device__ void dc_chunk_range(const DcCtx& c, std::uint32_t cb, std::uint32_t& k_lo,
+                               std::uint32_t& k_hi) {
+    const std::uint32_t chunk{(c.m + DC_CHUNKS - 1) / DC_CHUNKS};
     k_lo = min(cb * chunk, c.m);
     k_hi = min(k_lo + chunk, c.m);
 }
 
 // This thread's item sub-range [a0, a1) within [k_lo, k_hi).
-__device__ void dc_thread_range(std::size_t k_lo, std::size_t k_hi, std::size_t& a0,
-                                std::size_t& a1) {
-    const std::size_t len{k_hi - k_lo};
-    const std::size_t r{(len + blockDim.x - 1) / blockDim.x};
-    a0 = k_lo + min(static_cast<std::size_t>(threadIdx.x) * r, len);
-    a1 = k_lo + min(static_cast<std::size_t>(threadIdx.x) * r + r, len);
+__device__ void dc_thread_range(std::uint32_t k_lo, std::uint32_t k_hi, std::uint32_t& a0,
+                                std::uint32_t& a1) {
+    const std::uint32_t len{k_hi - k_lo};
+    const std::uint32_t r{(len + DC_EMIT_THREADS - 1) / DC_EMIT_THREADS};
+    a0 = k_lo + min(threadIdx.x * r, len);
+    a1 = k_lo + min(threadIdx.x * r + r, len);
 }
 
 __global__ void dc_chunk_size_kernel(
-    const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
-    std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
-    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
+    const std::int32_t* dc, std::uint32_t bw, std::uint32_t bh, std::uint32_t nblocks,
+    std::uint32_t xdg, std::size_t num_groups, const std::int32_t* quant_field,
+    const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+    std::uint32_t cmw,
     const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
     const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
@@ -648,7 +638,7 @@ __global__ void dc_chunk_size_kernel(
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
     const std::uint32_t* blob_mid_bits, std::uint32_t* run_offsets,
     unsigned long long* chunk_bits) {
-    const std::size_t g{blockIdx.x};
+    const std::uint32_t g{blockIdx.x};
     if (g >= num_groups) {
         return;
     }
@@ -656,21 +646,21 @@ __global__ void dc_chunk_size_kernel(
                                cmw, fb_pos, fb_count, dc_depth, dc_bits, acmeta_depth, acmeta_bits,
                                blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off,
                                blob_mid_bits)};
-    std::size_t k_lo{0};
-    std::size_t k_hi{0};
+    std::uint32_t k_lo{0};
+    std::uint32_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
-    std::size_t a0{0};
-    std::size_t a1{0};
+    std::uint32_t a0{0};
+    std::uint32_t a1{0};
     dc_thread_range(k_lo, k_hi, a0, a1);
     unsigned long long run_bits{0};
-    for (std::size_t k{a0}; k < a1; ++k) {
+    for (std::uint32_t k{a0}; k < a1; ++k) {
         run_bits += dc_item_bits(c, k);
     }
 
     __shared__ unsigned long long sh[DC_EMIT_THREADS];
     unsigned long long total{0};
     const unsigned long long run_off{block_scan_exclusive(run_bits, sh, total)};
-    const std::size_t chunk{g * DC_CHUNKS + blockIdx.y};
+    const std::uint32_t chunk{g * DC_CHUNKS + blockIdx.y};
     run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x] = static_cast<std::uint32_t>(run_off);
     if (threadIdx.x == 0) {
         chunk_bits[chunk] = total;
@@ -700,9 +690,10 @@ __global__ void dc_chunk_scan_kernel(std::size_t num_groups, const unsigned long
 }
 
 __global__ void dc_chunk_emit_kernel(
-    const std::int32_t* dc, std::size_t bw, std::size_t bh, std::size_t nblocks, std::size_t xdg,
-    std::size_t num_groups, const std::int32_t* quant_field, const std::int8_t* acs,
-    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t cmw,
+    const std::int32_t* dc, std::uint32_t bw, std::uint32_t bh, std::uint32_t nblocks,
+    std::uint32_t xdg, std::size_t num_groups, const std::int32_t* quant_field,
+    const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
+    std::uint32_t cmw,
     const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
     const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
@@ -711,7 +702,7 @@ __global__ void dc_chunk_emit_kernel(
     const std::uint32_t* blob_mid_bits, const std::uint32_t* run_offsets,
     const unsigned long long* chunk_base, std::uint8_t* out, std::size_t out_capacity,
     const std::uint32_t* group_sizes, const std::uint32_t* group_offsets) {
-    const std::size_t g{blockIdx.x};
+    const std::uint32_t g{blockIdx.x};
     if (g >= num_groups || section_end(group_offsets, group_sizes, num_groups) > out_capacity) {
         return;
     }
@@ -719,18 +710,18 @@ __global__ void dc_chunk_emit_kernel(
                                cmw, fb_pos, fb_count, dc_depth, dc_bits, acmeta_depth, acmeta_bits,
                                blob_pre, blob_pre_off, blob_pre_bits, blob_mid, blob_mid_off,
                                blob_mid_bits)};
-    std::size_t k_lo{0};
-    std::size_t k_hi{0};
+    std::uint32_t k_lo{0};
+    std::uint32_t k_hi{0};
     dc_chunk_range(c, blockIdx.y, k_lo, k_hi);
-    std::size_t a0{0};
-    std::size_t a1{0};
+    std::uint32_t a0{0};
+    std::uint32_t a1{0};
     dc_thread_range(k_lo, k_hi, a0, a1);
-    const std::size_t chunk{g * DC_CHUNKS + blockIdx.y};
+    const std::uint32_t chunk{g * DC_CHUNKS + blockIdx.y};
     const unsigned long long start{(static_cast<unsigned long long>(group_offsets[g]) << 3) +
                                    chunk_base[chunk] +
                                    run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x]};
     RunBitWriter w{reinterpret_cast<unsigned int*>(out), start};
-    for (std::size_t k{a0}; k < a1; ++k) {
+    for (std::uint32_t k{a0}; k < a1; ++k) {
         dc_item_emit(c, k, w);
     }
     w.finish();
@@ -1962,11 +1953,11 @@ bool dc_encode_groups(const std::int32_t* dc, std::size_t width, std::size_t hei
                       std::uint32_t* group_sizes, std::uint32_t* group_offsets,
                       cudaStream_t stream) {
     ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
-    const std::size_t cmw{(bw + 7) / 8};
+    const auto bw{static_cast<std::uint32_t>(width / 8)};
+    const auto bh{static_cast<std::uint32_t>(height / 8)};
+    const std::uint32_t nblocks{bw * bh};
+    const auto xdg{static_cast<std::uint32_t>((bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS)};
+    const std::uint32_t cmw{(bw + 7) / 8};
     const std::size_t num_groups{dc_num_groups(width, height)};
 
     const DcEncodeScratch s{carve_dc_encode_scratch(scratch, num_groups)};
