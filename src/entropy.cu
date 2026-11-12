@@ -259,30 +259,6 @@ struct DcCtx {
     std::uint32_t m;            // total items
 };
 
-// (symbol, extra bits) of the group's `j`-th AcMetadata sample, in channel/row
-// order: YtoX, YtoB, ACS row 0, QF row 1. Predictor::Zero, so each sample is
-// pack_signed of its raw value.
-__device__ void dc_acmeta_token(const DcCtx& c, std::uint32_t j, std::uint32_t& sym,
-                                std::uint32_t& rn, std::uint32_t& rw) {
-    const std::uint32_t cwch{c.cw * c.ch};
-    std::int32_t v{0};
-    if (j < cwch) {
-        const std::uint32_t gt{(c.by0 / 8 + j / c.cw) * c.cmw + (c.bx0 / 8 + j % c.cw)};
-        v = c.ytox_map == nullptr ? 0 : c.ytox_map[gt];
-    } else if (j < 2 * cwch) {
-        const std::uint32_t jj{j - cwch};
-        const std::uint32_t gt{(c.by0 / 8 + jj / c.cw) * c.cmw + (c.bx0 / 8 + jj % c.cw)};
-        v = c.ytob_map == nullptr ? 0 : c.ytob_map[gt];
-    } else if (j < 2 * cwch + c.count) {
-        const std::size_t block{c.fb_pos[j - 2 * cwch]};
-        v = raw_strategy_dev(c.acs == nullptr ? 8 : c.acs[block]);
-    } else {
-        const std::size_t block{c.fb_pos[j - (2 * cwch + c.count)]};
-        v = c.qf[block] - 1;
-    }
-    hybrid_encode(pack_signed(v), sym, rn, rw);
-}
-
 __device__ DcCtx build_dc_ctx(std::uint32_t g, const std::int32_t* dc, std::uint32_t bw,
                               std::uint32_t bh, std::uint32_t nblocks, std::uint32_t xdg,
                               const std::int32_t* quant_field, const std::int8_t* acs,
@@ -326,30 +302,101 @@ __device__ DcCtx build_dc_ctx(std::uint32_t g, const std::int32_t* dc, std::uint
     return c;
 }
 
-// Bit count of item k in the section's item ordering.
-__device__ std::uint32_t dc_item_bits(const DcCtx& c, std::uint32_t k) {
-    if (k == 0) {
-        return c.pre_bits;
-    }
-    if (k < 1 + 3 * c.n) {
-        const std::uint32_t i{k - 1};
-        const std::uint32_t bp{i % c.n};
-        const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::uint32_t bx{c.bx0 + bp % c.gbw};
-        const std::uint32_t by{c.by0 + bp / c.gbw};
-        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
-        const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
-        std::uint32_t sym{}, rn{}, rw{};
-        hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
-        return c.dcd[sym] + rn;
-    }
-    if (k == 1 + 3 * c.n) {
-        return c.mid_bits;
-    }
+template <typename Sink>
+__device__ void dc_put_signed(Sink& sink, const std::uint8_t* depth, const std::uint16_t* code,
+                              std::int32_t value) {
     std::uint32_t sym{}, rn{}, rw{};
-    dc_acmeta_token(c, k - (3 * c.n + 2), sym, rn, rw);
-    return c.amd[sym] + rn;
+    hybrid_encode(pack_signed(value), sym, rn, rw);
+    sink.put_token(depth[sym], code[sym], rn, rw);
 }
+
+// Hands the items [a0, a1) of the section to `sink` in order. The DC samples
+// are in CHANNEL_ORDER planes of the group's blocks in raster order; the
+// AcMetadata samples are in channel/row order (YtoX and YtoB tiles in raster
+// order, ACS row 0, QF row 1) and use Predictor::Zero, so each is pack_signed
+// of its raw value. Plane, block and tile coordinates are derived once at the
+// run start and stepped per item.
+template <typename Sink>
+__device__ void dc_put_items(const DcCtx& c, std::uint32_t a0, std::uint32_t a1, Sink& sink) {
+    std::uint32_t k{a0};
+    if (k == 0 && k < a1) {
+        sink.put_blob(c.pre, c.pre_bits);
+        ++k;
+    }
+    const std::uint32_t dc_end{min(a1, 1 + 3 * c.n)};
+    if (k < dc_end) {
+        const std::uint32_t i{k - 1};
+        std::uint32_t plane{i / c.n};
+        const std::uint32_t bp{i - plane * c.n};
+        std::uint32_t x{bp % c.gbw};
+        std::uint32_t y{bp / c.gbw};
+        for (; k < dc_end; ++k) {
+            const int ch{CHANNEL_ORDER[plane]};
+            const std::uint32_t bx{c.bx0 + x};
+            const std::uint32_t by{c.by0 + y};
+            const std::int32_t dc{
+                c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
+            const std::int32_t pred{
+                dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
+            dc_put_signed(sink, c.dcd, c.dcb, dc - pred);
+            if (++x == c.gbw) {
+                x = 0;
+                if (++y == c.gbh) {
+                    y = 0;
+                    ++plane;
+                }
+            }
+        }
+    }
+    if (k == 1 + 3 * c.n && k < a1) {
+        sink.put_blob(c.mid, c.mid_bits);
+        ++k;
+    }
+    const std::uint32_t cfl_begin{3 * c.n + 2};
+    const std::uint32_t cwch{c.cw * c.ch};
+    const std::uint32_t cfl_end{min(a1, cfl_begin + 2 * cwch)};
+    if (k < cfl_end) {
+        const std::uint32_t j{k - cfl_begin};
+        std::uint32_t map{j / cwch};
+        const std::uint32_t t{j - map * cwch};
+        std::uint32_t tx{t % c.cw};
+        std::uint32_t ty{t / c.cw};
+        for (; k < cfl_end; ++k) {
+            const std::int8_t* m{map == 0 ? c.ytox_map : c.ytob_map};
+            const std::uint32_t gt{(c.by0 / 8 + ty) * c.cmw + (c.bx0 / 8 + tx)};
+            dc_put_signed(sink, c.amd, c.amb, m == nullptr ? 0 : m[gt]);
+            if (++tx == c.cw) {
+                tx = 0;
+                if (++ty == c.ch) {
+                    ty = 0;
+                    ++map;
+                }
+            }
+        }
+    }
+    const std::uint32_t acs_begin{cfl_begin + 2 * cwch};
+    const std::uint32_t acs_end{min(a1, acs_begin + c.count)};
+    for (; k < acs_end; ++k) {
+        const std::size_t block{c.fb_pos[k - acs_begin]};
+        dc_put_signed(sink, c.amd, c.amb, raw_strategy_dev(c.acs == nullptr ? 8 : c.acs[block]));
+    }
+    const std::uint32_t qf_begin{acs_begin + c.count};
+    for (; k < a1; ++k) {
+        const std::size_t block{c.fb_pos[k - qf_begin]};
+        dc_put_signed(sink, c.amd, c.amb, c.qf[block] - 1);
+    }
+}
+
+struct RunBitCounter {
+    unsigned long long bits{0};
+
+    __device__ void put_blob(const std::uint8_t*, std::uint32_t n_bits) { bits += n_bits; }
+
+    __device__ void put_token(std::uint32_t depth, std::uint32_t, std::uint32_t rn,
+                              std::uint32_t) {
+        bits += depth + rn;
+    }
+};
 
 // LSB-first bit packer for a thread's single contiguous run of bits. A run owns a
 // known absolute bit range [pos, end); its interior 32-bit words belong to it
@@ -405,6 +452,14 @@ struct RunBitWriter {
         }
     }
 
+    __device__ void put_token(std::uint32_t depth, std::uint32_t code, std::uint32_t rn,
+                              std::uint32_t rw) {
+        put(depth, code);
+        if (rn) {
+            put(rn, rw);
+        }
+    }
+
     // The trailing partial word (if any) is shared with the next run, so it is
     // always composed via atomicOr rather than stored.
     __device__ void finish() {
@@ -416,40 +471,6 @@ struct RunBitWriter {
         }
     }
 };
-
-// Emits item k at the writer's current position.
-__device__ void dc_item_emit(const DcCtx& c, std::uint32_t k, RunBitWriter& w) {
-    if (k == 0) {
-        w.put_blob(c.pre, c.pre_bits);
-        return;
-    }
-    if (k < 1 + 3 * c.n) {
-        const std::uint32_t i{k - 1};
-        const std::uint32_t bp{i % c.n};
-        const int ch{CHANNEL_ORDER[i / c.n]};
-        const std::uint32_t bx{c.bx0 + bp % c.gbw};
-        const std::uint32_t by{c.by0 + bp / c.gbw};
-        const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
-        const std::int32_t pred{dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
-        std::uint32_t sym{}, rn{}, rw{};
-        hybrid_encode(pack_signed(dc - pred), sym, rn, rw);
-        w.put(c.dcd[sym], c.dcb[sym]);
-        if (rn) {
-            w.put(rn, rw);
-        }
-        return;
-    }
-    if (k == 1 + 3 * c.n) {
-        w.put_blob(c.mid, c.mid_bits);
-        return;
-    }
-    std::uint32_t sym{}, rn{}, rw{};
-    dc_acmeta_token(c, k - (3 * c.n + 2), sym, rn, rw);
-    w.put(c.amd[sym], c.amb[sym]);
-    if (rn) {
-        w.put(rn, rw);
-    }
-}
 
 // End of a section of byte-aligned groups laid out at `group_offsets`, read on
 // the device so that the host never waits for the section total.
@@ -652,14 +673,12 @@ __global__ void dc_chunk_size_kernel(
     std::uint32_t a0{0};
     std::uint32_t a1{0};
     dc_thread_range(k_lo, k_hi, a0, a1);
-    unsigned long long run_bits{0};
-    for (std::uint32_t k{a0}; k < a1; ++k) {
-        run_bits += dc_item_bits(c, k);
-    }
+    RunBitCounter run{};
+    dc_put_items(c, a0, a1, run);
 
     __shared__ unsigned long long sh[DC_EMIT_THREADS];
     unsigned long long total{0};
-    const unsigned long long run_off{block_scan_exclusive(run_bits, sh, total)};
+    const unsigned long long run_off{block_scan_exclusive(run.bits, sh, total)};
     const std::uint32_t chunk{g * DC_CHUNKS + blockIdx.y};
     run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x] = static_cast<std::uint32_t>(run_off);
     if (threadIdx.x == 0) {
@@ -721,9 +740,7 @@ __global__ void dc_chunk_emit_kernel(
                                    chunk_base[chunk] +
                                    run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x]};
     RunBitWriter w{reinterpret_cast<unsigned int*>(out), start};
-    for (std::uint32_t k{a0}; k < a1; ++k) {
-        dc_item_emit(c, k, w);
-    }
+    dc_put_items(c, a0, a1, w);
     w.finish();
 }
 
