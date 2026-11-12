@@ -1468,17 +1468,27 @@ struct ClusterShared {
 };
 
 // Thread block 0 lists the contexts with tokens in context order, while the
-// others wait at the first barrier.
+// others wait at the first barrier. Each thread issues the loads of all its
+// rounds' totals before the first round, so that the rounds wait on none.
 __device__ void list_active_contexts(const ClusterScratch& s, ClusterShared& sh) {
+    constexpr unsigned int ROUNDS{(NUM_CONTEXTS + CLUSTER_THREADS - 1) / CLUSTER_THREADS};
+    static_assert(ROUNDS <= 32);
+    std::uint32_t has_tokens{0};
+#pragma unroll
+    for (unsigned int round{0}; round < ROUNDS; ++round) {
+        const std::size_t context{round * CLUSTER_THREADS + threadIdx.x};
+        if (context < NUM_CONTEXTS && s.totals[context] != 0) {
+            has_tokens |= 1u << round;
+        }
+    }
     if (threadIdx.x < AC_MAX_CLUSTERS) {
         s.first_context[threadIdx.x] = UINT32_MAX;
     }
     const unsigned int lane{threadIdx.x % 32};
     const unsigned int warp{threadIdx.x / 32};
     std::uint32_t num_active{0};
-    for (std::size_t base{0}; base < NUM_CONTEXTS; base += blockDim.x) {
-        const std::size_t context{base + threadIdx.x};
-        const bool flag{context < NUM_CONTEXTS && s.totals[context] != 0};
+    for (unsigned int round{0}; round < ROUNDS; ++round) {
+        const bool flag{((has_tokens >> round) & 1u) != 0};
         const unsigned int flags{__ballot_sync(~0u, flag)};
         if (lane == 0) {
             sh.warp_counts[warp] = static_cast<std::uint32_t>(__popc(flags));
@@ -1491,7 +1501,7 @@ __device__ void list_active_contexts(const ClusterScratch& s, ClusterShared& sh)
             num_active += sh.warp_counts[w];
         }
         if (flag) {
-            s.active[slot] = static_cast<std::uint16_t>(context);
+            s.active[slot] = static_cast<std::uint16_t>(round * CLUSTER_THREADS + threadIdx.x);
         }
         __syncthreads();
     }
