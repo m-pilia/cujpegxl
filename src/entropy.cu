@@ -1463,6 +1463,7 @@ struct ClusterShared {
     std::uint32_t inverse[AC_MAX_CLUSTERS];
     std::uint32_t warp_counts[CLUSTER_THREADS / 32];
     std::uint32_t first_context[AC_MAX_CLUSTERS];
+    std::uint32_t context_bins[CLUSTER_THREADS / 32][AC_CONTEXT_ALPHABET];
 };
 
 // Thread block 0 lists the contexts with tokens in context order, while the
@@ -1499,25 +1500,35 @@ __device__ void list_active_contexts(const ClusterScratch& s, ClusterShared& sh)
 }
 
 // A warp per context with tokens, the same contexts for every assignment, lane
-// j weighing cluster j. The warp then adds the context's histogram to its
-// cluster's in `cluster_hist`, and returns the cluster to `done`.
+// j weighing cluster j on the context's bins, staged in the warp's slot of
+// `sh.context_bins` so that every lane reads them from shared memory. The warp
+// then adds the context's histogram to its cluster's in `cluster_hist`, and
+// returns the cluster to `done`.
 template <typename Cost, typename Done>
 __device__ void assign_contexts(const std::uint32_t* context_histograms, const ClusterScratch& s,
-                                std::uint32_t num_active, std::uint32_t* cluster_hist, Cost cost,
-                                Done done) {
+                                ClusterShared& sh, std::uint32_t num_active,
+                                std::uint32_t* cluster_hist, Cost cost, Done done) {
+    static_assert(AC_CONTEXT_ALPHABET == 64);
     const unsigned int lane{threadIdx.x % 32};
+    std::uint32_t* const bins{sh.context_bins[threadIdx.x / 32]};
     const std::uint32_t warps{gridDim.x * blockDim.x / 32};
     for (std::uint32_t a{(blockIdx.x * blockDim.x + threadIdx.x) / 32}; a < num_active;
          a += warps) {
         const std::uint32_t context{load_coherent(&s.active[a])};
-        std::int64_t value{cost(context, lane)};
+        const std::uint32_t lo{context_histograms[context * AC_CONTEXT_ALPHABET + lane]};
+        const std::uint32_t hi{context_histograms[context * AC_CONTEXT_ALPHABET + lane + 32]};
+        __syncwarp();
+        bins[lane] = lo;
+        bins[lane + 32] = hi;
+        __syncwarp();
+        std::int64_t value{cost(AcHistogramRef{bins, s.totals[context], s.masks[context]}, lane)};
         std::uint32_t index{lane};
         warp_argmin(value, index);
-        for (std::uint32_t sym{lane}; sym < AC_CONTEXT_ALPHABET; sym += 32) {
-            const std::uint32_t count{context_histograms[context * AC_CONTEXT_ALPHABET + sym]};
-            if (count != 0) {
-                atomicAdd(&cluster_hist[index * AC_CONTEXT_ALPHABET + sym], count);
-            }
+        if (lo != 0) {
+            atomicAdd(&cluster_hist[index * AC_CONTEXT_ALPHABET + lane], lo);
+        }
+        if (hi != 0) {
+            atomicAdd(&cluster_hist[index * AC_CONTEXT_ALPHABET + lane + 32], hi);
         }
         if (lane == 0) {
             done(context, index);
@@ -1633,12 +1644,13 @@ __global__ void cluster_contexts_kernel(const std::uint32_t* context_histograms,
         }
         const bool last{it + 1 == AC_CLUSTER_LLOYD_ITERATIONS};
         assign_contexts(
-            context_histograms, s, num_active, s.cluster_hist + (it + 1) * CLUSTER_HISTOGRAM_WORDS,
-            [&](std::uint32_t context, unsigned int j) -> std::int64_t {
+            context_histograms, s, sh, num_active,
+            s.cluster_hist + (it + 1) * CLUSTER_HISTOGRAM_WORDS,
+            [&](const AcHistogramRef& histogram, unsigned int j) -> std::int64_t {
                 if (sh.total_log2[j] < 0) {
                     return INT64_MAX;
                 }
-                return ac_coding_cost(context_ref(context_histograms, s, context), sh.total_log2[j],
+                return ac_coding_cost(histogram, sh.total_log2[j],
                                       sh.bin_log2 + j * AC_CONTEXT_ALPHABET);
             },
             [&](std::uint32_t context, std::uint32_t cluster) {
