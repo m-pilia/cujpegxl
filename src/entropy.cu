@@ -501,26 +501,28 @@ __global__ void zero_section_kernel(unsigned int* words, const std::uint32_t* gr
     }
 }
 
-// Block-wide exclusive scan of `val` over `sh` (blockDim entries); returns this
+// Block-wide exclusive scan of `val` (blockDim a multiple of 32); returns this
 // thread's exclusive prefix and writes the inclusive total.
-__device__ unsigned long long block_scan_exclusive(unsigned long long val, unsigned long long* sh,
+__device__ unsigned long long block_scan_exclusive(unsigned long long val,
                                                    unsigned long long& total) {
-    const unsigned int tid{threadIdx.x};
-    sh[tid] = val;
-    __syncthreads();
-    for (unsigned int offset{1}; offset < blockDim.x; offset <<= 1) {
-        unsigned long long add{0};
-        if (tid >= offset) {
-            add = sh[tid - offset];
-        }
-        __syncthreads();
-        sh[tid] += add;
-        __syncthreads();
+    __shared__ unsigned long long warp_sums[32];
+    const unsigned int lane{threadIdx.x % 32};
+    const unsigned int warp{threadIdx.x / 32};
+    const unsigned int num_warps{blockDim.x / 32};
+    const unsigned long long inclusive{warp_inclusive_sum(val, lane)};
+    if (lane == 31) {
+        warp_sums[warp] = inclusive;
     }
-    total = sh[blockDim.x - 1];
-    const unsigned long long inclusive{sh[tid]};
     __syncthreads();
-    return inclusive - val;
+    if (warp == 0) {
+        warp_sums[lane] = warp_inclusive_sum(lane < num_warps ? warp_sums[lane] : 0ull, lane);
+    }
+    __syncthreads();
+    total = warp_sums[num_warps - 1];
+    const unsigned long long below{warp == 0 ? 0ull : warp_sums[warp - 1]};
+    // The callers that scan in a loop overwrite warp_sums in the next call.
+    __syncthreads();
+    return below + inclusive - val;
 }
 
 // The DC and AcMetadata histograms are launched over (strip, DcGroup column),
@@ -676,9 +678,8 @@ __global__ void dc_chunk_size_kernel(
     RunBitCounter run{};
     dc_put_items(c, a0, a1, run);
 
-    __shared__ unsigned long long sh[DC_EMIT_THREADS];
     unsigned long long total{0};
-    const unsigned long long run_off{block_scan_exclusive(run.bits, sh, total)};
+    const unsigned long long run_off{block_scan_exclusive(run.bits, total)};
     const std::uint32_t chunk{g * DC_CHUNKS + blockIdx.y};
     run_offsets[chunk * DC_EMIT_THREADS + threadIdx.x] = static_cast<std::uint32_t>(run_off);
     if (threadIdx.x == 0) {
@@ -693,12 +694,11 @@ __global__ void dc_chunk_size_kernel(
 __global__ void dc_chunk_scan_kernel(std::size_t num_groups, const unsigned long long* chunk_bits,
                                      unsigned long long* chunk_base, std::uint32_t* group_sizes,
                                      std::uint32_t* group_offsets) {
-    __shared__ unsigned long long sh[DC_CHUNKS];
     std::uint32_t offset{0};
     for (std::size_t g{0}; g < num_groups; ++g) {
         const std::size_t chunk{g * DC_CHUNKS + threadIdx.x};
         unsigned long long group_bits{0};
-        chunk_base[chunk] = block_scan_exclusive(chunk_bits[chunk], sh, group_bits);
+        chunk_base[chunk] = block_scan_exclusive(chunk_bits[chunk], group_bits);
         const auto size{static_cast<std::uint32_t>((group_bits + 7) / 8)};
         if (threadIdx.x == 0) {
             group_sizes[g] = size;
@@ -1128,6 +1128,8 @@ constexpr unsigned int AC_CHUNK_THREADS = 128;
 constexpr std::size_t AC_GROUP_ITEMS = AC_GROUP_BLOCKS * AC_GROUP_BLOCKS * 3;
 constexpr int AC_GROUP_CHUNKS = static_cast<int>(AC_GROUP_ITEMS / 32);
 constexpr unsigned int AC_LAYOUT_THREADS = 256;
+static_assert(DC_EMIT_THREADS % 32 == 0 && DC_CHUNKS % 32 == 0 && AC_GROUP_CHUNKS % 32 == 0 &&
+              AC_LAYOUT_THREADS % 32 == 0);
 constexpr unsigned int AC_PACK_MIN_BLOCKS = 10;
 
 // Raw bits of an AC token: a coefficient token's value is pack_signed of an
@@ -1161,10 +1163,9 @@ __global__ void ac_chunk_sizes_kernel(const unsigned long long* item_sizes, std:
 __global__ void ac_group_scan_kernel(const unsigned long long* chunk_sizes,
                                      unsigned long long* chunk_base,
                                      unsigned long long* group_sizes) {
-    __shared__ unsigned long long sh[AC_GROUP_CHUNKS];
     const std::size_t chunk{static_cast<std::size_t>(blockIdx.x) * AC_GROUP_CHUNKS + threadIdx.x};
     unsigned long long total{0};
-    chunk_base[chunk] = block_scan_exclusive(chunk_sizes[chunk], sh, total);
+    chunk_base[chunk] = block_scan_exclusive(chunk_sizes[chunk], total);
     if (threadIdx.x == 0) {
         group_sizes[blockIdx.x] = total;
     }
@@ -1174,7 +1175,6 @@ __global__ void ac_group_scan_kernel(const unsigned long long* chunk_sizes,
 // up to whole 64-bit words, into the token layout (see ac_token_layout).
 __global__ void ac_group_layout_kernel(const unsigned long long* group_sizes,
                                        std::size_t num_groups, std::uint32_t* layout) {
-    __shared__ unsigned long long sh[AC_LAYOUT_THREADS];
     std::uint32_t* const token_offset{layout};
     std::uint32_t* const raw_offset{layout + num_groups + 1};
     std::uint32_t* const raw_bits{layout + 2 * (num_groups + 1)};
@@ -1186,8 +1186,7 @@ __global__ void ac_group_layout_kernel(const unsigned long long* group_sizes,
         unsigned long long total{0};
         const unsigned long long offset{
             base + block_scan_exclusive(
-                       pack_sizes(static_cast<std::uint32_t>(size), (group_raw_bits + 63) / 64), sh,
-                       total)};
+                       pack_sizes(static_cast<std::uint32_t>(size), (group_raw_bits + 63) / 64), total)};
         if (g < num_groups) {
             token_offset[g] = static_cast<std::uint32_t>(offset);
             raw_offset[g] = static_cast<std::uint32_t>(offset >> 32);
