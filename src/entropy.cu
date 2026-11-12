@@ -1888,10 +1888,8 @@ std::size_t ac_cluster_scratch_bytes() {
 bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* scratch,
                          AcClustering* clustering, cudaStream_t stream) {
     ensure_constants();
-    int device{0};
-    int sms{0};
-    if (cudaGetDevice(&device) != cudaSuccess ||
-        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+    std::size_t wave{0};
+    if (!one_wave_blocks(&cluster_contexts_kernel, CLUSTER_THREADS, 0, wave)) {
         return false;
     }
     ClusterScratch s{carve_cluster_scratch(scratch)};
@@ -1903,7 +1901,7 @@ bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* 
                            CLUSTER_THREADS, 0, stream>>>(context_histograms, s);
     void* args[]{&context_histograms, &s, &clustering};
     return cudaLaunchCooperativeKernel(reinterpret_cast<void*>(&cluster_contexts_kernel),
-                                       dim3{static_cast<unsigned int>(sms)}, dim3{CLUSTER_THREADS},
+                                       dim3{static_cast<unsigned int>(wave)}, dim3{CLUSTER_THREADS},
                                        args, 0, stream) == cudaSuccess &&
            cudaGetLastError() == cudaSuccess;
 }
