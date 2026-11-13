@@ -67,6 +67,34 @@ cc_library(
 )
 
 cc_library(
+    name = "dct_mma_impl",
+    hdrs = ["dct_mma_impl.cuh"],
+)
+
+cuda_library(
+    name = "dct_mma_check",
+    testonly = True,
+    srcs = ["dct_mma_check.cu"],
+    hdrs = ["dct_mma_check.h"],
+    copts = RUNTIME_COPTS,
+    deps = [
+        ":dct_mma_impl",
+        ":gpu_arch",
+    ],
+)
+
+cc_test(
+    name = "dct_mma_impl_gpu_test",
+    srcs = ["dct_mma_impl_gpu_test.cc"],
+    tags = ["gpu"],
+    deps = [
+        ":dct_mma_check",
+        ":device_support",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "exact_div",
     hdrs = ["exact_div.cuh"],
 )
@@ -297,6 +325,7 @@ cuda_library(
     copts = RUNTIME_COPTS,
     deps = [
         ":dct_impl",
+        ":dct_mma_impl",
         ":exact_div",
         ":gpu_arch",
         ":quant_consts",

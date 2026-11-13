@@ -10,6 +10,7 @@
 
 #include "adaptive_quant_impl.cuh"
 #include "dct_impl.cuh"
+#include "dct_mma_impl.cuh"
 #include "dequant_weight_pairs.h"
 #include "exact_div.cuh"
 #include "gaborish.h"
@@ -273,10 +274,30 @@ __device__ inline void store_half4(__half* dst, const float* v) {
         Half4{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3])}};
 }
 
+// The 32x32 candidate runs on the tensor cores on sm_87 (dct_mma_impl.cuh).
+constexpr bool DCT32_MMA{COMPILED_ARCH == GpuArch::SM87};
+
+// Not const: a const table is placed in the constant bank, whose loads
+// serialize over the lanes' distinct addresses.
+[[maybe_unused]] __device__ Dct32MmaBasis DCT32_BASIS{DCT32_MMA_BASIS};
+
+// Coefficient (fx, fy) held in c[m] by lane `lane` of 32x32 warp `part` after
+// the vertical pass.
+__device__ inline int dct32_lane_fx(int lane, int m) {
+    return DCT32_MMA ? dct32_mma_fx(lane, m) : lane;
+}
+
+__device__ inline int dct32_lane_fy(int part, int lane, int m) {
+    return DCT32_MMA ? dct32_mma_fy(part, lane, m) : 2 * m + part;
+}
+
 // Each warp takes one candidate size: warps 0-3 the 8x8 candidates of tile
 // column block w, warps 4-5 the 16x16 candidates of tile column half w - 4,
 // warps 6-7 the even and odd frequencies of the 32x32 candidate. A lane
-// transforms one N-vector per pass: a tile row, then the rows of one fx.
+// transforms one N-vector per pass: a tile row, then the rows of one fx. With
+// DCT32_MMA, warps 6-7 instead compute coefficient rows fy in [0, 16) and
+// [16, 32): the vertical pass in the horizontal-pass slot, the horizontal pass
+// in the vertical-pass slot.
 //
 // Returns the region layout: byte q holds the side (8, 16 or 32) of the
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
@@ -306,11 +327,15 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
     // Horizontal pass, lane r on tile row r. Rows32 overlaps sharp Y, so the
     // rows are stored once every warp has loaded its pixels.
     float h[16];
+    std::uint32_t u32[2][4];
+    float offset32;
     const float* pixel_row{sharp_y + lane * TILE_STRIDE};
     if (warp < 4) {
         dct_vector<8, 8>(pixel_row + 8 * warp, 0, h);
     } else if (warp < 6) {
         dct_vector<16, 16>(pixel_row + 16 * (warp - 4), 0, h);
+    } else if constexpr (DCT32_MMA) {
+        offset32 = dct32_mma_vertical(DCT32_BASIS, sharp_y, TILE_STRIDE, part32, lane, u32);
     } else {
         dct_vector<32, 16>(pixel_row, part32, h);
     }
@@ -330,7 +355,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         for (int fx{0}; fx < 16; ++fx) {
             dst[fx * 17] = h[fx];
         }
-    } else {
+    } else if (!DCT32_MMA) {
 #pragma unroll
         for (int m{0}; m < 16; ++m) {
             rows32[(2 * m + part32) * 33 + lane] = h[m];
@@ -378,14 +403,21 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
             cost16[2 * rb + ch] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
         }
     } else {
-        dct_vector<32, 16>(rows32 + lane * 33, part32, c);
+        if constexpr (DCT32_MMA) {
+            dct32_mma_horizontal(DCT32_BASIS, u32, part32, lane, offset32, c);
+        } else {
+            dct_vector<32, 16>(rows32 + lane * 33, part32, c);
+        }
         float dist{0.0f};
         float rate{0.0f};
 #pragma unroll
         for (int m{0}; m < 16; ++m) {
-            c[m] *= DCT2D_SCALE<32>;
-            accumulate_coeff_cost(c[m], lane, 2 * m + part32, 32, qgsf, inv_qgsf, rate_terms, dist,
-                                  rate);
+            // The tensor-core basis includes the scale.
+            if constexpr (!DCT32_MMA) {
+                c[m] *= DCT2D_SCALE<32>;
+            }
+            accumulate_coeff_cost(c[m], dct32_lane_fx(lane, m), dct32_lane_fy(part32, lane, m), 32,
+                                  qgsf, inv_qgsf, rate_terms, dist, rate);
         }
         dist = lane_group_sum<32>(dist);
         rate = lane_group_sum<32>(rate);
@@ -460,7 +492,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         if (warp >= 6) {
 #pragma unroll
             for (int m{0}; m < 16; ++m) {
-                rows32[lane * 33 + 2 * m + part32] = c[m];
+                rows32[dct32_lane_fx(lane, m) * 33 + dct32_lane_fy(part32, lane, m)] = c[m];
             }
         }
         __syncthreads();
