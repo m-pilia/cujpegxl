@@ -274,28 +274,32 @@ __device__ inline void store_half4(__half* dst, const float* v) {
         Half4{{__floats2half2_rn(v[0], v[1]), __floats2half2_rn(v[2], v[3])}};
 }
 
-// The 32x32 candidate runs on the tensor cores on sm_87 (dct_mma_impl.cuh).
-constexpr bool DCT32_MMA{COMPILED_ARCH == GpuArch::SM87};
+// On sm_87, the 32x32 Y candidate and the X and B transforms run on the tensor
+// cores (dct_mma_impl.cuh).
+constexpr bool DCT_MMA{COMPILED_ARCH == GpuArch::SM87};
 
 // Not const: a const table is placed in the constant bank, whose loads
 // serialize over the lanes' distinct addresses.
 [[maybe_unused]] __device__ Dct32MmaBasis DCT32_BASIS{DCT32_MMA_BASIS};
+// The region transform bases of DCT16 (0) and DCT8 (1) quadrants.
+[[maybe_unused]] __device__ RegionMmaBasis REGION_BASES[2]{REGION_MMA_BASIS_DCT16,
+                                                          REGION_MMA_BASIS_DCT8};
 
 // Coefficient (fx, fy) held in c[m] by lane `lane` of 32x32 warp `part` after
 // the vertical pass.
 __device__ inline int dct32_lane_fx(int lane, int m) {
-    return DCT32_MMA ? dct32_mma_fx(lane, m) : lane;
+    return DCT_MMA ? dct32_mma_fx(lane, m) : lane;
 }
 
 __device__ inline int dct32_lane_fy(int part, int lane, int m) {
-    return DCT32_MMA ? dct32_mma_fy(part, lane, m) : 2 * m + part;
+    return DCT_MMA ? dct32_mma_fy(part, lane, m) : 2 * m + part;
 }
 
 // Each warp takes one candidate size: warps 0-3 the 8x8 candidates of tile
 // column block w, warps 4-5 the 16x16 candidates of tile column half w - 4,
 // warps 6-7 the even and odd frequencies of the 32x32 candidate. A lane
 // transforms one N-vector per pass: a tile row, then the rows of one fx. With
-// DCT32_MMA, warps 6-7 instead compute coefficient rows fy in [0, 16) and
+// DCT_MMA, warps 6-7 instead compute coefficient rows fy in [0, 16) and
 // [16, 32): the vertical pass in the horizontal-pass slot, the horizontal pass
 // in the vertical-pass slot.
 //
@@ -334,7 +338,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         dct_vector<8, 8>(pixel_row + 8 * warp, 0, h);
     } else if (warp < 6) {
         dct_vector<16, 16>(pixel_row + 16 * (warp - 4), 0, h);
-    } else if constexpr (DCT32_MMA) {
+    } else if constexpr (DCT_MMA) {
         offset32 = dct32_mma_vertical(DCT32_BASIS, sharp_y, TILE_STRIDE, part32, lane, u32);
     } else {
         dct_vector<32, 16>(pixel_row, part32, h);
@@ -355,7 +359,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
         for (int fx{0}; fx < 16; ++fx) {
             dst[fx * 17] = h[fx];
         }
-    } else if (!DCT32_MMA) {
+    } else if (!DCT_MMA) {
 #pragma unroll
         for (int m{0}; m < 16; ++m) {
             rows32[(2 * m + part32) * 33 + lane] = h[m];
@@ -403,7 +407,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
             cost16[2 * rb + ch] = fit16 ? candidate_cost(16, dist, rate, lambda) : INF;
         }
     } else {
-        if constexpr (DCT32_MMA) {
+        if constexpr (DCT_MMA) {
             dct32_mma_horizontal(DCT32_BASIS, u32, part32, lane, offset32, c);
         } else {
             dct_vector<32, 16>(rows32 + lane * 33, part32, c);
@@ -413,7 +417,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
 #pragma unroll
         for (int m{0}; m < 16; ++m) {
             // The tensor-core basis includes the scale.
-            if constexpr (!DCT32_MMA) {
+            if constexpr (!DCT_MMA) {
                 c[m] *= DCT2D_SCALE<32>;
             }
             accumulate_coeff_cost(c[m], dct32_lane_fx(lane, m), dct32_lane_fy(part32, lane, m), 32,
@@ -527,7 +531,7 @@ __device__ std::uint32_t select_transforms(float* __restrict__ select, std::size
 // coefficient): one padding float after every 32 entries. A pass's N-vectors
 // stay contiguous, and the lanes of a warp reading 32 consecutive vectors at
 // the same position hit distinct banks.
-__device__ inline int region_row_index(int k) {
+constexpr int region_row_index(int k) {
     return k + k / 32;
 }
 
@@ -543,6 +547,13 @@ __device__ inline int region_row_index(int k) {
 // with the even or odd frequencies (w % 2); the DCT8s put column w % 2 (rows)
 // or channel w % 2 (coefficients) on all lanes.
 
+// Entry of coefficient (fx, fy) of the side-n transforms of a quadrant, relative
+// to the quadrant's first entry: for DCT8s, frequency (fx % 8, fy % 8) of block
+// (fx / 8, fy / 8).
+constexpr int quadrant_entry(int n, int fx, int fy) {
+    return n == 16 ? 16 * fx + fy : 64 * (2 * (fy / 8) + fx / 8) + 8 * (fx % 8) + fy % 8;
+}
+
 // The X (0) and B (1) buffers of the X/B pass. Selecting a channel per lane
 // from an array of pointers would place the array on the stack, and the
 // accesses through the loaded pointers would lose their address space.
@@ -554,7 +565,7 @@ struct ChannelPair {
 };
 
 // Horizontal pass of the X and B transforms of the region into rows.
-__device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, ChannelPair<float> rows,
+[[maybe_unused]] __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, ChannelPair<float> rows,
                                             std::uint32_t layout, int tile_bw, int tile_bh,
                                             int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
@@ -598,7 +609,7 @@ __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, Chan
 
 // Vertical pass of the X and B transforms of the region from rows into
 // coefficients.
-__device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std::uint32_t layout,
+[[maybe_unused]] __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std::uint32_t layout,
                                               int tile_bw, int tile_bh, ChannelPair<float> coeffs,
                                               int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
@@ -637,6 +648,88 @@ __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std
                 coeffs[sub][region_row_index(k0 + f)] = out[f] * DCT2D_SCALE<8>;
             }
         }
+    }
+}
+
+// Shared-memory index of y[i] of lane `lane` in the tensor-core X/B pass: of
+// warp half `part` of a whole DCT32, or of side n in quadrant q.
+constexpr int whole32_mma_index(int part, int lane, int i) {
+    return region_row_index(32 * dct32_mma_fx(lane, i) + dct32_mma_fy(part, lane, i));
+}
+
+template <int N>
+constexpr int quadrant_mma_index(int q, int lane, int i) {
+    return region_row_index(256 * q +
+                            quadrant_entry(N, region_mma_fx(N, lane, i), region_mma_fy(N, lane, i)));
+}
+
+// Whether index(a, lane, i) = index(a, lane, 0) + index(0, 0, i) for every
+// a < A, lane and i < I: a lane's stores then take one base address and
+// immediate offsets.
+template <int A, int I, typename Index>
+constexpr bool splits_into_base_and_offsets(Index index) {
+    for (int a{0}; a < A; ++a) {
+        for (int lane{0}; lane < 32; ++lane) {
+            for (int i{0}; i < I; ++i) {
+                if (index(a, lane, i) != index(a, lane, 0) + index(0, 0, i)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static_assert(splits_into_base_and_offsets<2, 16>(whole32_mma_index));
+static_assert(splits_into_base_and_offsets<4, 8>(quadrant_mma_index<16>));
+static_assert(splits_into_base_and_offsets<4, 8>(quadrant_mma_index<8>));
+
+template <int N>
+__device__ __forceinline__ void store_quadrant_mma(float* __restrict__ coeffs, int q, int lane,
+                                                   const float (&y)[8]) {
+    float* dst{coeffs + quadrant_mma_index<N>(q, lane, 0)};
+#pragma unroll
+    for (int i{0}; i < 8; ++i) {
+        dst[quadrant_mma_index<N>(0, 0, i)] = y[i];
+    }
+}
+
+// The X and B transforms of the region on the tensor cores, from the sharp
+// planes into coefficients. A whole DCT32 gives warp w < 4 channel w / 2 and
+// coefficient rows fy in [16 (w % 2), 16 (w % 2) + 16); otherwise warp w takes
+// quadrant w / 2 and channel w % 2.
+[[maybe_unused]] __device__ __forceinline__ void region_coeffs_mma(ChannelPair<const float> sharp,
+                                                  std::uint32_t layout, ChannelPair<float> coeffs,
+                                                  int warp, int lane) {
+    if (layout == WHOLE32_LAYOUT) {
+        if (warp < 4) {
+            const int c{warp / 2};
+            const int part{warp % 2};
+            std::uint32_t u[2][4];
+            const float offset{dct32_mma_vertical(DCT32_BASIS, sharp[c], TILE_STRIDE, part, lane, u)};
+            float y[16];
+            dct32_mma_horizontal(DCT32_BASIS, u, part, lane, offset, y);
+            float* dst{coeffs[c] + whole32_mma_index(part, lane, 0)};
+#pragma unroll
+            for (int i{0}; i < 16; ++i) {
+                dst[whole32_mma_index(0, 0, i)] = y[i];
+            }
+        }
+        return;
+    }
+    const int q{warp / 2};
+    const int c{warp % 2};
+    const int n{quadrant_side(layout, q)};
+    if (n == 0) {
+        return;
+    }
+    float y[8];
+    region_mma(REGION_BASES[n == 16 ? 0 : 1], n,
+               sharp[c] + 16 * (q / 2) * TILE_STRIDE + 16 * (q % 2), TILE_STRIDE, lane, y);
+    if (n == 16) {
+        store_quadrant_mma<16>(coeffs[c], q, lane, y);
+    } else {
+        store_quadrant_mma<8>(coeffs[c], q, lane, y);
     }
 }
 
@@ -956,17 +1049,25 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
     float* sharp_x{workspace};
     float* sharp_b{workspace + SHARP_B_OFFSET};
-    float* rows_b{raw_b + ROWS_B_SKEW};
-    float* coeffs_b{workspace + COEFFS_B_OFFSET};
     gaborish_tile(raw_x, sharp_x, tid);
     gaborish_tile(raw_b, sharp_b, tid);
     __syncthreads();
-    region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tile_bw, tile_bh, warp, lane);
-    __syncthreads();
-    region_coeffs({raw_x, rows_b}, layout, tile_bw, tile_bh, {sharp_x, coeffs_b}, warp, lane);
-    __syncthreads();
-    store_region_coeffs({sharp_x, coeffs_b}, layout, tbx0, tby0, bw, tile_bw, tile_bh,
-                        {coeffs, coeffs + 2 * cplane}, tid);
+    if constexpr (DCT_MMA) {
+        // The coefficients go to the raw planes, which gaborish has consumed.
+        region_coeffs_mma({sharp_x, sharp_b}, layout, {raw_x, raw_b}, warp, lane);
+        __syncthreads();
+        store_region_coeffs({raw_x, raw_b}, layout, tbx0, tby0, bw, tile_bw, tile_bh,
+                            {coeffs, coeffs + 2 * cplane}, tid);
+    } else {
+        float* rows_b{raw_b + ROWS_B_SKEW};
+        float* coeffs_b{workspace + COEFFS_B_OFFSET};
+        region_rows({sharp_x, sharp_b}, {raw_x, rows_b}, layout, tile_bw, tile_bh, warp, lane);
+        __syncthreads();
+        region_coeffs({raw_x, rows_b}, layout, tile_bw, tile_bh, {sharp_x, coeffs_b}, warp, lane);
+        __syncthreads();
+        store_region_coeffs({sharp_x, coeffs_b}, layout, tbx0, tby0, bw, tile_bw, tile_bh,
+                            {coeffs, coeffs + 2 * cplane}, tid);
+    }
 }
 
 }  // namespace
