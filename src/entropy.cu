@@ -267,9 +267,8 @@ __device__ DcCtx build_dc_ctx(std::uint32_t g, const std::int32_t* dc, std::uint
                               const std::size_t* fb_count, const std::uint8_t* dc_depth,
                               const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
                               const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
-                              const std::uint32_t* blob_pre_off,
-                              const std::uint32_t* blob_pre_bits, const std::uint8_t* blob_mid,
-                              const std::uint32_t* blob_mid_off,
+                              const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
+                              const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
                               const std::uint32_t* blob_mid_bits) {
     constexpr std::uint32_t side{DC_GROUP_BLOCKS};
     DcCtx c{};
@@ -334,8 +333,7 @@ __device__ void dc_put_items(const DcCtx& c, std::uint32_t a0, std::uint32_t a1,
             const int ch{CHANNEL_ORDER[plane]};
             const std::uint32_t bx{c.bx0 + x};
             const std::uint32_t by{c.by0 + y};
-            const std::int32_t dc{
-                c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
+            const std::int32_t dc{c.dc[static_cast<std::size_t>(ch) * c.nblocks + by * c.bw + bx]};
             const std::int32_t pred{
                 dc_group_gradient(c.dc, ch, c.nblocks, c.bw, bx, by, c.bx0, c.by0)};
             dc_put_signed(sink, c.dcd, c.dcb, dc - pred);
@@ -392,8 +390,7 @@ struct RunBitCounter {
 
     __device__ void put_blob(const std::uint8_t*, std::uint32_t n_bits) { bits += n_bits; }
 
-    __device__ void put_token(std::uint32_t depth, std::uint32_t, std::uint32_t rn,
-                              std::uint32_t) {
+    __device__ void put_token(std::uint32_t depth, std::uint32_t, std::uint32_t rn, std::uint32_t) {
         bits += depth + rn;
     }
 };
@@ -653,9 +650,8 @@ __global__ void dc_chunk_size_kernel(
     const std::int32_t* dc, std::uint32_t bw, std::uint32_t bh, std::uint32_t nblocks,
     std::uint32_t xdg, std::size_t num_groups, const std::int32_t* quant_field,
     const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-    std::uint32_t cmw,
-    const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
-    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    std::uint32_t cmw, const std::size_t* fb_pos, const std::size_t* fb_count,
+    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -712,9 +708,8 @@ __global__ void dc_chunk_emit_kernel(
     const std::int32_t* dc, std::uint32_t bw, std::uint32_t bh, std::uint32_t nblocks,
     std::uint32_t xdg, std::size_t num_groups, const std::int32_t* quant_field,
     const std::int8_t* acs, const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-    std::uint32_t cmw,
-    const std::size_t* fb_pos, const std::size_t* fb_count, const std::uint8_t* dc_depth,
-    const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
+    std::uint32_t cmw, const std::size_t* fb_pos, const std::size_t* fb_count,
+    const std::uint8_t* dc_depth, const std::uint16_t* dc_bits, const std::uint8_t* acmeta_depth,
     const std::uint16_t* acmeta_bits, const std::uint8_t* blob_pre,
     const std::uint32_t* blob_pre_off, const std::uint32_t* blob_pre_bits,
     const std::uint8_t* blob_mid, const std::uint32_t* blob_mid_off,
@@ -1185,8 +1180,9 @@ __global__ void ac_group_layout_kernel(const unsigned long long* group_sizes,
         const auto group_raw_bits{static_cast<std::uint32_t>(size >> 32)};
         unsigned long long total{0};
         const unsigned long long offset{
-            base + block_scan_exclusive(
-                       pack_sizes(static_cast<std::uint32_t>(size), (group_raw_bits + 63) / 64), total)};
+            base +
+            block_scan_exclusive(
+                pack_sizes(static_cast<std::uint32_t>(size), (group_raw_bits + 63) / 64), total)};
         if (g < num_groups) {
             token_offset[g] = static_cast<std::uint32_t>(offset);
             raw_offset[g] = static_cast<std::uint32_t>(offset >> 32);
@@ -1577,9 +1573,9 @@ __device__ void refill_empty_clusters(const std::uint32_t* context_histograms,
          a += gridDim.x * blockDim.x) {
         const std::uint32_t context{load_coherent(&s.active[a])};
         const std::uint32_t cluster{load_coherent(&s.assignment[context])};
-        const std::uint64_t excess{
-            ac_refill_excess(context_ref(context_histograms, s, context), sh.total_log2[cluster],
-                             sh.bin_log2[cluster], sh.table)};
+        const std::uint64_t excess{ac_refill_excess(context_ref(context_histograms, s, context),
+                                                    sh.total_log2[cluster], sh.bin_log2[cluster],
+                                                    sh.table)};
         atomicMax(reinterpret_cast<unsigned long long*>(&s.refill_keys[cluster]),
                   static_cast<unsigned long long>(ac_refill_key(excess, context)));
     }

@@ -321,13 +321,12 @@ struct alignas(16) RegionMmaBasis {
 
 constexpr RegionMmaBasis make_region_mma_basis(int n) {
     using dct_mma_detail::dct_basis;
-    const dct_mma_detail::HalfBasis<16> half{
-        dct_mma_detail::make_half_basis<16>([n](int k, int t) {
-            if (n == 16) {
-                return dct_basis(16, k, t);
-            }
-            return k / 8 == t / 8 ? dct_basis(8, k % 8, t % 8) : 0.0;
-        })};
+    const dct_mma_detail::HalfBasis<16> half{dct_mma_detail::make_half_basis<16>([n](int k, int t) {
+        if (n == 16) {
+            return dct_basis(16, k, t);
+        }
+        return k / 8 == t / 8 ? dct_basis(8, k % 8, t % 8) : 0.0;
+    })};
     RegionMmaBasis basis{};
     for (int lane{0}; lane < 32; ++lane) {
         const int g{lane / 4};

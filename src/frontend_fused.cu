@@ -283,7 +283,7 @@ constexpr bool DCT_MMA{COMPILED_ARCH == GpuArch::SM87};
 [[maybe_unused]] __device__ Dct32MmaBasis DCT32_BASIS{DCT32_MMA_BASIS};
 // The region transform bases of DCT16 (0) and DCT8 (1) quadrants.
 [[maybe_unused]] __device__ RegionMmaBasis REGION_BASES[2]{REGION_MMA_BASIS_DCT16,
-                                                          REGION_MMA_BASIS_DCT8};
+                                                           REGION_MMA_BASIS_DCT8};
 
 // Coefficient (fx, fy) held in c[m] by lane `lane` of 32x32 warp `part` after
 // the vertical pass.
@@ -305,12 +305,15 @@ __device__ inline int dct32_lane_fy(int part, int lane, int m) {
 //
 // Returns the region layout: byte q holds the side (8, 16 or 32) of the
 // transforms covering quadrant q, or 0 if the quadrant lies outside the image.
-// Only the chosen transforms' Y coefficients are stored to y_plane.
-__device__ std::uint32_t select_transforms(float* __restrict__ select, std::size_t rbx,
-                                           std::size_t rby, std::size_t bw, int tile_bw,
-                                           int tile_bh, float qgsf, float lambda,
-                                           std::int8_t* __restrict__ acs,
-                                           __half* __restrict__ y_plane, int tid) {
+// Only the chosen transforms' Y coefficients are stored to y_plane. Inlined, it
+// keeps the kernel's range of tid, so the lane and warp arithmetic stays
+// unsigned.
+__device__ __forceinline__ std::uint32_t select_transforms(float* __restrict__ select,
+                                                           std::size_t rbx, std::size_t rby,
+                                                           std::size_t bw, int tile_bw, int tile_bh,
+                                                           float qgsf, float lambda,
+                                                           std::int8_t* __restrict__ acs,
+                                                           __half* __restrict__ y_plane, int tid) {
     const float* sharp_y{select};
     float* rows32{select};
     float* rows16{select + SELECT_ROWS16_OFFSET};
@@ -565,9 +568,10 @@ struct ChannelPair {
 };
 
 // Horizontal pass of the X and B transforms of the region into rows.
-[[maybe_unused]] __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp, ChannelPair<float> rows,
-                                            std::uint32_t layout, int tile_bw, int tile_bh,
-                                            int warp, int lane) {
+[[maybe_unused]] __device__ __forceinline__ void region_rows(ChannelPair<const float> sharp,
+                                                             ChannelPair<float> rows,
+                                                             std::uint32_t layout, int tile_bw,
+                                                             int tile_bh, int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
             const int c{warp / 2};
@@ -609,9 +613,11 @@ struct ChannelPair {
 
 // Vertical pass of the X and B transforms of the region from rows into
 // coefficients.
-[[maybe_unused]] __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows, std::uint32_t layout,
-                                              int tile_bw, int tile_bh, ChannelPair<float> coeffs,
-                                              int warp, int lane) {
+[[maybe_unused]] __device__ __forceinline__ void region_coeffs(ChannelPair<const float> rows,
+                                                               std::uint32_t layout, int tile_bw,
+                                                               int tile_bh,
+                                                               ChannelPair<float> coeffs, int warp,
+                                                               int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
             const int c{warp / 2};
@@ -659,8 +665,8 @@ constexpr int whole32_mma_index(int part, int lane, int i) {
 
 template <int N>
 constexpr int quadrant_mma_index(int q, int lane, int i) {
-    return region_row_index(256 * q +
-                            quadrant_entry(N, region_mma_fx(N, lane, i), region_mma_fy(N, lane, i)));
+    return region_row_index(
+        256 * q + quadrant_entry(N, region_mma_fx(N, lane, i), region_mma_fy(N, lane, i)));
 }
 
 // Whether index(a, lane, i) = index(a, lane, 0) + index(0, 0, i) for every
@@ -699,14 +705,16 @@ __device__ __forceinline__ void store_quadrant_mma(float* __restrict__ coeffs, i
 // coefficient rows fy in [16 (w % 2), 16 (w % 2) + 16); otherwise warp w takes
 // quadrant w / 2 and channel w % 2.
 [[maybe_unused]] __device__ __forceinline__ void region_coeffs_mma(ChannelPair<const float> sharp,
-                                                  std::uint32_t layout, ChannelPair<float> coeffs,
-                                                  int warp, int lane) {
+                                                                   std::uint32_t layout,
+                                                                   ChannelPair<float> coeffs,
+                                                                   int warp, int lane) {
     if (layout == WHOLE32_LAYOUT) {
         if (warp < 4) {
             const int c{warp / 2};
             const int part{warp % 2};
             std::uint32_t u[2][4];
-            const float offset{dct32_mma_vertical(DCT32_BASIS, sharp[c], TILE_STRIDE, part, lane, u)};
+            const float offset{
+                dct32_mma_vertical(DCT32_BASIS, sharp[c], TILE_STRIDE, part, lane, u)};
             float y[16];
             dct32_mma_horizontal(DCT32_BASIS, u, part, lane, offset, y);
             float* dst{coeffs[c] + whole32_mma_index(part, lane, 0)};

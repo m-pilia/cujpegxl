@@ -19,8 +19,7 @@ std::optional<std::vector<float>> dct32_mma_coefficients(const std::vector<float
 // of block (dx, dy) has its coefficient (fx % 8, fy % 8) at fx = 8 dx + fx % 8,
 // fy = 8 dy + fy % 8; std::nullopt on a CUDA error. Requires device code
 // compiled for sm_87.
-std::optional<std::vector<float>> region_mma_coefficients(const std::vector<float>& regions,
-                                                          int n);
+std::optional<std::vector<float>> region_mma_coefficients(const std::vector<float>& regions, int n);
 
 }  // namespace cujpegxl
 

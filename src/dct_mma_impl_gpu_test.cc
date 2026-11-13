@@ -34,8 +34,8 @@ std::vector<double> reference_coefficients(const float* tile, int side, int n) {
             double sum{0.0};
             for (int r{0}; r < n; ++r) {
                 for (int c{0}; c < n; ++c) {
-                    sum += a[(fy % n) * n + r] * a[(fx % n) * n + c] *
-                           tile[(y0 + r) * side + x0 + c];
+                    sum +=
+                        a[(fy % n) * n + r] * a[(fx % n) * n + c] * tile[(y0 + r) * side + x0 + c];
                 }
             }
             coeffs[fx * side + fy] = sum;
@@ -45,8 +45,7 @@ std::vector<double> reference_coefficients(const float* tile, int side, int n) {
 }
 
 void expect_matches_definition(const std::optional<std::vector<float>>& coeffs,
-                               const std::vector<float>& tiles, int side, int n,
-                               double max_error) {
+                               const std::vector<float>& tiles, int side, int n, double max_error) {
     ASSERT_TRUE(coeffs.has_value());
     const std::size_t samples{static_cast<std::size_t>(side * side)};
     for (std::size_t tile{0}; tile < tiles.size() / samples; ++tile) {

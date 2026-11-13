@@ -22,10 +22,10 @@ constexpr int REGION_STRIDE{17};
 
 [[maybe_unused]] __device__ Dct32MmaBasis BASIS{DCT32_MMA_BASIS};
 [[maybe_unused]] __device__ RegionMmaBasis REGION_BASES[2]{REGION_MMA_BASIS_DCT16,
-                                                          REGION_MMA_BASIS_DCT8};
+                                                           REGION_MMA_BASIS_DCT8};
 
-__global__ void __launch_bounds__(64) dct32_mma_kernel(const float* __restrict__ tiles,
-                                                       float* __restrict__ coeffs) {
+__global__ void __launch_bounds__(64)
+    dct32_mma_kernel(const float* __restrict__ tiles, float* __restrict__ coeffs) {
     __shared__ float x[32 * STRIDE];
     const std::size_t base{static_cast<std::size_t>(blockIdx.x) * TILE};
     for (int i{static_cast<int>(threadIdx.x)}; i < TILE; i += 64) {
@@ -46,8 +46,8 @@ __global__ void __launch_bounds__(64) dct32_mma_kernel(const float* __restrict__
     }
 }
 
-__global__ void __launch_bounds__(32) region_mma_kernel(const float* __restrict__ regions, int n,
-                                                       float* __restrict__ coeffs) {
+__global__ void __launch_bounds__(32)
+    region_mma_kernel(const float* __restrict__ regions, int n, float* __restrict__ coeffs) {
     __shared__ float x[16 * REGION_STRIDE];
     const std::size_t base{static_cast<std::size_t>(blockIdx.x) * REGION};
     const int lane{static_cast<int>(threadIdx.x)};
@@ -78,9 +78,8 @@ std::optional<std::vector<float>> run_on_device(const std::vector<float>& inputs
     std::vector<float> outputs(inputs.size());
     if (ok) {
         launch(device_inputs, device_outputs);
-        ok = cudaGetLastError() == cudaSuccess &&
-             cudaMemcpy(outputs.data(), device_outputs, bytes, cudaMemcpyDeviceToHost) ==
-                 cudaSuccess;
+        ok = cudaGetLastError() == cudaSuccess && cudaMemcpy(outputs.data(), device_outputs, bytes,
+                                                             cudaMemcpyDeviceToHost) == cudaSuccess;
     }
     cudaFree(device_inputs);
     cudaFree(device_outputs);
@@ -99,8 +98,8 @@ std::optional<std::vector<float>> dct32_mma_coefficients(const std::vector<float
 std::optional<std::vector<float>> region_mma_coefficients(const std::vector<float>& regions,
                                                           int n) {
     return run_on_device(regions, [&](const float* device_regions, float* device_coeffs) {
-        region_mma_kernel<<<static_cast<unsigned>(regions.size() / REGION), 32>>>(
-            device_regions, n, device_coeffs);
+        region_mma_kernel<<<static_cast<unsigned>(regions.size() / REGION), 32>>>(device_regions, n,
+                                                                                  device_coeffs);
     });
 }
 
