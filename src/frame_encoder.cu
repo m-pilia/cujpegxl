@@ -471,6 +471,14 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         cudaStreamWaitEvent(slot.stream, slot.input_ready, 0) != cudaSuccess) {
         return false;
     }
+    // The frames' main streams run in submission order: the serial host stage
+    // needs the oldest frame first, and frames sharing the GPU would all
+    // finish late together.
+    if (submitted != 0 &&
+        cudaStreamWaitEvent(slot.stream, slots[(submitted - 1) % depth].batch_packed.back(), 0) !=
+            cudaSuccess) {
+        return false;
+    }
 
     const std::uint8_t* chroma_src{chroma};
     std::size_t chroma_src_pitch{chroma_pitch};
