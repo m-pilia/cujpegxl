@@ -15,7 +15,7 @@ concurrency:
 jobs:
   bazel:
     name: Build, test, package, consumers (CPU only)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
