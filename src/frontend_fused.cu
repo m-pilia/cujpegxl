@@ -1040,8 +1040,8 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         constexpr float kBias{0.16f};
         const float iny{yv + kBias};
         const float gamma_part{HALF2_FRONTEND ? inverse_ratio_cbrt_gamma_sum(iny - xv, iny + xv)
-                                        : ratio_cbrt_gamma<true>(iny - xv) +
-                                              ratio_cbrt_gamma<true>(iny + xv)};
+                                              : ratio_cbrt_gamma<true>(iny - xv) +
+                                                    ratio_cbrt_gamma<true>(iny + xv)};
 
         constexpr float kLimit{0.027121074570634722f};
         constexpr float kOffset{0.084381641171960495f};

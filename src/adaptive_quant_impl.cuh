@@ -46,8 +46,8 @@ __device__ inline float ratio_cbrt_gamma(float v) {
 __device__ inline float inverse_ratio_cbrt_gamma_sum(float a, float b) {
     const __half2 v{__hmax2(__floats2half2_rn(a, b), __float2half2_rn(0.0f))};
     const __half2 v2{__hmul2(v, v)};
-    const float2 num{__half22float2(
-        __hfma2(__float2half2_rn(K_SG_NUM_MUL), v2, __float2half2_rn(K_SG_EPS)))};
+    const float2 num{
+        __half22float2(__hfma2(__float2half2_rn(K_SG_NUM_MUL), v2, __float2half2_rn(K_SG_EPS)))};
     const float2 den{__half22float2(__hfma2(__hmul2(__float2half2_rn(K_SG_DEN_MUL), v), v2,
                                             __float2half2_rn(K_SG_DEN_OFFSET)))};
     return __fdividef(num.x, den.x) + __fdividef(num.y, den.y);
@@ -68,14 +68,14 @@ __device__ inline float masking_sqrt_pair_sum(float2 y, float2 d) {
                             __float2half2_rn(0.0f))};
     const __half2 v2{__hmul2(v, v)};
     const __half2 num{__hfma2(__float2half2_rn(K_SG_NUM_MUL), v2, __float2half2_rn(K_SG_EPS))};
-    const __half2 den{__hfma2(__hmul2(__float2half2_rn(K_SG_DEN_MUL), v), v2,
-                              __float2half2_rn(K_SG_DEN_OFFSET))};
+    const __half2 den{
+        __hfma2(__hmul2(__float2half2_rn(K_SG_DEN_MUL), v), v2, __float2half2_rn(K_SG_DEN_OFFSET))};
     const __half2 scaled{__hmul2(__hmul2(den, h2rcp(num)), __float22half2_rn(d))};
     const __half2 clamped{__hmin2(__hmul2(scaled, scaled), __float2half2_rn(DIFF_LIMIT))};
     // masking_sqrt's factor 0.25 is folded into the radicand as 1/16.
-    const float2 radicand{__half22float2(
-        __hfma2(clamped, __float2half2_rn(sqrtf(K_MASKING_MUL) / 16.0f),
-                __float2half2_rn(K_MASKING_LOG_OFFSET / 16.0f)))};
+    const float2 radicand{
+        __half22float2(__hfma2(clamped, __float2half2_rn(sqrtf(K_MASKING_MUL) / 16.0f),
+                               __float2half2_rn(K_MASKING_LOG_OFFSET / 16.0f)))};
     return radicand.x * rsqrtf(radicand.x) + radicand.y * rsqrtf(radicand.y);
 }
 
