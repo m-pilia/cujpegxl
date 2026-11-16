@@ -4,6 +4,8 @@
 #ifndef CUJPEGXL_SRC_ADAPTIVE_QUANT_IMPL_CUH_
 #define CUJPEGXL_SRC_ADAPTIVE_QUANT_IMPL_CUH_
 
+#include <cuda_fp16.h>
+
 // Scalar device helpers transcribing libjxl's AdaptiveQuantizationMap
 // (enc_adaptive_quantization.cc) masking metric and modulation math, shared by
 // the fused front-end megakernel. libjxl's SIMD fast-math approximations
@@ -25,18 +27,30 @@ constexpr float K_SG_MUL2 = 1.0f / 73.377132366608819f;
 constexpr float K_SG_LOG2 = 0.693147181f;
 constexpr float K_SG_RET_MUL = K_SG_MUL2 * 18.6580932135f * K_SG_LOG2;
 constexpr float K_SG_V_OFFSET = 7.7825991679894591f;
+constexpr float K_SG_EPS = 1e-2f;
+constexpr float K_SG_NUM_MUL = K_SG_RET_MUL * 3.0f * K_SG_MUL;
+constexpr float K_SG_DEN_OFFSET = K_SG_V_OFFSET * K_SG_LOG2 + K_SG_EPS;
+constexpr float K_SG_DEN_MUL = K_SG_LOG2 * K_SG_MUL;
 
 template <bool invert>
 __device__ inline float ratio_cbrt_gamma(float v) {
-    constexpr float eps{1e-2f};
     v = v < 0.0f ? 0.0f : v;
-    constexpr float num_mul{K_SG_RET_MUL * 3.0f * K_SG_MUL};
-    constexpr float v_offset{K_SG_V_OFFSET * K_SG_LOG2 + eps};
-    constexpr float den_mul{K_SG_LOG2 * K_SG_MUL};
     const float v2{v * v};
-    const float num{num_mul * v2 + eps};
-    const float den{den_mul * v * v2 + v_offset};
+    const float num{K_SG_NUM_MUL * v2 + K_SG_EPS};
+    const float den{K_SG_DEN_MUL * v * v2 + K_SG_DEN_OFFSET};
     return invert ? num / den : den / num;
+}
+
+// ratio_cbrt_gamma<true>(a) + ratio_cbrt_gamma<true>(b) with the polynomials in
+// half2 arithmetic and an approximate division.
+__device__ inline float inverse_ratio_cbrt_gamma_sum(float a, float b) {
+    const __half2 v{__hmax2(__floats2half2_rn(a, b), __float2half2_rn(0.0f))};
+    const __half2 v2{__hmul2(v, v)};
+    const float2 num{__half22float2(
+        __hfma2(__float2half2_rn(K_SG_NUM_MUL), v2, __float2half2_rn(K_SG_EPS)))};
+    const float2 den{__half22float2(__hfma2(__hmul2(__float2half2_rn(K_SG_DEN_MUL), v), v2,
+                                            __float2half2_rn(K_SG_DEN_OFFSET)))};
+    return __fdividef(num.x, den.x) + __fdividef(num.y, den.y);
 }
 
 __device__ inline float masking_sqrt(float v) {

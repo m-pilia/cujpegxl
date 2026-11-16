@@ -277,6 +277,9 @@ __device__ inline void store_half4(__half* dst, const float* v) {
 // On sm_87, the 32x32 Y candidate and the X and B transforms run on the tensor
 // cores (dct_mma_impl.cuh).
 constexpr bool DCT_MMA{COMPILED_ARCH == GpuArch::SM87};
+// On sm_87, parts of the adaptive quantization run in half2 arithmetic, whose
+// throughput on sm_61 is 1/64 of FP32.
+constexpr bool HALF2_AQ{COMPILED_ARCH == GpuArch::SM87};
 
 // Not const: a const table is placed in the constant bank, whose loads
 // serialize over the lanes' distinct addresses.
@@ -1000,7 +1003,9 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
         constexpr float kBias{0.16f};
         const float iny{yv + kBias};
-        const float gamma_part{ratio_cbrt_gamma<true>(iny - xv) + ratio_cbrt_gamma<true>(iny + xv)};
+        const float gamma_part{HALF2_AQ ? inverse_ratio_cbrt_gamma_sum(iny - xv, iny + xv)
+                                        : ratio_cbrt_gamma<true>(iny - xv) +
+                                              ratio_cbrt_gamma<true>(iny + xv)};
 
         constexpr float kLimit{0.027121074570634722f};
         constexpr float kOffset{0.084381641171960495f};
