@@ -184,6 +184,7 @@ struct FrameBuffers {
     std::uint8_t* cluster_scratch{nullptr};
     AcClustering* clustering{nullptr};
     std::uint64_t* item_sizes{nullptr};
+    std::uint32_t* token_records{nullptr};
     std::uint8_t* layout_scratch{nullptr};
     std::uint64_t* chunk_base{nullptr};
     std::uint32_t* layout{nullptr};
@@ -237,6 +238,7 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .cluster_scratch = carver.take<std::uint8_t>(ac_cluster_scratch_bytes()),
         .clustering = carver.take<AcClustering>(1),
         .item_sizes = carver.take<std::uint64_t>(3 * blocks),
+        .token_records = carver.take<std::uint32_t>(ac_max_tokens(width, height)),
         .layout_scratch = carver.take<std::uint8_t>(ac_token_layout_scratch_bytes(width, height)),
         .chunk_base = carver.take<std::uint64_t>(ac_token_chunks(width, height)),
         .layout = carver.take<std::uint32_t>(3 * num_ac + 2),
@@ -535,7 +537,8 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     if (!ac_coeff_orders(d.order_stats, d.coeff_orders, slot.stream) ||
         !ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
-                            d.context_hist, d.item_sizes, d.chunk_counter, arch, slot.stream) ||
+                            d.context_hist, d.item_sizes, d.token_records, d.chunk_counter, arch,
+                            slot.stream) ||
         !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
                          slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
@@ -556,9 +559,9 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         const std::size_t g0{batch_begin(num_ac, b)};
         const std::size_t g1{batch_begin(num_ac, b + 1)};
         if ((g0 != g1 &&
-             !ac_pack_tokens(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
-                             d.clustering->context_map, d.item_sizes, d.chunk_base, d.layout, g0,
-                             g1, d.entries, d.raw, d.chunk_counter, slot.stream)) ||
+             !ac_pack_tokens(d.acs, d.token_records, width, height, d.clustering->context_map,
+                             d.item_sizes, d.chunk_base, d.layout, g0, g1, d.entries, d.raw,
+                             d.chunk_counter, slot.stream)) ||
             cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
             return false;
         }

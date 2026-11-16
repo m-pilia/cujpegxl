@@ -206,6 +206,7 @@ int main(int argc, char** argv) {
     const SectionCapacities caps{section_capacities(width, height)};
     const std::size_t layout_words{3 * num_ac + 2};
     std::uint64_t* d_item_sizes{device_alloc<std::uint64_t>(3 * blocks)};
+    std::uint32_t* d_token_records{device_alloc<std::uint32_t>(ac_max_tokens(width, height))};
     std::uint8_t* d_layout_scratch{
         device_alloc<std::uint8_t>(ac_token_layout_scratch_bytes(width, height))};
     std::uint64_t* d_chunk_base{device_alloc<std::uint64_t>(ac_token_chunks(width, height))};
@@ -292,7 +293,8 @@ int main(int argc, char** argv) {
         timed(s_aco, record, [&] { ac_coeff_orders(d_order_stats, d_coeff_orders, nullptr); });
         timed(s_ach, record, [&] {
             ac_build_histogram(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
-                               d_context_hist, d_item_sizes, d_chunk_counter, arch, nullptr);
+                               d_context_hist, d_item_sizes, d_token_records, d_chunk_counter, arch,
+                               nullptr);
         });
         timed(s_acl, record, [&] {
             ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base, d_layout,
@@ -302,9 +304,9 @@ int main(int argc, char** argv) {
             ac_cluster_contexts(d_context_hist, d_cluster_scratch, d_clustering, nullptr);
         });
         timed(s_acp, record, [&] {
-            ac_pack_tokens(d_ac16, d_acs, d_nz_grid, d_nz_exact, d_coeff_orders, width, height,
-                           d_clustering->context_map, d_item_sizes, d_chunk_base, d_layout, 0,
-                           num_ac, d_entries, d_raw, d_chunk_counter, nullptr);
+            ac_pack_tokens(d_acs, d_token_records, width, height, d_clustering->context_map,
+                           d_item_sizes, d_chunk_base, d_layout, 0, num_ac, d_entries, d_raw,
+                           d_chunk_counter, nullptr);
         });
         timed(s_act, record, [&] {
             cudaMemcpy(h_clustering, d_clustering, sizeof(AcClustering), cudaMemcpyDeviceToHost);
