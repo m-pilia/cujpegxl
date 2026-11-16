@@ -64,15 +64,26 @@ constexpr std::size_t DC_GROUP_BLOCKS = 256;
 // (by + q/side, bx + q%side); the low bits raw % COEFFS_PER_BLOCK are the slot.
 // The side is 1, 2 or 4 (log2 = block_dim / 16), so a block_dim known only at
 // run time splits q with shifts instead of a division.
+// covered_slot_offset is the slot relative to the first-block's own first slot,
+// in 32 bits: it stays below 4 * bw * COEFFS_PER_BLOCK.
+CUJPEGXL_VL_HD inline std::uint32_t covered_slot_offset(std::uint32_t block_dim, std::uint32_t bw,
+                                                        std::uint32_t raw_index) {
+    constexpr std::uint32_t coeffs{COEFFS_PER_BLOCK};
+    if (raw_index < coeffs) {
+        return raw_index;
+    }
+    const std::uint32_t side_log2{block_dim / 16};
+    const std::uint32_t q{raw_index / coeffs};
+    return ((q >> side_log2) * bw + (q & ((1u << side_log2) - 1))) * coeffs + raw_index % coeffs;
+}
+
 CUJPEGXL_VL_HD inline std::size_t covered_plane_slot(std::size_t block_dim, std::size_t bx,
                                                      std::size_t by, std::size_t bw,
                                                      std::size_t raw_index) {
-    const std::size_t side_log2{block_dim / 16};
-    const std::size_t q{raw_index / COEFFS_PER_BLOCK};
-    const std::size_t slot{raw_index % COEFFS_PER_BLOCK};
-    const std::size_t block{(by + (q >> side_log2)) * bw +
-                            (bx + (q & ((std::size_t{1} << side_log2) - 1)))};
-    return block * COEFFS_PER_BLOCK + slot;
+    return (by * bw + bx) * COEFFS_PER_BLOCK +
+           covered_slot_offset(static_cast<std::uint32_t>(block_dim),
+                               static_cast<std::uint32_t>(bw),
+                               static_cast<std::uint32_t>(raw_index));
 }
 
 // Orthonormal 1D DCT-II basis entry O[k][n] for an M-point transform.

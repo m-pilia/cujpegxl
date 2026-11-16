@@ -860,10 +860,11 @@ __device__ void ac_count_token(int side, int c, std::uint32_t predicted, std::ui
 // walk. Every lane calls emit(active, symbol, nbits, bits, context) in lockstep
 // (so `emit` may use warp collectives); `active` marks the lanes holding a token,
 // in scan order by lane. The next chunk's coefficients are loaded before the
-// current chunk is emitted, so their latency overlaps the emit.
+// current chunk is emitted, so their latency overlaps the emit. `block_coeffs`
+// is the block/channel's first slot in the coefficient buffer.
 template <typename Emit>
-__device__ void warp_for_each_coeff_token(const std::int16_t* plane, const std::uint16_t* orders,
-                                          std::size_t bx, std::size_t by, int side, std::size_t bw,
+__device__ void warp_for_each_coeff_token(const std::int16_t* block_coeffs,
+                                          const std::uint16_t* orders, int side, std::uint32_t bw,
                                           int c, std::uint32_t nzeros, unsigned int lane,
                                           Emit emit) {
     const int cx{side / 8};
@@ -875,7 +876,7 @@ __device__ void warp_for_each_coeff_token(const std::int16_t* plane, const std::
         ac_zero_density_offset(ac_block_context(c, ac_strategy_order(side)))};
     const unsigned int lanes_below{(1u << lane) - 1u};
     const auto load = [&](std::uint32_t k) -> std::int32_t {
-        return k < size ? plane[covered_plane_slot(side, bx, by, bw, __ldg(&order[k]))] : 0;
+        return k < size ? block_coeffs[covered_slot_offset(side, bw, __ldg(&order[k]))] : 0;
     };
     std::uint32_t remaining_before{nzeros};
     std::uint32_t prev_before{nzeros > size / 16 ? 0u : 1u};
@@ -924,13 +925,9 @@ __device__ std::uint32_t token_record(std::uint32_t context, std::uint32_t symbo
 // 32 slots of one covered block; the non-zero-count token (t = 0) takes the last
 // slot, which no coefficient token reaches (a first-block covers at least one
 // coefficient).
-__device__ std::uint32_t record_slot(int side, std::size_t bw, std::uint32_t t) {
-    const std::uint32_t slot{t == 0 ? static_cast<std::uint32_t>(side * side) - 1 : t - 1};
-    // covered_plane_slot maps the first COEFFS_PER_BLOCK slots onto the block itself.
-    if (slot < COEFFS_PER_BLOCK) {
-        return slot;
-    }
-    return static_cast<std::uint32_t>(covered_plane_slot(side, 0, 0, bw, slot));
+__device__ std::uint32_t record_slot(int side, std::uint32_t bw, std::uint32_t t) {
+    return covered_slot_offset(side, bw,
+                               t == 0 ? static_cast<std::uint32_t>(side * side) - 1 : t - 1);
 }
 
 // The nbits of hybrid_encode for its `token`.
@@ -994,7 +991,10 @@ __global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
     }
     __syncthreads();
     const unsigned int lane{threadIdx.x % 32};
-    const std::size_t total{3 * bw * bh};
+    // Item indices, block indices and slot offsets within 32 bits, like the
+    // layout's token offsets.
+    const auto bw32{static_cast<std::uint32_t>(bw)};
+    const auto total{static_cast<std::uint32_t>(3 * bw * bh)};
     const auto count = [&](bool active, std::uint32_t symbol, std::uint32_t, std::uint32_t,
                            std::uint32_t context) {
         if (active) {
@@ -1010,20 +1010,20 @@ __global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
         if (lane == 0) {
             claimed = atomicAdd(chunk_counter, 1u);
         }
-        const std::size_t base{static_cast<std::size_t>(__shfl_sync(~0u, claimed, 0)) * 32};
+        const std::uint32_t base{__shfl_sync(~0u, claimed, 0) * 32};
         if (base >= total) {
             break;
         }
-        const std::size_t idx{base + lane};
-        const std::size_t block{idx / 3};
+        const std::uint32_t idx{base + lane};
+        const std::uint32_t block{idx / 3};
         const int side{idx < total ? (acs == nullptr ? 8 : acs[block]) : ACS_COVERED};
         const int c{CHANNEL_ORDER[idx % 3]};
         std::uint32_t nzeros{0};
         std::uint32_t tokens{0};
         std::uint32_t raw_bits{0};
         if (side != ACS_COVERED) {
-            const std::size_t bx{block % bw};
-            const std::size_t by{block / bw};
+            const std::uint32_t bx{block % bw32};
+            const std::uint32_t by{block / bw32};
             nzeros =
                 static_cast<std::uint32_t>(nz_exact[static_cast<std::size_t>(c) * nblocks + block]);
             std::uint32_t symbol{}, nbits{}, bits{}, context{};
@@ -1031,7 +1031,7 @@ __global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
                            nzeros, symbol, nbits, bits, context);
             count(true, symbol, nbits, bits, context);
             token_records[(static_cast<std::size_t>(c) * nblocks + block) * COEFFS_PER_BLOCK +
-                          record_slot(side, bw, 0)] = token_record(context, symbol, bits);
+                          record_slot(side, bw32, 0)] = token_record(context, symbol, bits);
             tokens = 1;
             raw_bits = nbits;
         }
@@ -1039,22 +1039,20 @@ __global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
         while (pending != 0) {
             const int src{__ffs(pending) - 1};
             pending &= pending - 1;
-            const std::size_t item_block{__shfl_sync(~0u, block, src)};
+            const std::uint32_t item_block{__shfl_sync(~0u, block, src)};
             const int item_side{__shfl_sync(~0u, side, src)};
             const int item_c{__shfl_sync(~0u, c, src)};
             const std::uint32_t item_nzeros{__shfl_sync(~0u, nzeros, src)};
-            const std::size_t item_bx{item_block % bw};
-            const std::size_t item_by{item_block / bw};
-            const std::size_t plane{static_cast<std::size_t>(item_c) * nblocks * COEFFS_PER_BLOCK};
-            std::uint32_t* const item_records{token_records + plane +
-                                              item_block * COEFFS_PER_BLOCK};
+            const std::size_t item_slot{(static_cast<std::size_t>(item_c) * nblocks + item_block) *
+                                        COEFFS_PER_BLOCK};
+            std::uint32_t* const item_records{token_records + item_slot};
             // The records of the coefficient tokens' slots j0..j0 + 31.
             std::uint32_t j0{0};
             std::uint32_t* step_records{item_records};
             std::uint32_t item_tokens{0};
             std::uint32_t item_raw_bits{0};
             warp_for_each_coeff_token(
-                ac + plane, orders, item_bx, item_by, item_side, bw, item_c, item_nzeros, lane,
+                ac + item_slot, orders, item_side, bw32, item_c, item_nzeros, lane,
                 [&](bool active, std::uint32_t symbol, std::uint32_t nbits, std::uint32_t bits,
                     std::uint32_t context) {
                     count(active, symbol, nbits, bits, context);
@@ -1063,7 +1061,7 @@ __global__ void __launch_bounds__(HISTOGRAM_LAUNCH[COMPILED_ARCH].threads)
                     }
                     j0 += 32;
                     if (j0 % COEFFS_PER_BLOCK == 0) {
-                        step_records = item_records + covered_plane_slot(item_side, 0, 0, bw, j0);
+                        step_records = item_records + covered_slot_offset(item_side, bw32, j0);
                     } else {
                         step_records += 32;
                     }
@@ -1252,7 +1250,10 @@ __device__ void ac_pack_chunk(std::size_t q, const std::int8_t* acs,
         const std::uint32_t t{f - __shfl_sync(~0u, token_begin, item)};
         const int item_side{__shfl_sync(~0u, side, item)};
         const std::uint32_t item_records{__shfl_sync(~0u, records, item)};
-        return f < chunk_tokens ? token_records[item_records + record_slot(item_side, bw, t)] : 0u;
+        return f < chunk_tokens
+                   ? token_records[item_records +
+                                   record_slot(item_side, static_cast<std::uint32_t>(bw), t)]
+                   : 0u;
     };
     std::uint32_t record{load(lane)};
     for (std::uint32_t f0{0}; f0 < chunk_tokens; f0 += 32) {
