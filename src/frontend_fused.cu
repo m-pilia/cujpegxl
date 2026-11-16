@@ -943,22 +943,35 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     __syncthreads();
 
     // Pre-erosion cells: 0.25 * sum of the 4x4 pixel diffs (Laplacian of Y).
-    // Warp w takes cell row w, and lane x sums the four terms of tile column x;
-    // the four lanes of a cell then combine their column sums.
+    // Warp w takes cell row w, and lane x sums the four terms of tile column x
+    // (in pairs of rows with HALF2_AQ); the four lanes of a cell then combine
+    // their column sums.
     const int lane{tid % 32};
     const int warp{tid / 32};
     {
         const int lx{lane + HALO};
         float sum{0.0f};
+        float even_y{};
+        float even_lap{};
+#pragma unroll
         for (int dy{0}; dy < 4; ++dy) {
             const int ly{4 * warp + dy + HALO};
             const float yv{sh_y[ly * PAD + lx]};
             const float base{0.25f * (sh_y[(ly + 1) * PAD + lx] + sh_y[(ly - 1) * PAD + lx] +
                                       sh_y[ly * PAD + lx - 1] + sh_y[ly * PAD + lx + 1])};
-            float diff{ratio_cbrt_gamma<false>(yv + MATCH_GAMMA_OFFSET) * (yv - base)};
-            diff *= diff;
-            diff = fminf(diff, DIFF_LIMIT);
-            sum += masking_sqrt(diff);
+            if constexpr (HALF2_AQ) {
+                if (dy % 2 == 0) {
+                    even_y = yv;
+                    even_lap = yv - base;
+                } else {
+                    sum += masking_sqrt_pair_sum(float2{even_y, yv}, float2{even_lap, yv - base});
+                }
+            } else {
+                float diff{ratio_cbrt_gamma<false>(yv + MATCH_GAMMA_OFFSET) * (yv - base)};
+                diff *= diff;
+                diff = fminf(diff, DIFF_LIMIT);
+                sum += masking_sqrt(diff);
+            }
         }
         sum += __shfl_xor_sync(0xffffffffu, sum, 1);
         sum += __shfl_xor_sync(0xffffffffu, sum, 2);
