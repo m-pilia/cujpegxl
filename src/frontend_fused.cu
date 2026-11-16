@@ -4,6 +4,7 @@
 #include "frontend_fused.h"
 
 #include <algorithm>
+#include <type_traits>
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -44,7 +45,8 @@ static_assert(FRONTEND_THREADS == 32 * CELLS && TILE_PX == 32);
 // The erosion takes four lanes per cell.
 static_assert(FRONTEND_THREADS == 4 * CELLS * CELLS);
 // The raw X and B planes stay resident from the load to the X/B gaborish at
-// RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them.
+// RESIDENT_X_B_OFFSET; the buffers local to each phase lie below them. With
+// HALF2_FRONTEND they are one plane of half2 (X, B) pairs.
 constexpr std::size_t LOAD_AQ_LOCAL_PEAK =
     TILE_FLOATS + PAD_SAMPLES + 2 * CELLS * CELLS + 6 * TB * TB;
 // The selection's horizontal-pass rows of each candidate size N start at sharp
@@ -186,11 +188,23 @@ __device__ void erode_cells(const float* __restrict__ pre, float* __restrict__ e
 constexpr int GAB_STRIP_ROWS{TILE_SAMPLES / FRONTEND_THREADS};
 static_assert(GAB_STRIP_ROWS * FRONTEND_THREADS == TILE_SAMPLES);
 
-__device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ out, int tid) {
+template <typename T>
+__device__ __forceinline__ T gaborish_weight(float w) {
+    if constexpr (std::is_same_v<T, __half2>) {
+        return __float2half2_rn(w);
+    } else {
+        return w;
+    }
+}
+
+// Filters the padded plane `in` of floats, or of half2 channel pairs, and
+// passes each output with its tile index to store(index, value).
+template <typename T, typename Store>
+__device__ void gaborish_tile(const T* __restrict__ in, int tid, Store store) {
     constexpr int WIDTH{2 * HALO + 1};
     const int x0{tid % TILE_PX};
     const int y0{tid / TILE_PX * GAB_STRIP_ROWS};
-    float w[GAB_STRIP_ROWS + 2 * HALO][WIDTH];
+    T w[GAB_STRIP_ROWS + 2 * HALO][WIDTH];
 #pragma unroll
     for (int r{0}; r < GAB_STRIP_ROWS + 2 * HALO; ++r) {
 #pragma unroll
@@ -201,14 +215,16 @@ __device__ void gaborish_tile(const float* __restrict__ in, float* __restrict__ 
 #pragma unroll
     for (int k{0}; k < GAB_STRIP_ROWS; ++k) {
         const auto at = [&](int dy, int dx) { return w[k + HALO + dy][HALO + dx]; };
-        const float e{at(0, -1) + at(0, 1) + at(-1, 0) + at(1, 0)};
-        const float r2{at(0, -2) + at(0, 2) + at(-2, 0) + at(2, 0)};
-        const float dg{at(-1, -1) + at(-1, 1) + at(1, -1) + at(1, 1)};
-        const float l8{at(-1, -2) + at(-1, 2) + at(1, -2) + at(1, 2) + at(-2, -1) + at(-2, 1) +
-                       at(2, -1) + at(2, 1)};
-        const float d4{at(-2, -2) + at(-2, 2) + at(2, -2) + at(2, 2)};
-        out[(y0 + k) * TILE_STRIDE + x0] = GAB_WC * at(0, 0) + GAB_WR * e + GAB_WR2 * r2 +
-                                           GAB_WD * dg + GAB_WL * l8 + GAB_WD2 * d4;
+        const T e{at(0, -1) + at(0, 1) + at(-1, 0) + at(1, 0)};
+        const T r2{at(0, -2) + at(0, 2) + at(-2, 0) + at(2, 0)};
+        const T dg{at(-1, -1) + at(-1, 1) + at(1, -1) + at(1, 1)};
+        const T l8{at(-1, -2) + at(-1, 2) + at(1, -2) + at(1, 2) + at(-2, -1) + at(-2, 1) +
+                   at(2, -1) + at(2, 1)};
+        const T d4{at(-2, -2) + at(-2, 2) + at(2, -2) + at(2, 2)};
+        store((y0 + k) * TILE_STRIDE + x0,
+              gaborish_weight<T>(GAB_WC) * at(0, 0) + gaborish_weight<T>(GAB_WR) * e +
+                  gaborish_weight<T>(GAB_WR2) * r2 + gaborish_weight<T>(GAB_WD) * dg +
+                  gaborish_weight<T>(GAB_WL) * l8 + gaborish_weight<T>(GAB_WD2) * d4);
     }
 }
 
@@ -277,9 +293,9 @@ __device__ inline void store_half4(__half* dst, const float* v) {
 // On sm_87, the 32x32 Y candidate and the X and B transforms run on the tensor
 // cores (dct_mma_impl.cuh).
 constexpr bool DCT_MMA{COMPILED_ARCH == GpuArch::SM87};
-// On sm_87, parts of the adaptive quantization run in half2 arithmetic, whose
-// throughput on sm_61 is 1/64 of FP32.
-constexpr bool HALF2_AQ{COMPILED_ARCH == GpuArch::SM87};
+// On sm_87, parts of the adaptive quantization and the X/B gaborish run in
+// half2 arithmetic, whose throughput on sm_61 is 1/64 of FP32.
+constexpr bool HALF2_FRONTEND{COMPILED_ARCH == GpuArch::SM87};
 
 // Not const: a const table is placed in the constant bank, whose loads
 // serialize over the lanes' distinct addresses.
@@ -905,6 +921,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     float* sh_red{sh_eroded + CELLS * CELLS};
     float* raw_x{workspace + RESIDENT_X_B_OFFSET};
     float* raw_b{raw_x + PAD_SAMPLES};
+    __half2* raw_xb{reinterpret_cast<__half2*>(raw_x)};
 
     const std::size_t tbx0{static_cast<std::size_t>(blockIdx.x) * TB};
     const std::size_t tby0{static_cast<std::size_t>(blockIdx.y) * TB};
@@ -937,14 +954,18 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         float bo{};
         nv12_pixel_to_xyb(yv, c.x, c.y, xo, yo, bo);
         sh_y[i] = yo;
-        raw_x[i] = xo;
-        raw_b[i] = bo;
+        if constexpr (HALF2_FRONTEND) {
+            raw_xb[i] = __floats2half2_rn(xo, bo);
+        } else {
+            raw_x[i] = xo;
+            raw_b[i] = bo;
+        }
     }
     __syncthreads();
 
     // Pre-erosion cells: 0.25 * sum of the 4x4 pixel diffs (Laplacian of Y).
     // Warp w takes cell row w, and lane x sums the four terms of tile column x
-    // (in pairs of rows with HALF2_AQ); the four lanes of a cell then combine
+    // (in pairs of rows with HALF2_FRONTEND); the four lanes of a cell then combine
     // their column sums.
     const int lane{tid % 32};
     const int warp{tid / 32};
@@ -959,7 +980,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
             const float yv{sh_y[ly * PAD + lx]};
             const float base{0.25f * (sh_y[(ly + 1) * PAD + lx] + sh_y[(ly - 1) * PAD + lx] +
                                       sh_y[ly * PAD + lx - 1] + sh_y[ly * PAD + lx + 1])};
-            if constexpr (HALF2_AQ) {
+            if constexpr (HALF2_FRONTEND) {
                 if (dy % 2 == 0) {
                     even_y = yv;
                     even_lap = yv - base;
@@ -1002,8 +1023,10 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         const int fy{4 * half + lane / 8};
         const int idx{(lby * 8 + fy + HALO) * PAD + lbx * 8 + fx + HALO};
         const float yv{sh_y[idx]};
-        const float xv{raw_x[idx]};
-        const float bv{raw_b[idx]};
+        const float2 xb{HALF2_FRONTEND ? __half22float2(raw_xb[idx])
+                                       : float2{raw_x[idx], raw_b[idx]}};
+        const float xv{xb.x};
+        const float bv{xb.y};
 
         constexpr float valmin{0.0206f};
         float hf_part{0.0f};
@@ -1016,7 +1039,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
         constexpr float kBias{0.16f};
         const float iny{yv + kBias};
-        const float gamma_part{HALF2_AQ ? inverse_ratio_cbrt_gamma_sum(iny - xv, iny + xv)
+        const float gamma_part{HALF2_FRONTEND ? inverse_ratio_cbrt_gamma_sum(iny - xv, iny + xv)
                                         : ratio_cbrt_gamma<true>(iny - xv) +
                                               ratio_cbrt_gamma<true>(iny + xv)};
 
@@ -1063,7 +1086,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         }
     }
 
-    gaborish_tile(sh_y, sharp_y, tid);
+    gaborish_tile(sh_y, tid, [&](int i, float v) { sharp_y[i] = v; });
     __syncthreads();
 
     const std::size_t cplane{bw * bh * COEFFS_PER_BLOCK};
@@ -1075,8 +1098,16 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
     float* sharp_x{workspace};
     float* sharp_b{workspace + SHARP_B_OFFSET};
-    gaborish_tile(raw_x, sharp_x, tid);
-    gaborish_tile(raw_b, sharp_b, tid);
+    if constexpr (HALF2_FRONTEND) {
+        gaborish_tile(raw_xb, tid, [&](int i, __half2 v) {
+            const float2 f{__half22float2(v)};
+            sharp_x[i] = f.x;
+            sharp_b[i] = f.y;
+        });
+    } else {
+        gaborish_tile(raw_x, tid, [&](int i, float v) { sharp_x[i] = v; });
+        gaborish_tile(raw_b, tid, [&](int i, float v) { sharp_b[i] = v; });
+    }
     __syncthreads();
     if constexpr (DCT_MMA) {
         // The coefficients go to the raw planes, which gaborish has consumed.
