@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 #include <cuda_runtime.h>
 
@@ -23,18 +24,84 @@ std::size_t ceil_div(std::size_t a, std::size_t b) {
     return (a + b - 1) / b;
 }
 
-// In global memory: the lanes of a warp read different weights, which
-// constant memory would serialize.
-__device__ const DequantWeightPairs<64> DCT8_PAIRS{DCT8_DEQUANT_PAIRS};
-__device__ const DequantWeightPairs<256> DCT16_PAIRS{DCT16_DEQUANT_PAIRS};
-__device__ const DequantWeightPairs<1024> DCT32_PAIRS{DCT32_DEQUANT_PAIRS};
+// The per-coefficient quantization tables hold the coefficients of the DCT8,
+// DCT16 and DCT32 transforms back to back.
+constexpr std::uint32_t DCT16_ENTRY_OFFSET = 64;
+constexpr std::uint32_t DCT32_ENTRY_OFFSET = DCT16_ENTRY_OFFSET + 256;
+constexpr std::uint32_t TABLE_ENTRIES = DCT32_ENTRY_OFFSET + 1024;
 
-__device__ inline DequantWeightPair dequant_weight(int side, int channel, int raw) {
-    const DequantWeightPair* pair{side == 16   ? &DCT16_PAIRS.w[channel][raw]
-                                  : side == 32 ? &DCT32_PAIRS.w[channel][raw]
-                                               : &DCT8_PAIRS.w[channel][raw]};
-    const float2 w{__ldg(reinterpret_cast<const float2*>(pair))};
-    return {w.x, w.y};
+__host__ __device__ constexpr std::uint32_t table_entry(std::uint32_t side, std::uint32_t raw) {
+    return (side == 32 ? DCT32_ENTRY_OFFSET : (side == 16 ? DCT16_ENTRY_OFFSET : 0u)) + raw;
+}
+
+struct alignas(sizeof(float4)) WeightPairTable {
+    DequantWeightPair w[3][TABLE_ENTRIES];
+};
+
+template <std::size_t COEFFS>
+constexpr void copy_weight_pairs(const DequantWeightPairs<COEFFS>& pairs, std::uint32_t side,
+                                 WeightPairTable* table) {
+    for (std::size_t c{0}; c < 3; ++c) {
+        for (std::uint32_t raw{0}; raw < COEFFS; ++raw) {
+            table->w[c][table_entry(side, raw)] = pairs.w[c][raw];
+        }
+    }
+}
+
+constexpr WeightPairTable make_weight_pair_table() {
+    WeightPairTable table{};
+    copy_weight_pairs(DCT8_DEQUANT_PAIRS, 8, &table);
+    copy_weight_pairs(DCT16_DEQUANT_PAIRS, 16, &table);
+    copy_weight_pairs(DCT32_DEQUANT_PAIRS, 32, &table);
+    return table;
+}
+
+// The dead-zone threshold of each coefficient, [0] for X and B (which share
+// it) and [1] for Y. A coefficient of the low-frequency corner (fx, fy < N/8),
+// carried as DC, has an infinite threshold: it quantizes to 0, with a zero Y
+// roundtrip.
+struct alignas(sizeof(float2)) ThresholdTable {
+    float t[2][TABLE_ENTRIES];
+};
+
+constexpr ThresholdTable make_threshold_table() {
+    ThresholdTable table{};
+    for (const std::uint32_t side : {8u, 16u, 32u}) {
+        for (std::uint32_t raw{0}; raw < side * side; ++raw) {
+            const bool llf{raw / side < side / 8 && raw % side < side / 8};
+            for (std::uint32_t luma{0}; luma < 2; ++luma) {
+                table.t[luma][table_entry(side, raw)] =
+                    llf ? std::numeric_limits<float>::infinity()
+                        : ac_deadzone(side, luma).threshold(raw);
+            }
+        }
+    }
+    return table;
+}
+
+// In global memory: the lanes of a warp read different entries, which
+// constant memory would serialize.
+__device__ const WeightPairTable WEIGHT_PAIRS{make_weight_pair_table()};
+__device__ const ThresholdTable THRESHOLDS{make_threshold_table()};
+
+// The quantization parameters of a lane's two adjacent slots, from table
+// entries `entry` and `entry + 1` (`entry` even).
+struct LaneWeightPairs {
+    DequantWeightPair slot[2];
+};
+
+__device__ inline LaneWeightPairs lane_weight_pairs(std::uint32_t channel, std::uint32_t entry) {
+    const float4 w{__ldg(reinterpret_cast<const float4*>(&WEIGHT_PAIRS.w[channel][entry]))};
+    return {{{w.x, w.y}, {w.z, w.w}}};
+}
+
+struct LaneThresholds {
+    float slot[2];
+};
+
+__device__ inline LaneThresholds lane_thresholds(std::uint32_t luma, std::uint32_t entry) {
+    const float2 t{__ldg(reinterpret_cast<const float2*>(&THRESHOLDS.t[luma][entry]))};
+    return {{t.x, t.y}};
 }
 
 __device__ inline int quantize_deadzone(float steps, float threshold) {
@@ -352,30 +419,28 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             continue;
         }
         const TilePosition at_pos{tile_pos[p]};
-        const std::uint64_t llf_mask{tile_llf_mask[p]};
         const float2 qgsf{tile_qgsf[p]};
-        const AcDeadzone deadzone{ac_deadzone(at_pos.side, 1)};
+        const std::uint32_t entry{
+            table_entry(at_pos.side, at_pos.covered_ordinal * BLOCK_SLOTS + 2 * lane)};
+        const LaneWeightPairs wy{lane_weight_pairs(1, entry)};
+        const LaneThresholds thresholds{lane_thresholds(1, entry)};
         std::int16_t qy[2];
+        bool nonzero[2];
 #pragma unroll
         for (std::uint32_t j{0}; j < 2; ++j) {
-            const std::uint32_t slot{2 * lane + j};
-            const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
-            // An LLF slot quantizes a zero coefficient, which yields 0 and a
-            // zero roundtrip without a branch.
-            const bool llf{((llf_mask >> slot) & 1) != 0};
-            const float yr{llf ? 0.0f : __half2float(tile_coeffs[1][p * BLOCK_SLOTS + slot])};
-            const DequantWeightPair wy{dequant_weight(at_pos.side, 1, static_cast<int>(raw))};
-            const int qy_int{quantize_deadzone(div_rn(yr * qgsf.x, wy.weight, wy.inv_weight),
-                                               deadzone.threshold(raw))};
-            y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.weight, qgsf.x, qgsf.y);
+            const float yr{__half2float(tile_coeffs[1][p * BLOCK_SLOTS + 2 * lane + j])};
+            const int qy_int{quantize_deadzone(
+                div_rn(yr * qgsf.x, wy.slot[j].weight, wy.slot[j].inv_weight), thresholds.slot[j])};
+            y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.slot[j].weight, qgsf.x, qgsf.y);
             qy[j] = static_cast<std::int16_t>(qy_int);
-            nonzero_mask |= qy_int != 0 ? nonzero_bit(1, k, j) : 0u;
+            nonzero[j] = qy_int != 0;
+            nonzero_mask |= nonzero[j] ? nonzero_bit(1, k, j) : 0u;
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[cplane + blk * BLOCK_SLOTS + 2 * lane]) =
             make_short2(qy[0], qy[1]);
-        const int nz{__popc(__ballot_sync(~0u, qy[0] != 0)) +
-                     __popc(__ballot_sync(~0u, qy[1] != 0))};
+        const int nz{__popc(__ballot_sync(~0u, nonzero[0])) +
+                     __popc(__ballot_sync(~0u, nonzero[1]))};
         if (lane == 0 && nz != 0) {
             atomicAdd(&tile_nz[1][at_pos.owner], nz);
         }
@@ -412,38 +477,42 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             continue;
         }
         const TilePosition at_pos{tile_pos[p]};
-        const std::uint64_t llf_mask{tile_llf_mask[p]};
         const float qgsf{tile_qgsf[p].x};
-        // X and B share their dead zone.
-        const AcDeadzone deadzone{ac_deadzone(at_pos.side, 0)};
+        const std::uint32_t entry{
+            table_entry(at_pos.side, at_pos.covered_ordinal * BLOCK_SLOTS + 2 * lane)};
+        const LaneWeightPairs wx{lane_weight_pairs(0, entry)};
+        const LaneWeightPairs wb{lane_weight_pairs(2, entry)};
+        const LaneThresholds thresholds{lane_thresholds(0, entry)};
         std::int16_t qx[2];
         std::int16_t qb[2];
+        bool nonzero_x[2];
+        bool nonzero_b[2];
 #pragma unroll
         for (std::uint32_t j{0}; j < 2; ++j) {
-            const std::uint32_t slot{2 * lane + j};
-            const std::uint32_t raw{at_pos.covered_ordinal * BLOCK_SLOTS + slot};
-            // As for Y; the slot's Y roundtrip is zero.
-            const bool llf{((llf_mask >> slot) & 1) != 0};
-            const float xr{llf ? 0.0f : __half2float(tile_coeffs[0][p * BLOCK_SLOTS + slot])};
-            const float br{llf ? 0.0f : __half2float(tile_coeffs[2][p * BLOCK_SLOTS + slot])};
-            const float threshold{deadzone.threshold(raw)};
-            const DequantWeightPair wx{dequant_weight(at_pos.side, 0, static_cast<int>(raw))};
-            qx[j] = static_cast<std::int16_t>(quantize_deadzone(
-                div_rn((xr - ytox * y_round[k][j]) * qgsf, wx.weight, wx.inv_weight), threshold));
-            const DequantWeightPair wb{dequant_weight(at_pos.side, 2, static_cast<int>(raw))};
-            qb[j] = static_cast<std::int16_t>(quantize_deadzone(
-                div_rn((br - ytob * y_round[k][j]) * qgsf, wb.weight, wb.inv_weight), threshold));
-            nonzero_mask |=
-                (qx[j] != 0 ? nonzero_bit(0, k, j) : 0u) | (qb[j] != 0 ? nonzero_bit(2, k, j) : 0u);
+            const std::uint32_t at{p * BLOCK_SLOTS + 2 * lane + j};
+            const float xr{__half2float(tile_coeffs[0][at])};
+            const float br{__half2float(tile_coeffs[2][at])};
+            const int qx_int{quantize_deadzone(div_rn((xr - ytox * y_round[k][j]) * qgsf,
+                                                      wx.slot[j].weight, wx.slot[j].inv_weight),
+                                               thresholds.slot[j])};
+            const int qb_int{quantize_deadzone(div_rn((br - ytob * y_round[k][j]) * qgsf,
+                                                      wb.slot[j].weight, wb.slot[j].inv_weight),
+                                               thresholds.slot[j])};
+            qx[j] = static_cast<std::int16_t>(qx_int);
+            qb[j] = static_cast<std::int16_t>(qb_int);
+            nonzero_x[j] = qx_int != 0;
+            nonzero_b[j] = qb_int != 0;
+            nonzero_mask |= (nonzero_x[j] ? nonzero_bit(0, k, j) : 0u) |
+                            (nonzero_b[j] ? nonzero_bit(2, k, j) : 0u);
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[blk * BLOCK_SLOTS + 2 * lane]) = make_short2(qx[0], qx[1]);
         *reinterpret_cast<short2*>(&ac[2 * cplane + blk * BLOCK_SLOTS + 2 * lane]) =
             make_short2(qb[0], qb[1]);
-        const int nz_x{__popc(__ballot_sync(~0u, qx[0] != 0)) +
-                       __popc(__ballot_sync(~0u, qx[1] != 0))};
-        const int nz_b{__popc(__ballot_sync(~0u, qb[0] != 0)) +
-                       __popc(__ballot_sync(~0u, qb[1] != 0))};
+        const int nz_x{__popc(__ballot_sync(~0u, nonzero_x[0])) +
+                       __popc(__ballot_sync(~0u, nonzero_x[1]))};
+        const int nz_b{__popc(__ballot_sync(~0u, nonzero_b[0])) +
+                       __popc(__ballot_sync(~0u, nonzero_b[1]))};
         if (lane == 0 && nz_x != 0) {
             atomicAdd(&tile_nz[0][at_pos.owner], nz_x);
         }
