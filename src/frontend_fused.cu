@@ -1147,13 +1147,22 @@ ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitc
     texture.readMode = cudaReadModeNormalizedFloat;
     texture.normalizedCoords = 0;
 
+    if (cudaEventCreateWithFlags(&released_, cudaEventDisableTiming | cudaEventBlockingSync) !=
+        cudaSuccess) {
+        released_ = nullptr;
+        return;
+    }
     valid_ = cudaCreateTextureObject(&texture_, &resource, &texture, nullptr) == cudaSuccess;
 }
 
 ChromaTexture::~ChromaTexture() {
     if (valid_) {
-        cudaStreamSynchronize(stream_);
+        cudaEventRecord(released_, stream_);
+        cudaEventSynchronize(released_);
         cudaDestroyTextureObject(texture_);
+    }
+    if (released_ != nullptr) {
+        cudaEventDestroy(released_);
     }
 }
 

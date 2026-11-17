@@ -282,6 +282,8 @@ struct Slot {
     // Creates the streams and events on the current device, once.
     bool init();
     void release();
+    // Waits until the slot's streams have no queued work. False on a CUDA error.
+    bool wait_idle();
 
     bool ready{false};
     cudaStream_t stream{nullptr};
@@ -294,6 +296,7 @@ struct Slot {
     cudaEvent_t dc_body_copied{nullptr};
     std::array<cudaEvent_t, AC_BATCHES> batch_packed{};
     std::array<cudaEvent_t, AC_BATCHES> batch_copied{};
+    std::array<cudaEvent_t, 3> stream_idle{};
 
     DeviceArena arena;
     FrameBuffers device{};
@@ -326,17 +329,37 @@ bool Slot::init() {
     const auto create_event = [](cudaEvent_t& e) {
         return cudaEventCreateWithFlags(&e, cudaEventDisableTiming) == cudaSuccess;
     };
+    // Events the host waits on put the waiting thread to sleep instead of spinning.
+    const auto create_host_event = [](cudaEvent_t& e) {
+        return cudaEventCreateWithFlags(&e, cudaEventDisableTiming | cudaEventBlockingSync) ==
+               cudaSuccess;
+    };
     // Non-blocking, so that the slots' streams do not synchronize with each other
     // through the legacy default stream.
     ready = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
             cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
             cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            create_event(input_ready) && create_event(forked) && create_event(layout_copied) &&
-            create_event(dc_sizes_copied) && create_event(dc_body_copied);
+            create_event(input_ready) && create_event(forked) &&
+            create_host_event(layout_copied) && create_host_event(dc_sizes_copied) &&
+            create_host_event(dc_body_copied);
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
-        ready = ready && create_event(batch_packed[b]) && create_event(batch_copied[b]);
+        ready = ready && create_event(batch_packed[b]) && create_host_event(batch_copied[b]);
+    }
+    for (cudaEvent_t& e : stream_idle) {
+        ready = ready && create_host_event(e);
     }
     return ready;
+}
+
+bool Slot::wait_idle() {
+    const std::array<cudaStream_t, 3> streams{stream, dc_stream, copy_stream};
+    for (std::size_t i{0}; i < streams.size(); ++i) {
+        if (cudaEventRecord(stream_idle[i], streams[i]) != cudaSuccess ||
+            cudaEventSynchronize(stream_idle[i]) != cudaSuccess) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void Slot::release() {
@@ -353,6 +376,9 @@ void Slot::release() {
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
         destroy_event(batch_packed[b]);
         destroy_event(batch_copied[b]);
+    }
+    for (cudaEvent_t& e : stream_idle) {
+        destroy_event(e);
     }
     for (cudaStream_t* s : {&stream, &dc_stream, &copy_stream}) {
         if (*s != nullptr) {
@@ -886,10 +912,7 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
     Slot& slot{s.slots[s.submitted % s.depth]};
     // The slot's previous frame has completed, but after a failure its device
     // work may still be running.
-    if (cudaSetDevice(s.device) != cudaSuccess || !slot.init() ||
-        cudaStreamSynchronize(slot.stream) != cudaSuccess ||
-        cudaStreamSynchronize(slot.dc_stream) != cudaSuccess ||
-        cudaStreamSynchronize(slot.copy_stream) != cudaSuccess) {
+    if (cudaSetDevice(s.device) != cudaSuccess || !slot.init() || !slot.wait_idle()) {
         return false;
     }
     slot.width = width;

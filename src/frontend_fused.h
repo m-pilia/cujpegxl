@@ -16,8 +16,8 @@ namespace cujpegxl {
 
 // Linearly filtered texture over a device NV12 chroma plane (interleaved Cb/Cr,
 // (width+1)/2 pairs per row over (height+1)/2 rows at `chroma_pitch`, which must be
-// 32-byte aligned), as the front end samples it. Destruction first waits for
-// `stream`, where the front end reads the texture.
+// 32-byte aligned), as the front end samples it. Destruction first waits, blocking,
+// for `stream`, where the front end reads the texture.
 class ChromaTexture {
 public:
     ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
@@ -32,6 +32,7 @@ public:
 private:
     cudaTextureObject_t texture_{};
     cudaStream_t stream_{nullptr};
+    cudaEvent_t released_{nullptr};
     bool valid_{false};
 };
 
