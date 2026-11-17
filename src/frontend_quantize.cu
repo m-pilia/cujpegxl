@@ -302,39 +302,45 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         }
     }
 
-    if (tid < TILE_POSITIONS && tid % TILE_SIDE < cols && tid / TILE_SIDE < rows) {
-        const std::uint32_t m{static_cast<std::uint32_t>(pos.side) / 8};
-        const std::uint32_t olx{pos.owner % TILE_SIDE};
-        const std::uint32_t oly{pos.owner / TILE_SIDE};
-        float dc_value[3];
-        for (std::uint32_t c{0}; c < 3; ++c) {
-            dc_value[c] = __half2float(tile_coeffs[c][tid * BLOCK_SLOTS]);
-        }
-        if (m > 1) {
+    // One DC per thread: warps 0-3 take Y in lanes 0-15 and B in lanes 16-31
+    // of 16 positions each (B is predicted from the Y DC of its position),
+    // warps 4-5 take X of 32 positions each.
+    if (tid < 3 * TILE_POSITIONS) {
+        const bool y_or_b{tid < 2 * TILE_POSITIONS};
+        const std::uint32_t p{y_or_b ? warp * 16 + lane % 16 : tid - 2 * TILE_POSITIONS};
+        const std::uint32_t c{y_or_b ? (lane < 16 ? 1u : 2u) : 0u};
+        const bool in_frame{p % TILE_SIDE < cols && p / TILE_SIDE < rows};
+        const TilePosition dc_pos{tile_pos[p]};
+        float value{__half2float(tile_coeffs[c][p * BLOCK_SLOTS])};
+        const std::uint32_t m{static_cast<std::uint32_t>(dc_pos.side) / 8};
+        if (in_frame && m > 1) {
+            const std::uint32_t olx{dc_pos.owner % TILE_SIDE};
+            const std::uint32_t oly{dc_pos.owner / TILE_SIDE};
             const LlfDcTerms& w{
-                dc_terms[llf_dc_term_entry(m, tid % TILE_SIDE - olx, tid / TILE_SIDE - oly)]};
-            for (std::uint32_t c{0}; c < 3; ++c) {
-                float value{0.0f};
-                for (std::uint32_t fx{0}; fx < m; ++fx) {
-                    for (std::uint32_t fy{0}; fy < m; ++fy) {
-                        const std::size_t at{
-                            covered_plane_slot(pos.side, olx, oly, TILE_SIDE, fx * pos.side + fy)};
-                        value += w.w[fx * m + fy] * __half2float(tile_coeffs[c][at]);
-                    }
+                dc_terms[llf_dc_term_entry(m, p % TILE_SIDE - olx, p / TILE_SIDE - oly)]};
+            value = 0.0f;
+            for (std::uint32_t fx{0}; fx < m; ++fx) {
+                for (std::uint32_t fy{0}; fy < m; ++fy) {
+                    const std::size_t at{covered_plane_slot(dc_pos.side, olx, oly, TILE_SIDE,
+                                                            fx * dc_pos.side + fy)};
+                    value += w.w[fx * m + fy] * __half2float(tile_coeffs[c][at]);
                 }
-                dc_value[c] = value;
             }
         }
 
-        const std::uint32_t blk{(tile_by + tid / TILE_SIDE) * bw + tile_bx + tid % TILE_SIDE};
-        const float dcq_x{DC_INV_QUANT[0] * dc_scale};
-        const float dcq_y{DC_INV_QUANT[1] * dc_scale};
-        const float dcq_b{DC_INV_QUANT[2] * dc_scale};
-        const int qdc_y{round_to_int(dc_value[1] * dcq_y)};
-        const float y_dc_round{static_cast<float>(qdc_y) / dcq_y};
-        dc[nblk + blk] = qdc_y;
-        dc[blk] = round_to_int(dc_value[0] * dcq_x);
-        dc[2 * nblk + blk] = round_to_int((dc_value[2] - CFL_BASE_B * y_dc_round) * dcq_b);
+        const float dcq{DC_INV_QUANT[c] * dc_scale};
+        int qdc{round_to_int(value * dcq)};
+        if (y_or_b) {
+            const int qdc_y{__shfl_xor_sync(~0u, qdc, 16)};
+            if (c == 2) {
+                const float y_dc_round{static_cast<float>(qdc_y) / (DC_INV_QUANT[1] * dc_scale)};
+                qdc = round_to_int((value - CFL_BASE_B * y_dc_round) * dcq);
+            }
+        }
+        if (in_frame) {
+            const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
+            dc[c * nblk + blk] = qdc;
+        }
     }
 
     float y_round[QUANT_STEPS][2];
