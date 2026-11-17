@@ -177,17 +177,30 @@ static_assert(TILE_POSITIONS % QUANT_WARPS == 0 && TILE_VECTORS % QUANT_THREADS 
 // One CfL partial-sum thread per slot and tile row.
 static_assert(QUANT_THREADS == TILE_SIDE * BLOCK_SLOTS);
 
-// A thread's quantized coefficients are two slots of QUANT_STEPS positions per
-// channel; bit nonzero_bit(c, k, j) of its mask flags slot j of step k non-zero.
-__device__ inline std::uint32_t nonzero_bit(std::uint32_t c, std::uint32_t k, std::uint32_t j) {
-    return std::uint32_t{1} << ((c * QUANT_STEPS + k) * 2 + j);
+// A tile's order statistics are summed in shared memory as one 8-bit counter
+// per CoeffOrderStats word, four per packed word: a tile adds at most
+// TILE_POSITIONS to any of them.
+constexpr std::uint32_t ORDER_STATS_WORDS = sizeof(CoeffOrderStats) / sizeof(std::uint32_t);
+constexpr std::uint32_t PACKED_ORDER_STATS_VECTORS = (ORDER_STATS_WORDS + 15) / 16;
+constexpr std::uint32_t PACKED_ORDER_STATS_WORDS = 4 * PACKED_ORDER_STATS_VECTORS;
+static_assert(TILE_POSITIONS <= 0xff && PACKED_ORDER_STATS_VECTORS <= QUANT_THREADS);
+
+__device__ inline void count_order_stat(std::uint32_t* packed_stats, std::uint32_t word) {
+    atomicAdd(&packed_stats[word / 4], std::uint32_t{1} << (word % 4 * 8));
 }
 
-constexpr std::uint32_t ORDER_STATS_WORDS = sizeof(CoeffOrderStats) / sizeof(std::uint32_t);
-constexpr std::uint32_t ORDER_STATS_VECTORS = (ORDER_STATS_WORDS + 3) / 4;
-static_assert(3 * QUANT_STEPS * 2 <= 32);
-static_assert(ORDER_STATS_VECTORS * sizeof(uint4) <= 3 * TILE_SLOTS * sizeof(__half),
-              "the tile's order statistics reuse its coefficient buffer");
+// Counts the non-zero flags of a lane's two slots, words `base + 2 * lane` and
+// `base + 2 * lane + 1`, in one atomic; `base` is a multiple of 4, so the
+// lane's byte shifts depend on the lane only.
+__device__ inline void count_lane_nonzeros(std::uint32_t* packed_stats, std::uint32_t base,
+                                           std::uint32_t lane, bool nonzero0, bool nonzero1) {
+    const std::uint32_t shift{lane % 2 * 16};
+    const std::uint32_t increment{(nonzero0 ? std::uint32_t{1} << shift : 0u) |
+                                  (nonzero1 ? std::uint32_t{1} << (shift + 8) : 0u)};
+    if (increment != 0) {
+        atomicAdd(&packed_stats[base / 4 + lane / 2], increment);
+    }
+}
 
 // A thread's share of a tile's coefficients, loaded into registers in one batch
 // so that all global loads are in flight before the shared-memory store.
@@ -252,6 +265,12 @@ struct TilePosition {
     std::uint8_t covered_ordinal;
 };
 
+// First CoeffOrderStats word of the non-zero counts of a position's slots.
+__device__ inline std::uint32_t position_stats_base(const TilePosition& p, std::uint32_t c) {
+    return static_cast<std::uint32_t>(coeff_order_offset(p.side, static_cast<int>(c))) +
+           p.covered_ordinal * BLOCK_SLOTS;
+}
+
 // One CUDA block per 64x64 color tile. A DCT16/DCT32 never straddles a color
 // tile (its alignment divides the tile side), so the tile's positions hold
 // exactly the coefficients of the first-blocks whose CfL tile it is, and the
@@ -267,8 +286,8 @@ struct TilePosition {
 // - Each position derives its DC from its transform's LLF corner in the staged
 //   tile and quantizes it.
 // - X and B are quantized against the tile's color map.
-// - The non-zero counts per transform position (CoeffOrderStats) are summed in
-//   the coefficient buffer, free by then, and added to `order_stats`.
+// - The non-zero counts per coefficient (CoeffOrderStats) are summed per step
+//   in the tile's packed counters, then added to `order_stats`.
 // A warp quantizes the 64 slots of one position per step (two per lane), so
 // the non-zero counts of a step all go to one first-block.
 __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
@@ -287,6 +306,7 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     __shared__ float2 tile_qgsf[TILE_POSITIONS];
     __shared__ TilePosition tile_pos[TILE_POSITIONS];
     __shared__ std::int32_t tile_nz[3][TILE_POSITIONS];
+    __shared__ __align__(16) std::uint32_t tile_order_stats[PACKED_ORDER_STATS_WORDS];
     __shared__ float cfl_warp[3][QUANT_WARPS];
     __shared__ float cfl_ratio[2];
 
@@ -310,6 +330,9 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
 #pragma unroll
     for (std::uint32_t i{0}; i < FETCH_VECTORS; ++i) {
         reinterpret_cast<uint4*>(&tile_coeffs[0][0])[i * QUANT_THREADS + tid] = fetched.coeffs[i];
+    }
+    if (tid < PACKED_ORDER_STATS_VECTORS) {
+        reinterpret_cast<uint4*>(tile_order_stats)[tid] = make_uint4(0, 0, 0, 0);
     }
     TilePosition pos{};
     if (tid < TILE_POSITIONS) {
@@ -411,7 +434,6 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     }
 
     float y_round[QUANT_STEPS][2];
-    std::uint32_t nonzero_mask{0};
 #pragma unroll
     for (std::uint32_t k{0}; k < QUANT_STEPS; ++k) {
         const std::uint32_t p{k * QUANT_WARPS + warp};
@@ -434,7 +456,6 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             y_round[k][j] = div_rn(static_cast<float>(qy_int) * wy.slot[j].weight, qgsf.x, qgsf.y);
             qy[j] = static_cast<std::int16_t>(qy_int);
             nonzero[j] = qy_int != 0;
-            nonzero_mask |= nonzero[j] ? nonzero_bit(1, k, j) : 0u;
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[cplane + blk * BLOCK_SLOTS + 2 * lane]) =
@@ -444,6 +465,8 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         if (lane == 0 && nz != 0) {
             atomicAdd(&tile_nz[1][at_pos.owner], nz);
         }
+        count_lane_nonzeros(tile_order_stats, position_stats_base(at_pos, 1), lane, nonzero[0],
+                            nonzero[1]);
     }
     __syncthreads();
 
@@ -502,8 +525,6 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             qb[j] = static_cast<std::int16_t>(qb_int);
             nonzero_x[j] = qx_int != 0;
             nonzero_b[j] = qb_int != 0;
-            nonzero_mask |= (nonzero_x[j] ? nonzero_bit(0, k, j) : 0u) |
-                            (nonzero_b[j] ? nonzero_bit(2, k, j) : 0u);
         }
         const std::uint32_t blk{(tile_by + p / TILE_SIDE) * bw + tile_bx + p % TILE_SIDE};
         *reinterpret_cast<short2*>(&ac[blk * BLOCK_SLOTS + 2 * lane]) = make_short2(qx[0], qx[1]);
@@ -519,13 +540,13 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
         if (lane == 1 && nz_b != 0) {
             atomicAdd(&tile_nz[2][at_pos.owner], nz_b);
         }
+        count_lane_nonzeros(tile_order_stats, position_stats_base(at_pos, 0), lane, nonzero_x[0],
+                            nonzero_x[1]);
+        count_lane_nonzeros(tile_order_stats, position_stats_base(at_pos, 2), lane, nonzero_b[0],
+                            nonzero_b[1]);
     }
     __syncthreads();
 
-    std::uint32_t* const stats{reinterpret_cast<std::uint32_t*>(&tile_coeffs[0][0])};
-    for (std::uint32_t v{tid}; v < ORDER_STATS_VECTORS; v += QUANT_THREADS) {
-        reinterpret_cast<uint4*>(stats)[v] = make_uint4(0, 0, 0, 0);
-    }
     const bool first_block{tid < TILE_POSITIONS && tid % TILE_SIDE < cols &&
                            tid / TILE_SIDE < rows && pos.owner == tid};
     if (tid < TILE_POSITIONS && tid % TILE_SIDE < cols && tid / TILE_SIDE < rows) {
@@ -539,28 +560,23 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
             nz_grid[c * nblk + blk] = static_cast<std::int32_t>((nz + covered - 1) >> log2_covered);
         }
     }
-    __syncthreads();
-
     if (first_block) {
-        atomicAdd(&stats[offsetof(CoeffOrderStats, blocks) / sizeof(std::uint32_t) +
-                         coeff_order_side_index(pos.side)],
-                  1u);
-    }
-    for (std::uint32_t bits{nonzero_mask}; bits != 0; bits &= bits - 1) {
-        const auto b{static_cast<std::uint32_t>(__ffs(static_cast<int>(bits)) - 1)};
-        const std::uint32_t c{b / (2 * QUANT_STEPS)};
-        const TilePosition at_pos{tile_pos[(b / 2) % QUANT_STEPS * QUANT_WARPS + warp]};
-        atomicAdd(&stats[coeff_order_offset(at_pos.side, static_cast<int>(c)) +
-                         at_pos.covered_ordinal * BLOCK_SLOTS + 2 * lane + b % 2],
-                  1u);
+        count_order_stat(
+            tile_order_stats,
+            static_cast<std::uint32_t>(offsetof(CoeffOrderStats, blocks) / sizeof(std::uint32_t) +
+                                       coeff_order_side_index(pos.side)));
     }
     __syncthreads();
 
+    // The counters past ORDER_STATS_WORDS stay 0.
     auto* const order_stats_words{reinterpret_cast<std::uint32_t*>(order_stats)};
-    for (std::uint32_t w{tid}; w < ORDER_STATS_WORDS; w += QUANT_THREADS) {
-        const std::uint32_t count{stats[w]};
-        if (count != 0) {
-            atomicAdd(&order_stats_words[w], count);
+    for (std::uint32_t w{tid}; w < PACKED_ORDER_STATS_WORDS; w += QUANT_THREADS) {
+        const std::uint32_t packed{tile_order_stats[w]};
+        for (std::uint32_t b{0}; b < 4; ++b) {
+            const std::uint32_t count{(packed >> (b * 8)) & 0xff};
+            if (count != 0) {
+                atomicAdd(&order_stats_words[4 * w + b], count);
+            }
         }
     }
 }
