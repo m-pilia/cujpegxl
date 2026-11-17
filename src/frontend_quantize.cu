@@ -238,12 +238,11 @@ __global__ void __launch_bounds__(QUANT_THREADS, QUANT_BLOCKS_PER_SM)
     const std::uint32_t cols{min(TILE_SIDE, bw - tile_bx)};
     const std::uint32_t rows{min(TILE_SIDE, bh - tile_by)};
 
+    // Indexed as a uint4 array: through __half element addresses, clang splits
+    // each vector into two repacked 8-byte stores.
 #pragma unroll
     for (std::uint32_t i{0}; i < FETCH_VECTORS; ++i) {
-        const std::uint32_t v{i * QUANT_THREADS + tid};
-        const std::uint32_t c{v / (TILE_SIDE * ROW_VECTORS)};
-        const std::uint32_t at{v % (TILE_SIDE * ROW_VECTORS) * HALVES_PER_VECTOR};
-        *reinterpret_cast<uint4*>(&tile_coeffs[c][at]) = fetched.coeffs[i];
+        reinterpret_cast<uint4*>(&tile_coeffs[0][0])[i * QUANT_THREADS + tid] = fetched.coeffs[i];
     }
     TilePosition pos{};
     if (tid < TILE_POSITIONS) {
