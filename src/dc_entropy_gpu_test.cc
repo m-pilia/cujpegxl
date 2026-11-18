@@ -151,6 +151,12 @@ TEST(DcEntropyGpu, MixedGroupGridPartialEdges) {
     check_matches_reference(make_mixed_dc_frame(2560, 2304));
 }
 
+TEST(DcEntropyGpu, MixedPartialStripMatchesReference) {
+    // 2560x296 -> 320x37 blocks: the last statistics strip holds one block row,
+    // and the last color-tile row (5 block rows) spans two strips.
+    check_matches_reference(make_mixed_dc_frame(2560, 296));
+}
+
 TEST(DcEntropyGpu, Deterministic) {
     const FrameCoefficients fc{make_mixed_dc_frame(2560, 256)};
     const DcReference ref{reference_dc_encode(fc)};

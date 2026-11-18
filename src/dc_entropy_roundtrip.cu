@@ -86,9 +86,8 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     std::uint8_t* d_mid{nullptr};
     std::uint32_t* d_mid_off{nullptr};
     std::uint32_t* d_mid_bits{nullptr};
-    std::uint32_t* d_dc_hist{nullptr};
-    std::uint32_t* d_am_hist{nullptr};
-    std::uint8_t* d_fb_scratch{nullptr};
+    std::uint32_t* d_hist{nullptr};
+    std::uint8_t* d_stats_scratch{nullptr};
     std::size_t* d_fb_pos{nullptr};
     std::size_t* d_fbc{nullptr};
     std::uint32_t* d_sizes{nullptr};
@@ -103,9 +102,8 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             upload(blob_pre, &d_pre) && upload(blob_pre_off, &d_pre_off) &&
             upload(blob_pre_bits, &d_pre_bits) && upload(blob_mid, &d_mid) &&
             upload(blob_mid_off, &d_mid_off) && upload(blob_mid_bits, &d_mid_bits) &&
-            cudaMalloc(&d_dc_hist, code_span * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_am_hist, code_span * sizeof(std::uint32_t)) == cudaSuccess &&
-            cudaMalloc(&d_fb_scratch, dc_first_blocks_scratch_bytes(width, height)) ==
+            cudaMalloc(&d_hist, 2 * code_span * sizeof(std::uint32_t)) == cudaSuccess &&
+            cudaMalloc(&d_stats_scratch, dc_group_stats_scratch_bytes(width, height)) ==
                 cudaSuccess &&
             cudaMalloc(&d_fb_pos, num_groups * DC_FIRST_BLOCK_STRIDE * sizeof(std::size_t)) ==
                 cudaSuccess &&
@@ -116,22 +114,18 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             cudaMalloc(&d_out, out_capacity) == cudaSuccess &&
             cudaMemset(d_out, DC_OUT_SENTINEL, out_capacity) == cudaSuccess};
 
-    ok = ok && dc_build_histograms(d_dc, width, height, d_dc_hist, nullptr);
-    ok = ok && acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
-    ok = ok && dc_first_blocks(d_acs, width, height, d_fb_scratch, d_fb_pos, d_fbc, nullptr);
+    ok = ok && dc_group_stats(d_dc, d_qf, d_acs, d_mx, d_mb, width, height, d_stats_scratch, d_hist,
+                              d_fb_pos, d_fbc, nullptr);
     ok = ok && dc_encode_groups(d_dc, width, height, d_qf, d_acs, d_mx, d_mb, d_fb_pos, d_fbc,
                                 d_dc_depth, d_dc_bits, d_am_depth, d_am_bits, d_pre, d_pre_off,
                                 d_pre_bits, d_mid, d_mid_off, d_mid_bits, d_scratch, d_out,
                                 out_capacity, d_sizes, d_offsets, nullptr);
 
     if (ok) {
-        std::vector<std::uint32_t> flat_dc(code_span, 0);
-        std::vector<std::uint32_t> flat_am(code_span, 0);
+        std::vector<std::uint32_t> flat(2 * code_span, 0);
         out.group_sizes.assign(num_groups, 0);
         out.group_offsets.assign(num_groups, 0);
-        ok = cudaMemcpy(flat_dc.data(), d_dc_hist, code_span * sizeof(std::uint32_t),
-                        cudaMemcpyDeviceToHost) == cudaSuccess &&
-             cudaMemcpy(flat_am.data(), d_am_hist, code_span * sizeof(std::uint32_t),
+        ok = cudaMemcpy(flat.data(), d_hist, flat.size() * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
              cudaMemcpy(out.group_sizes.data(), d_sizes, num_groups * sizeof(std::uint32_t),
                         cudaMemcpyDeviceToHost) == cudaSuccess &&
@@ -148,10 +142,11 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
             out.histograms.assign(num_groups, {});
             out.acmeta_histograms.assign(num_groups, {});
             for (std::size_t g{0}; g < num_groups; ++g) {
-                out.histograms[g].assign(flat_dc.begin() + g * AC_HISTOGRAM_SIZE,
-                                         flat_dc.begin() + (g + 1) * AC_HISTOGRAM_SIZE);
-                out.acmeta_histograms[g].assign(flat_am.begin() + g * AC_HISTOGRAM_SIZE,
-                                                flat_am.begin() + (g + 1) * AC_HISTOGRAM_SIZE);
+                out.histograms[g].assign(flat.begin() + g * AC_HISTOGRAM_SIZE,
+                                         flat.begin() + (g + 1) * AC_HISTOGRAM_SIZE);
+                out.acmeta_histograms[g].assign(
+                    flat.begin() + (num_groups + g) * AC_HISTOGRAM_SIZE,
+                    flat.begin() + (num_groups + g + 1) * AC_HISTOGRAM_SIZE);
             }
         }
     }
@@ -171,9 +166,8 @@ bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std
     cudaFree(d_mid);
     cudaFree(d_mid_off);
     cudaFree(d_mid_bits);
-    cudaFree(d_dc_hist);
-    cudaFree(d_am_hist);
-    cudaFree(d_fb_scratch);
+    cudaFree(d_hist);
+    cudaFree(d_stats_scratch);
     cudaFree(d_fb_pos);
     cudaFree(d_fbc);
     cudaFree(d_sizes);

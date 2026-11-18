@@ -138,10 +138,11 @@ __device__ std::uint32_t ac_predicted_nzeros_dev(const std::int32_t* nz_grid, in
 }
 
 // The first-block lists are compacted one block row at a time: a thread block
-// per (block row, DcGroup column) with one thread per row position. A first
-// pass stores each row's count. The second pass places a position at the counts
-// of its group's earlier rows, plus the counts of the earlier warps in its row,
-// plus its ballot rank, which reproduces the group raster order.
+// per (block row, DcGroup column) with one thread per row position.
+// dc_group_stats_kernel stores each row's count; the scatter places a position
+// at the counts of its group's earlier rows, plus the counts of the earlier
+// warps in its row, plus its ballot rank, which reproduces the group raster
+// order.
 constexpr unsigned int FIRST_BLOCK_THREADS = static_cast<unsigned int>(DC_GROUP_BLOCKS);
 constexpr unsigned int FIRST_BLOCK_WARPS = FIRST_BLOCK_THREADS / 32;
 
@@ -163,15 +164,6 @@ __device__ FirstBlockSlot first_block_slot(const std::int8_t* acs, std::size_t b
     s.block = by * bw + bx;
     s.flag = bx < bw && (acs == nullptr || acs[s.block] != ACS_COVERED);
     return s;
-}
-
-__global__ void first_block_row_count_kernel(const std::int8_t* acs, std::size_t bw,
-                                             std::size_t xdg, std::uint32_t* row_counts) {
-    const FirstBlockSlot s{first_block_slot(acs, bw, xdg)};
-    const int count{__syncthreads_count(s.flag)};
-    if (threadIdx.x == 0) {
-        row_counts[s.g * DC_GROUP_BLOCKS + s.row] = static_cast<std::uint32_t>(count);
-    }
 }
 
 __global__ void first_block_scatter_kernel(const std::int8_t* acs, std::size_t bw, std::size_t bh,
@@ -529,53 +521,24 @@ __device__ unsigned long long block_scan_exclusive(unsigned long long val,
     return below + inclusive - val;
 }
 
-// The DC and AcMetadata histograms are launched over (strip, DcGroup column),
-// with a strip of a few block rows and one thread per row position, so every
-// thread block counts into a single group's shared histogram and flushes it with
-// one global atomic per non-zero bin. An AcMetadata strip is one 64x64
-// color-tile row, so the CfL tiles of a strip are those of its thread block.
-constexpr unsigned int GROUP_HIST_THREADS = static_cast<unsigned int>(DC_GROUP_BLOCKS);
-constexpr std::size_t DC_HIST_ROWS = 4;
-constexpr std::size_t ACMETA_HIST_ROWS = 8;
-constexpr std::size_t COLOR_TILES_PER_DC_GROUP = DC_GROUP_BLOCKS / ACMETA_HIST_ROWS;
-static_assert(DC_GROUP_BLOCKS % DC_HIST_ROWS == 0 && DC_GROUP_BLOCKS % ACMETA_HIST_ROWS == 0);
-
-struct GroupHistStrip {
-    std::size_t g;
-    std::size_t bx;
-    std::size_t bx0;
-    std::size_t by0;
-    std::size_t row_lo;
-    std::size_t row_hi;
-};
-
-__device__ GroupHistStrip group_hist_strip(std::size_t rows, std::size_t bw, std::size_t bh,
-                                           std::size_t xdg) {
-    GroupHistStrip s{};
-    s.row_lo = blockIdx.x * rows;
-    s.row_hi = min(s.row_lo + rows, bh);
-    s.by0 = (s.row_lo / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS;
-    s.bx0 = blockIdx.y * DC_GROUP_BLOCKS;
-    s.bx = s.bx0 + threadIdx.x;
-    s.g = (s.row_lo / DC_GROUP_BLOCKS) * xdg + blockIdx.y;
-    return s;
-}
-
-__device__ void clear_group_histogram(unsigned int* sh) {
-    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
-        sh[i] = 0;
-    }
-    __syncthreads();
-}
-
-__device__ void flush_group_histogram(const unsigned int* sh, std::uint32_t* histogram) {
-    __syncthreads();
-    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
-        if (sh[i] != 0) {
-            atomicAdd(&histogram[i], sh[i]);
-        }
-    }
-}
+// The DC and AcMetadata statistics are gathered over (strip, DcGroup column),
+// with a strip of a few block rows, so every thread block counts into a single
+// group's two shared histograms and flushes them with one global atomic per
+// non-zero bin. A 64x64 color-tile row spans several strips; its first strip
+// counts the row's CfL tiles of its thread block. Each thread covers a few row
+// positions, so that a block fits in the registers left free by an sm_87
+// histogram_kernel block (8192 per SM), which the DC stream runs beside.
+constexpr unsigned int GROUP_STATS_POSITIONS = 2;
+constexpr unsigned int GROUP_STATS_THREADS =
+    static_cast<unsigned int>(DC_GROUP_BLOCKS) / GROUP_STATS_POSITIONS;
+constexpr std::size_t GROUP_STATS_ROWS = 4;
+constexpr std::size_t COLOR_TILE_BLOCKS = 8;
+constexpr std::size_t STRIPS_PER_COLOR_TILE = COLOR_TILE_BLOCKS / GROUP_STATS_ROWS;
+constexpr std::size_t COLOR_TILES_PER_DC_GROUP = DC_GROUP_BLOCKS / COLOR_TILE_BLOCKS;
+static_assert(COLOR_TILE_BLOCKS % GROUP_STATS_ROWS == 0 &&
+              DC_GROUP_BLOCKS % COLOR_TILE_BLOCKS == 0 &&
+              DC_GROUP_BLOCKS % GROUP_STATS_POSITIONS == 0 &&
+              COLOR_TILES_PER_DC_GROUP <= GROUP_STATS_THREADS);
 
 __device__ void count_signed_token(std::int32_t value, unsigned int* sh) {
     std::uint32_t symbol{}, nbits{}, bits{};
@@ -583,57 +546,73 @@ __device__ void count_signed_token(std::int32_t value, unsigned int* sh) {
     atomicAdd(&sh[symbol], 1u);
 }
 
-__global__ void dc_histogram_kernel(const std::int32_t* dc_buf, std::size_t bw, std::size_t bh,
-                                    std::size_t nblocks, std::size_t xdg,
-                                    std::uint32_t* histograms) {
-    __shared__ unsigned int sh[AC_HISTOGRAM_SIZE];
-    clear_group_histogram(sh);
-    const GroupHistStrip s{group_hist_strip(DC_HIST_ROWS, bw, bh, xdg)};
-    if (s.bx < bw) {
-        for (std::size_t by{s.row_lo}; by < s.row_hi; ++by) {
-            for (int c{0}; c < 3; ++c) {
-                const std::int32_t dc{
-                    dc_buf[static_cast<std::size_t>(c) * nblocks + by * bw + s.bx]};
-                count_signed_token(
-                    dc - dc_group_gradient(dc_buf, c, nblocks, bw, s.bx, by, s.bx0, s.by0), sh);
-            }
+__device__ void flush_group_histogram(const unsigned int* sh, std::uint32_t* histogram) {
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        if (sh[i] != 0) {
+            atomicAdd(&histogram[i], sh[i]);
         }
     }
-    flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
 }
 
-// Counts the strip's AcMetadata samples outside the EPF channel: each
+// Counts the strip's DC tokens into the DC histogram, and its AcMetadata
+// samples outside the EPF channel into the AcMetadata histogram: each
 // first-block's ACS strategy token (row 0) and quant-field token (row 1), and
 // each color tile's YtoX and YtoB tokens (null maps are the base correlation,
-// symbol 0).
-__global__ void acmeta_histogram_kernel(const std::int32_t* quant_field, const std::int8_t* acs,
-                                        const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                                        std::size_t bw, std::size_t bh, std::size_t cmw,
-                                        std::size_t xdg, std::uint32_t* histograms) {
-    __shared__ unsigned int sh[AC_HISTOGRAM_SIZE];
-    clear_group_histogram(sh);
-    const GroupHistStrip s{group_hist_strip(ACMETA_HIST_ROWS, bw, bh, xdg)};
-    if (s.bx < bw) {
-        for (std::size_t by{s.row_lo}; by < s.row_hi; ++by) {
-            const std::size_t block{by * bw + s.bx};
-            const int side{acs == nullptr ? 8 : acs[block]};
-            if (side != ACS_COVERED) {
-                count_signed_token(raw_strategy_dev(side), sh);
-                count_signed_token(quant_field[block] - 1, sh);
+// symbol 0). Also stores each block row's first-block count for
+// first_block_scatter_kernel.
+__global__ void dc_group_stats_kernel(const std::int32_t* dc_buf, const std::int32_t* quant_field,
+                                      const std::int8_t* acs, const std::int8_t* ytox_map,
+                                      const std::int8_t* ytob_map, std::size_t bw, std::size_t bh,
+                                      std::size_t cmw, std::size_t xdg, std::size_t num_groups,
+                                      std::uint32_t* histograms, std::uint32_t* row_counts) {
+    __shared__ unsigned int dc_sh[AC_HISTOGRAM_SIZE];
+    __shared__ unsigned int am_sh[AC_HISTOGRAM_SIZE];
+    for (unsigned int i{threadIdx.x}; i < AC_HISTOGRAM_SIZE; i += blockDim.x) {
+        dc_sh[i] = 0;
+        am_sh[i] = 0;
+    }
+    __syncthreads();
+    const std::size_t row_lo{blockIdx.x * GROUP_STATS_ROWS};
+    const std::size_t row_hi{min(row_lo + GROUP_STATS_ROWS, bh)};
+    const std::size_t by0{(row_lo / DC_GROUP_BLOCKS) * DC_GROUP_BLOCKS};
+    const std::size_t bx0{blockIdx.y * DC_GROUP_BLOCKS};
+    const std::size_t g{(row_lo / DC_GROUP_BLOCKS) * xdg + blockIdx.y};
+    const std::size_t nblocks{bw * bh};
+    for (std::size_t by{row_lo}; by < row_hi; ++by) {
+        int count{0};
+        for (unsigned int p{0}; p < GROUP_STATS_POSITIONS; ++p) {
+            const std::size_t bx{bx0 + p * GROUP_STATS_THREADS + threadIdx.x};
+            const std::size_t block{by * bw + bx};
+            bool first_block{false};
+            if (bx < bw) {
+                for (int c{0}; c < 3; ++c) {
+                    const std::int32_t dc{dc_buf[static_cast<std::size_t>(c) * nblocks + block]};
+                    count_signed_token(
+                        dc - dc_group_gradient(dc_buf, c, nblocks, bw, bx, by, bx0, by0), dc_sh);
+                }
+                const int side{acs == nullptr ? 8 : acs[block]};
+                first_block = side != ACS_COVERED;
+                if (first_block) {
+                    count_signed_token(raw_strategy_dev(side), am_sh);
+                    count_signed_token(quant_field[block] - 1, am_sh);
+                }
             }
+            count += __syncthreads_count(first_block);
+        }
+        if (threadIdx.x == 0) {
+            row_counts[g * DC_GROUP_BLOCKS + (by - by0)] = static_cast<std::uint32_t>(count);
         }
     }
     const std::size_t ctx{blockIdx.y * COLOR_TILES_PER_DC_GROUP + threadIdx.x};
-    if (threadIdx.x < COLOR_TILES_PER_DC_GROUP && ctx < cmw) {
-        const std::size_t tile{blockIdx.x * cmw + ctx};
-        count_signed_token(ytox_map == nullptr ? 0 : ytox_map[tile], sh);
-        count_signed_token(ytob_map == nullptr ? 0 : ytob_map[tile], sh);
+    if (blockIdx.x % STRIPS_PER_COLOR_TILE == 0 && threadIdx.x < COLOR_TILES_PER_DC_GROUP &&
+        ctx < cmw) {
+        const std::size_t tile{(blockIdx.x / STRIPS_PER_COLOR_TILE) * cmw + ctx};
+        count_signed_token(ytox_map == nullptr ? 0 : ytox_map[tile], am_sh);
+        count_signed_token(ytob_map == nullptr ? 0 : ytob_map[tile], am_sh);
     }
-    flush_group_histogram(sh, histograms + s.g * AC_HISTOGRAM_SIZE);
-}
-
-dim3 group_hist_grid(std::size_t rows, std::size_t bh, std::size_t xdg) {
-    return dim3{static_cast<unsigned int>((bh + rows - 1) / rows), static_cast<unsigned int>(xdg)};
+    __syncthreads();
+    flush_group_histogram(dc_sh, histograms + g * AC_HISTOGRAM_SIZE);
+    flush_group_histogram(am_sh, histograms + (num_groups + g) * AC_HISTOGRAM_SIZE);
 }
 
 // Item range [k_lo, k_hi) of group `c` owned by chunk `cb`.
@@ -1945,59 +1924,34 @@ std::size_t dc_encode_scratch_bytes(std::size_t width, std::size_t height) {
            chunks * DC_EMIT_THREADS * sizeof(std::uint32_t);
 }
 
-std::size_t dc_first_blocks_scratch_bytes(std::size_t width, std::size_t height) {
+std::size_t dc_group_stats_scratch_bytes(std::size_t width, std::size_t height) {
     return dc_num_groups(width, height) * DC_GROUP_BLOCKS * sizeof(std::uint32_t);
 }
 
-bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::uint8_t* scratch, std::size_t* positions, std::size_t* counts,
-                     cudaStream_t stream) {
+bool dc_group_stats(const std::int32_t* dc, const std::int32_t* quant_field, const std::int8_t* acs,
+                    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t width,
+                    std::size_t height, std::uint8_t* scratch, std::uint32_t* histograms,
+                    std::size_t* first_block_pos, std::size_t* first_block_counts,
+                    cudaStream_t stream) {
+    ensure_constants();
     const std::size_t bw{width / 8};
     const std::size_t bh{height / 8};
     const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
+    const std::size_t cmw{(bw + COLOR_TILE_BLOCKS - 1) / COLOR_TILE_BLOCKS};
+    const std::size_t num_groups{dc_num_groups(width, height)};
     auto* const row_counts{reinterpret_cast<std::uint32_t*>(scratch)};
-    const dim3 grid{static_cast<unsigned int>(bh), static_cast<unsigned int>(xdg)};
-    first_block_row_count_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(acs, bw, xdg,
-                                                                           row_counts);
-    first_block_scatter_kernel<<<grid, FIRST_BLOCK_THREADS, 0, stream>>>(
-        acs, bw, bh, xdg, row_counts, positions, counts);
-    return cudaGetLastError() == cudaSuccess;
-}
-
-bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
-                         std::uint32_t* histograms, cudaStream_t stream) {
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t nblocks{bw * bh};
-    const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
-    const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
+    if (cudaMemsetAsync(histograms, 0, 2 * num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
                         stream) != cudaSuccess) {
         return false;
     }
-    dc_histogram_kernel<<<group_hist_grid(DC_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS, 0, stream>>>(
-        dc, bw, bh, nblocks, xdg, histograms);
-    return cudaGetLastError() == cudaSuccess;
-}
-
-bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
-                             const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                             std::size_t width, std::size_t height, std::uint32_t* histograms,
-                             cudaStream_t stream) {
-    ensure_constants();
-    const std::size_t bw{width / 8};
-    const std::size_t bh{height / 8};
-    const std::size_t xdg{(bw + DC_GROUP_BLOCKS - 1) / DC_GROUP_BLOCKS};
-    const std::size_t cmw{(bw + 7) / 8};
-    const std::size_t num_groups{dc_num_groups(width, height)};
-    if (cudaMemsetAsync(histograms, 0, num_groups * AC_HISTOGRAM_SIZE * sizeof(std::uint32_t),
-                        stream) != cudaSuccess) {
-        return false;
-    }
-    acmeta_histogram_kernel<<<group_hist_grid(ACMETA_HIST_ROWS, bh, xdg), GROUP_HIST_THREADS, 0,
-                              stream>>>(quant_field, acs, ytox_map, ytob_map, bw, bh, cmw, xdg,
-                                        histograms);
+    const dim3 stats_grid{static_cast<unsigned int>((bh + GROUP_STATS_ROWS - 1) / GROUP_STATS_ROWS),
+                          static_cast<unsigned int>(xdg)};
+    dc_group_stats_kernel<<<stats_grid, GROUP_STATS_THREADS, 0, stream>>>(
+        dc, quant_field, acs, ytox_map, ytob_map, bw, bh, cmw, xdg, num_groups, histograms,
+        row_counts);
+    const dim3 row_grid{static_cast<unsigned int>(bh), static_cast<unsigned int>(xdg)};
+    first_block_scatter_kernel<<<row_grid, FIRST_BLOCK_THREADS, 0, stream>>>(
+        acs, bw, bh, xdg, row_counts, first_block_pos, first_block_counts);
     return cudaGetLastError() == cudaSuccess;
 }
 

@@ -121,47 +121,42 @@ bool ac_pack_tokens(const std::int8_t* acs, const std::uint32_t* token_records, 
 // image, including partial edge groups. width/height must be multiples of 8.
 std::size_t dc_num_groups(std::size_t width, std::size_t height);
 
-// Per-group slot stride of the dc_first_blocks position lists.
+// Per-group slot stride of the dc_group_stats first-block position lists.
 constexpr std::size_t DC_FIRST_BLOCK_STRIDE = DC_GROUP_BLOCKS * DC_GROUP_BLOCKS;
 
-// Per-DcGroup first-blocks (blocks whose transform is not ACS_COVERED). `acs` is
-// the per-8x8 transform signal (nullptr = all 8x8, so every block is one).
-// `positions` (device, dc_num_groups * DC_FIRST_BLOCK_STRIDE std::size_t)
+// Per-DcGroup statistics that the DcGroup prefix codes and sections are built
+// from. All pointers are device pointers.
+//
+// `histograms` (2 * dc_num_groups * AC_HISTOGRAM_SIZE uint32, zeroed by the
+// call) receives first each group's DC symbol histogram, pooled over the 3 DC
+// channels (physical order Y, X, B) at block resolution, then each group's
+// AcMetadata token histogram, pooled over the samples of its YtoX, YtoB and
+// ACS+QF channels: the per-tile CfL tokens, the per-first-block ACS strategy
+// tokens (row 0) and quant-field tokens (row 1). The all-zero EPF channel has a
+// leaf of its own in the AcMetadata MA tree and is not counted.
+//
+// First-blocks are the blocks whose transform is not ACS_COVERED.
+// `first_block_pos` (dc_num_groups * DC_FIRST_BLOCK_STRIDE std::size_t)
 // receives group g's first-block indices in group raster order from
-// g * DC_FIRST_BLOCK_STRIDE, and `counts` (device, dc_num_groups std::size_t)
-// their number, which is the AcMetadata `count` field. dc_encode_groups maps an
-// ACS/QF column (a first-block ordinal) back to its block through these lists.
-// `scratch` (device) holds dc_first_blocks_scratch_bytes(width, height) bytes.
-// Deterministic. Returns false on a CUDA error.
-bool dc_first_blocks(const std::int8_t* acs, std::size_t width, std::size_t height,
-                     std::uint8_t* scratch, std::size_t* positions, std::size_t* counts,
-                     cudaStream_t stream);
+// g * DC_FIRST_BLOCK_STRIDE, and `first_block_counts` (dc_num_groups
+// std::size_t) their number, which is the AcMetadata `count` field.
+// dc_encode_groups maps an ACS/QF column (a first-block ordinal) back to its
+// block through these lists.
+//
+// `dc` is the compact int32 DC buffer (three channel-major planes X, Y, B; one
+// DC per block; blocks in raster order), `quant_field` the per-block quant
+// integer buffer (bw*bh, block raster order), `acs` the per-8x8 transform signal
+// (nullptr = all DCT8, so every block is a first-block), `ytox_map`/`ytob_map`
+// the per-64x64-tile CfL factors (nullptr = base). `scratch` holds
+// dc_group_stats_scratch_bytes(width, height) bytes. Deterministic (integer
+// atomics). Returns false on a CUDA error.
+bool dc_group_stats(const std::int32_t* dc, const std::int32_t* quant_field, const std::int8_t* acs,
+                    const std::int8_t* ytox_map, const std::int8_t* ytob_map, std::size_t width,
+                    std::size_t height, std::uint8_t* scratch, std::uint32_t* histograms,
+                    std::size_t* first_block_pos, std::size_t* first_block_counts,
+                    cudaStream_t stream);
 
-std::size_t dc_first_blocks_scratch_bytes(std::size_t width, std::size_t height);
-
-// Per-DcGroup DC symbol histogram, pooled over the 3 DC channels (physical order
-// Y, X, B) of that group at block resolution. `dc` is the compact int32 DC buffer
-// (device; three channel-major planes X, Y, B; one DC per block; blocks in raster
-// order). `histograms` is a device buffer of dc_num_groups * AC_HISTOGRAM_SIZE
-// uint32 (zeroed by the call). Deterministic (integer atomics). Returns false on
-// a CUDA error.
-bool dc_build_histograms(const std::int32_t* dc, std::size_t width, std::size_t height,
-                         std::uint32_t* histograms, cudaStream_t stream);
-
-// Per-DcGroup AcMetadata token histogram, pooled over the samples of that
-// group's YtoX, YtoB and ACS+QF channels: the per-tile CfL tokens, the
-// per-first-block ACS strategy tokens (row 0) and quant-field tokens (row 1).
-// The all-zero EPF channel has a leaf of its own in the AcMetadata MA tree and
-// is not counted. `quant_field` is the per-block quant integer buffer (device;
-// bw*bh, block raster order), `acs` the per-8x8 transform signal (nullptr = all
-// DCT8), `ytox_map`/`ytob_map` the per-64x64-tile CfL factors (nullptr = base).
-// `histograms` is a device buffer of dc_num_groups * AC_HISTOGRAM_SIZE uint32
-// (zeroed by the call). Deterministic (integer atomics). Returns false on a CUDA
-// error.
-bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t* acs,
-                             const std::int8_t* ytox_map, const std::int8_t* ytob_map,
-                             std::size_t width, std::size_t height, std::uint32_t* histograms,
-                             cudaStream_t stream);
+std::size_t dc_group_stats_scratch_bytes(std::size_t width, std::size_t height);
 
 // Emit each DcGroup's byte-aligned section (extra_precision + VarDCTDC modular +
 // AcMetadata count + AcMetadata modular) concatenated into `out`, mirroring the
@@ -177,7 +172,7 @@ bool acmeta_build_histograms(const std::int32_t* quant_field, const std::int8_t*
 //
 // `quant_field` is the per-block quant integer buffer (device; bw*bh, block
 // raster order); its value at each block is written as the block's ACS+QF row-1
-// sample. `first_block_pos` / `first_block_counts` are the dc_first_blocks
+// sample. `first_block_pos` / `first_block_counts` are the dc_group_stats
 // output for `acs`. Flattened per-group inputs (num_groups == dc_num_groups): `dc_depth` /
 // `acmeta_depth` are num_groups * AC_HISTOGRAM_SIZE uint8, `dc_bits` /
 // `acmeta_bits` likewise uint16. `blob_pre` / `blob_mid` are concatenated bytes

@@ -194,9 +194,8 @@ struct FrameBuffers {
     std::uint16_t* entries{nullptr};
     std::uint64_t* raw{nullptr};
     std::uint32_t* ac_counters{nullptr};
-    std::uint32_t* dc_hist{nullptr};
-    std::uint32_t* am_hist{nullptr};
-    std::uint8_t* fb_scratch{nullptr};
+    std::uint32_t* dc_group_hist{nullptr};
+    std::uint8_t* dc_stats_scratch{nullptr};
     std::size_t* fb_pos{nullptr};
     std::size_t* fbc{nullptr};
     std::uint8_t* dc_depth{nullptr};
@@ -248,9 +247,8 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .entries = carver.take<std::uint16_t>(ac_max_tokens(width, height)),
         .raw = carver.take<std::uint64_t>(ac_max_raw_words(width, height)),
         .ac_counters = carver.take<std::uint32_t>(ac_counter_words(width, height)),
-        .dc_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
-        .am_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
-        .fb_scratch = carver.take<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height)),
+        .dc_group_hist = carver.take<std::uint32_t>(2 * num_dc * AC_HISTOGRAM_SIZE),
+        .dc_stats_scratch = carver.take<std::uint8_t>(dc_group_stats_scratch_bytes(width, height)),
         .fb_pos = carver.take<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE),
         .fbc = carver.take<std::size_t>(num_dc),
         .dc_depth = carver.take<std::uint8_t>(codes),
@@ -570,13 +568,12 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
     // stream alongside the AC path.
     if (cudaEventRecord(slot.forked, slot.stream) != cudaSuccess ||
         cudaStreamWaitEvent(slot.dc_stream, slot.forked, 0) != cudaSuccess ||
-        !dc_build_histograms(d.dc, width, height, d.dc_hist, slot.dc_stream) ||
-        !acmeta_build_histograms(d.quant_field, d.acs, d.ytox_map, d.ytob_map, width, height,
-                                 d.am_hist, slot.dc_stream) ||
-        !dc_first_blocks(d.acs, width, height, d.fb_scratch, d.fb_pos, d.fbc, slot.dc_stream) ||
-        !build_dc_group_blobs_device(width, height, d.dc_hist, d.am_hist, d.fbc, d.dc_depth,
-                                     d.dc_bits, d.am_depth, d.am_bits, d.pre, d.pre_off, d.pre_bits,
-                                     d.mid, d.mid_off, d.mid_bits, slot.dc_stream) ||
+        !dc_group_stats(d.dc, d.quant_field, d.acs, d.ytox_map, d.ytob_map, width, height,
+                        d.dc_stats_scratch, d.dc_group_hist, d.fb_pos, d.fbc, slot.dc_stream) ||
+        !build_dc_group_blobs_device(width, height, d.dc_group_hist,
+                                     d.dc_group_hist + num_dc * AC_HISTOGRAM_SIZE, d.fbc,
+                                     d.dc_depth, d.dc_bits, d.am_depth, d.am_bits, d.pre, d.pre_off,
+                                     d.pre_bits, d.mid, d.mid_off, d.mid_bits, slot.dc_stream) ||
         !dc_encode_groups(d.dc, width, height, d.quant_field, d.acs, d.ytox_map, d.ytob_map,
                           d.fb_pos, d.fbc, d.dc_depth, d.dc_bits, d.am_depth, d.am_bits, d.pre,
                           d.pre_off, d.pre_bits, d.mid, d.mid_off, d.mid_bits, d.dc_scratch,

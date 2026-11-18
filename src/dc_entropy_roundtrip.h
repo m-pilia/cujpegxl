@@ -14,10 +14,9 @@ namespace cujpegxl {
 
 // Test-only host-vector wrapper around the device DcGroup kernels: flattens the
 // per-group prefix codes and header blobs from a host DcReference, uploads the
-// quantized coefficients, runs dc_build_histograms, dc_first_blocks and
-// dc_encode_groups, and downloads the per-group DC histograms and the
-// concatenated byte-aligned sections. Used by the GPU conformance test to diff
-// against the oracle.
+// quantized coefficients, runs dc_group_stats and dc_encode_groups, and
+// downloads the per-group DC histograms and the concatenated byte-aligned
+// sections. Used by the GPU conformance test to diff against the oracle.
 struct DcDeviceResult {
     std::vector<std::vector<std::uint32_t>> histograms{};         // per group DC, trimmed
     std::vector<std::vector<std::uint32_t>> acmeta_histograms{};  // per group AcMetadata
@@ -30,10 +29,9 @@ constexpr std::uint8_t DC_OUT_SENTINEL = 0xA5;
 
 // `dc` is the compact per-block DC (3*blocks, channel-major X, Y, B),
 // `acs`/`ytox_map`/`ytob_map` the transform + CfL signals, `quant_field` the
-// per-block quant field. Runs dc_build_histograms, acmeta_build_histograms,
-// dc_first_blocks and dc_encode_groups. The device output buffer of
-// `out_capacity` bytes starts filled with DC_OUT_SENTINEL; when the sections
-// exceed it, `stream` receives the whole buffer instead.
+// per-block quant field. Runs dc_group_stats and dc_encode_groups. The device
+// output buffer of `out_capacity` bytes starts filled with DC_OUT_SENTINEL;
+// when the sections exceed it, `stream` receives the whole buffer instead.
 bool dc_encode_device(const std::vector<std::int32_t>& dc, const std::vector<std::int8_t>& acs,
                       const std::vector<std::int8_t>& ytox_map,
                       const std::vector<std::int8_t>& ytob_map,

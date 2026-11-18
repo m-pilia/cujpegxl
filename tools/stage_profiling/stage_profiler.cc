@@ -195,11 +195,11 @@ int main(int argc, char** argv) {
         device_alloc<std::uint32_t>(AC_NUM_CONTEXTS * AC_CONTEXT_ALPHABET)};
     std::uint8_t* d_cluster_scratch{device_alloc<std::uint8_t>(ac_cluster_scratch_bytes())};
     AcClustering* d_clustering{device_alloc<AcClustering>(1)};
-    std::uint32_t* d_dc_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
-    std::uint32_t* d_am_hist{device_alloc<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE)};
+    std::uint32_t* d_dc_hist{device_alloc<std::uint32_t>(2 * num_dc * AC_HISTOGRAM_SIZE)};
+    std::uint32_t* d_am_hist{d_dc_hist + num_dc * AC_HISTOGRAM_SIZE};
 
-    std::uint8_t* d_fb_scratch{
-        device_alloc<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height))};
+    std::uint8_t* d_stats_scratch{
+        device_alloc<std::uint8_t>(dc_group_stats_scratch_bytes(width, height))};
     std::size_t* d_fb_pos{device_alloc<std::size_t>(num_dc * DC_FIRST_BLOCK_STRIDE)};
     std::size_t* d_fbc{device_alloc<std::size_t>(num_dc)};
 
@@ -251,9 +251,7 @@ int main(int argc, char** argv) {
     Stage s_acc_cluster{"ac_cluster_contexts"};
     Stage s_acp{"ac_pack_tokens"};
     Stage s_act{"AC tokens D2H"};
-    Stage s_dch{"dc_build_histograms"};
-    Stage s_amh{"acmeta_build_histograms"};
-    Stage s_fbc{"dc_first_blocks"};
+    Stage s_dcs{"dc_group_stats"};
     Stage s_dcb{"build_dc_group_blobs_device"};
     Stage s_dcg{"build_dc_global (CPU)"};
     Stage s_dce{"dc_encode_groups"};
@@ -319,13 +317,9 @@ int main(int argc, char** argv) {
             cudaMemcpy(h_raw, d_raw, raw_offset[num_ac] * sizeof(std::uint64_t),
                        cudaMemcpyDeviceToHost);
         });
-        timed(s_dch, record,
-              [&] { dc_build_histograms(d_dc32, width, height, d_dc_hist, nullptr); });
-        timed(s_amh, record, [&] {
-            acmeta_build_histograms(d_qf, d_acs, d_mx, d_mb, width, height, d_am_hist, nullptr);
-        });
-        timed(s_fbc, record, [&] {
-            dc_first_blocks(d_acs, width, height, d_fb_scratch, d_fb_pos, d_fbc, nullptr);
+        timed(s_dcs, record, [&] {
+            dc_group_stats(d_dc32, d_qf, d_acs, d_mx, d_mb, width, height, d_stats_scratch,
+                           d_dc_hist, d_fb_pos, d_fbc, nullptr);
         });
         timed(s_dcb, record, [&] {
             build_dc_group_blobs_device(width, height, d_dc_hist, d_am_hist, d_fbc, d_dc_depth,
@@ -432,9 +426,8 @@ int main(int argc, char** argv) {
         });
     }
 
-    const Stage* stages[]{&s_fe,  &s_qz,  &s_aco, &s_ach, &s_acl, &s_acc_cluster,
-                          &s_acp, &s_act, &s_dch, &s_amh, &s_fbc, &s_dcb,
-                          &s_dcg, &s_dce, &s_dct, &s_acg, &s_acc, &s_asm};
+    const Stage* stages[]{&s_fe,  &s_qz,  &s_aco, &s_ach, &s_acl, &s_acc_cluster, &s_acp, &s_act,
+                          &s_dcs, &s_dcb, &s_dcg, &s_dce, &s_dct, &s_acg,         &s_acc, &s_asm};
     std::printf("\nper-substage mean over %d iters (us):\n", args.iterations);
     double sum{0.0};
     for (const Stage* stage : stages) {
