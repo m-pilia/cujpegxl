@@ -113,7 +113,7 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     std::uint32_t* d_layout{nullptr};
     std::uint16_t* d_entries{nullptr};
     std::uint64_t* d_raw{nullptr};
-    std::uint32_t* d_chunk_counter{nullptr};
+    std::uint32_t* d_counters{nullptr};
 
     bool ok{upload(ac, &d_ac) && upload(acs, &d_acs) &&
             cudaMalloc(&d_stats, sizeof(CoeffOrderStats)) == cudaSuccess &&
@@ -139,16 +139,17 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
                 cudaSuccess &&
             cudaMemset(d_raw, 0xA5, ac_max_raw_words(width, height) * sizeof(std::uint64_t)) ==
                 cudaSuccess &&
-            cudaMalloc(&d_chunk_counter, sizeof(std::uint32_t)) == cudaSuccess};
+            cudaMalloc(&d_counters, ac_counter_words(width, height) * sizeof(std::uint32_t)) ==
+                cudaSuccess};
 
     ok = ok && ac_coeff_orders(d_stats, d_orders, nullptr);
     std::int32_t device{0};
     ok = ok && cudaGetDevice(&device) == cudaSuccess;
     ok = ok && ac_build_histogram(d_ac, d_acs, d_nz_grid, d_nz_exact, d_orders, width, height,
-                                  d_hist, d_item_sizes, d_token_records, d_chunk_counter,
+                                  d_hist, d_item_sizes, d_token_records, d_counters,
                                   query_device_support(device).arch, nullptr);
-    ok = ok && ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_chunk_base,
-                               d_layout, nullptr);
+    ok = ok && ac_token_layout(d_item_sizes, width, height, d_layout_scratch, d_counters,
+                               d_chunk_base, d_layout, d_raw, nullptr);
     ok = ok && ac_cluster_contexts(d_hist, d_cluster_scratch, d_clustering, nullptr);
     for (std::size_t b{0}; ok && b < batches; ++b) {
         const std::size_t begin{b * num_groups / batches};
@@ -156,7 +157,7 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
         ok = begin == end ||
              ac_pack_tokens(d_acs, d_token_records, width, height, d_clustering->context_map,
                             d_item_sizes, d_chunk_base, d_layout, begin, end, d_entries, d_raw,
-                            d_chunk_counter, nullptr);
+                            d_counters, nullptr);
     }
     ok = ok &&
          cudaMemcpy(&out.orders, d_orders, sizeof(CoeffOrders), cudaMemcpyDeviceToHost) ==
@@ -184,7 +185,7 @@ bool ac_tokens_device(const std::vector<std::int32_t>& q, const std::vector<std:
     cudaFree(d_layout);
     cudaFree(d_entries);
     cudaFree(d_raw);
-    cudaFree(d_chunk_counter);
+    cudaFree(d_counters);
     return ok;
 }
 

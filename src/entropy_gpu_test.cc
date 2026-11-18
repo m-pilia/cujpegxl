@@ -208,6 +208,11 @@ TEST(EntropyGpu, PartialGroupsMatchReference) {
     check_matches_reference(fc, 3);
 }
 
+// 9 x 5 groups, more than the 32 groups a layout look-back step covers.
+TEST(EntropyGpu, ManyGroupsMatchReference) {
+    check_matches_reference(make_mixed_frame(2304, 1280), 4);
+}
+
 TEST(EntropyGpu, Deterministic) {
     const FrameCoefficients fc{make_mixed_frame(512, 384)};
     const std::vector<std::int32_t> q{flatten_ac(fc)};

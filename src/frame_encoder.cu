@@ -47,6 +47,9 @@ constexpr std::size_t AC_BATCHES{4};
 
 constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
 
+// About one wake-up latency of a blocked pool thread.
+constexpr std::chrono::microseconds PLACEMENT_SPIN{20};
+
 double us_since(Clock::time_point start) {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
@@ -190,7 +193,7 @@ struct FrameBuffers {
     std::uint32_t* layout{nullptr};
     std::uint16_t* entries{nullptr};
     std::uint64_t* raw{nullptr};
-    std::uint32_t* chunk_counter{nullptr};
+    std::uint32_t* ac_counters{nullptr};
     std::uint32_t* dc_hist{nullptr};
     std::uint32_t* am_hist{nullptr};
     std::uint8_t* fb_scratch{nullptr};
@@ -244,7 +247,7 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
         .layout = carver.take<std::uint32_t>(3 * num_ac + 2),
         .entries = carver.take<std::uint16_t>(ac_max_tokens(width, height)),
         .raw = carver.take<std::uint64_t>(ac_max_raw_words(width, height)),
-        .chunk_counter = carver.take<std::uint32_t>(1),
+        .ac_counters = carver.take<std::uint32_t>(ac_counter_words(width, height)),
         .dc_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
         .am_hist = carver.take<std::uint32_t>(num_dc * AC_HISTOGRAM_SIZE),
         .fb_scratch = carver.take<std::uint8_t>(dc_first_blocks_scratch_bytes(width, height)),
@@ -587,10 +590,10 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
 
     if (!ac_coeff_orders(d.order_stats, d.coeff_orders, slot.stream) ||
         !ac_build_histogram(d.ac, d.acs, d.nz_grid, d.nz_exact, d.coeff_orders, width, height,
-                            d.context_hist, d.item_sizes, d.token_records, d.chunk_counter, arch,
+                            d.context_hist, d.item_sizes, d.token_records, d.ac_counters, arch,
                             slot.stream) ||
-        !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.chunk_base, d.layout,
-                         slot.stream) ||
+        !ac_token_layout(d.item_sizes, width, height, d.layout_scratch, d.ac_counters, d.chunk_base,
+                         d.layout, d.raw, slot.stream) ||
         !ac_cluster_contexts(d.context_hist, d.cluster_scratch, d.clustering, slot.stream) ||
         cudaMemcpyAsync(slot.calibration.data(), d.calibration, sizeof(QuantCalibration),
                         cudaMemcpyDeviceToHost, slot.stream) != cudaSuccess ||
@@ -611,7 +614,7 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         if ((g0 != g1 &&
              !ac_pack_tokens(d.acs, d.token_records, width, height, d.clustering->context_map,
                              d.item_sizes, d.chunk_base, d.layout, g0, g1, d.entries, d.raw,
-                             d.chunk_counter, slot.stream)) ||
+                             d.ac_counters, slot.stream)) ||
             cudaEventRecord(slot.batch_packed[b], slot.stream) != cudaSuccess) {
             return false;
         }
@@ -793,6 +796,16 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     std::vector<std::uint8_t> ac_global{};
     std::atomic<std::size_t> coders_done{0};
     std::atomic<Placement> placement{Placement::PENDING};
+    std::mutex placement_mutex;
+    std::condition_variable placement_cv;
+    const auto set_placement = [&](Placement p) {
+        placement.store(p, std::memory_order_release);
+        // A waiter checks `placement` under the mutex before it blocks.
+        {
+            const std::lock_guard<std::mutex> lock{placement_mutex};
+        }
+        placement_cv.notify_all();
+    };
     std::atomic<std::size_t> next_placed{0};
     EncodeResult result{ENCODE_FAILED};
     const std::size_t num_threads{pool.size()};
@@ -840,9 +853,17 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
         bitstream::code_token_streams(code, queue);
         coders_done.fetch_add(1, std::memory_order_acq_rel);
         if (t != 0) {
-            while (placement.load(std::memory_order_acquire) == Placement::PENDING) {
+            // Thread 0 lays out the file after its waits for the DC sections,
+            // which can take far longer than a wake-up.
+            const Clock::time_point spin_end{Clock::now() + PLACEMENT_SPIN};
+            while (placement.load(std::memory_order_acquire) == Placement::PENDING &&
+                   Clock::now() < spin_end) {
                 std::this_thread::yield();
             }
+            std::unique_lock<std::mutex> lock{placement_mutex};
+            placement_cv.wait(lock, [&] {
+                return placement.load(std::memory_order_acquire) != Placement::PENDING;
+            });
         } else {
             bool dc_ok{!queue.cancelled.load(std::memory_order_acquire) &&
                        cudaEventSynchronize(slot.dc_sizes_copied) == cudaSuccess};
@@ -862,7 +883,7 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
             entropy.cpu_us = us_since(entropy_cpu_start);
             const Clock::time_point assembly_start{Clock::now()};
             if (!dc_ok || cudaEventSynchronize(slot.dc_body_copied) != cudaSuccess) {
-                placement.store(Placement::SKIP, std::memory_order_release);
+                set_placement(Placement::SKIP);
                 return;
             }
             section_sizes.clear();
@@ -884,7 +905,7 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
             const std::size_t file_size{framing.size() + codestream_size};
             if (file_size > slot.out_capacity) {
                 result = EncodeResult{EncodeStatus::BUFFER_TOO_SMALL, file_size};
-                placement.store(Placement::SKIP, std::memory_order_release);
+                set_placement(Placement::SKIP);
                 return;
             }
             std::uint8_t* at{std::copy(framing.begin(), framing.end(), slot.out_file)};
@@ -899,7 +920,7 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
             }
             result = EncodeResult{EncodeStatus::OK, file_size};
             assembly.cpu_us = us_since(assembly_start);
-            placement.store(Placement::PLACE, std::memory_order_release);
+            set_placement(Placement::PLACE);
         }
         if (placement.load(std::memory_order_acquire) == Placement::PLACE) {
             for (std::size_t g{next_placed.fetch_add(1, std::memory_order_relaxed)}; g < num_ac;

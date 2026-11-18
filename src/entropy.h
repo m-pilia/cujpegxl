@@ -55,14 +55,15 @@ bool ac_coeff_orders(const CoeffOrderStats* stats, CoeffOrders* orders, cudaStre
 // bits) at block * 3 + slot, slot 0..2 being the channels Y, X, B.
 // `token_records` (device, ac_max_tokens(width, height) uint32) receives every
 // item's tokens for ac_pack_tokens, in the covered-block layout of `ac`.
-// `chunk_counter` (device, one uint32) is scratch. `arch` is the tuning of the
-// device's running code (see query_device_support). Deterministic (integer
+// `counters` (device, ac_counter_words(width, height) uint32) holds the claim
+// and ordering counters of phases 1, 3 and 4 (zeroed by the call). `arch` is the
+// tuning of the device's running code (see query_device_support). Deterministic (integer
 // atomics). Returns false on a CUDA error.
 bool ac_build_histogram(const std::int16_t* ac, const std::int8_t* acs, const std::int32_t* nz_grid,
                         const std::int32_t* nz_exact, const CoeffOrders* orders, std::size_t width,
                         std::size_t height, std::uint32_t* context_histograms,
                         std::uint64_t* item_sizes, std::uint32_t* token_records,
-                        std::uint32_t* chunk_counter, GpuArch arch, cudaStream_t stream);
+                        std::uint32_t* counters, GpuArch arch, cudaStream_t stream);
 
 std::size_t ac_cluster_scratch_bytes();
 
@@ -79,6 +80,8 @@ bool ac_cluster_contexts(const std::uint32_t* context_histograms, std::uint8_t* 
 std::size_t ac_max_tokens(std::size_t width, std::size_t height);
 std::size_t ac_max_raw_words(std::size_t width, std::size_t height);
 
+std::size_t ac_counter_words(std::size_t width, std::size_t height);
+
 // Entries of the ac_token_layout `chunk_base` buffer.
 std::size_t ac_token_chunks(std::size_t width, std::size_t height);
 
@@ -92,23 +95,26 @@ std::size_t ac_token_layout_scratch_bytes(std::size_t width, std::size_t height)
 // receives token_offset[num_groups + 1] (each group's first token, then the
 // total), raw_offset[num_groups + 1] (each group's first raw word, then the
 // total) and raw_bits[num_groups]. `chunk_base` (device, ac_token_chunks)
-// receives the per-chunk offsets ac_pack_tokens reads. `scratch` (device) holds
-// ac_token_layout_scratch_bytes(width, height) bytes. Deterministic.
+// receives the per-chunk offsets ac_pack_tokens reads, and the groups' words of
+// `raw` (device, ac_max_raw_words uint64) are zeroed for ac_pack_tokens.
+// `scratch` (device) holds ac_token_layout_scratch_bytes(width, height) bytes,
+// and `counters` are those zeroed by ac_build_histogram. Deterministic.
 bool ac_token_layout(const std::uint64_t* item_sizes, std::size_t width, std::size_t height,
-                     std::uint8_t* scratch, std::uint64_t* chunk_base, std::uint32_t* layout,
-                     cudaStream_t stream);
+                     std::uint8_t* scratch, std::uint32_t* counters, std::uint64_t* chunk_base,
+                     std::uint32_t* layout, std::uint64_t* raw, cudaStream_t stream);
 
 // Phase 4: writes the token streams of AC groups [group_begin, group_end) at
 // their `layout` positions: entries into `entries` (device uint16) and raw bits
-// into `raw` (device 64-bit words; the groups' words are zeroed by the call).
-// `context_map` (device, AC_NUM_CONTEXTS) is the AcClustering's. `chunk_counter`
-// (device, one uint32) is scratch. The other inputs are those of phases 1 and 3.
-// Deterministic.
+// into `raw` (device 64-bit words, as zeroed by ac_token_layout). `context_map`
+// (device, AC_NUM_CONTEXTS) is the AcClustering's. `counters` are those zeroed
+// by ac_build_histogram, of which the call uses `group_begin`'s pack counter, so
+// the calls after one ac_build_histogram take distinct group ranges. The other
+// inputs are those of phases 1 and 3. Deterministic.
 bool ac_pack_tokens(const std::int8_t* acs, const std::uint32_t* token_records, std::size_t width,
                     std::size_t height, const std::uint8_t* context_map,
                     const std::uint64_t* item_sizes, const std::uint64_t* chunk_base,
                     const std::uint32_t* layout, std::size_t group_begin, std::size_t group_end,
-                    std::uint16_t* entries, std::uint64_t* raw, std::uint32_t* chunk_counter,
+                    std::uint16_t* entries, std::uint64_t* raw, std::uint32_t* counters,
                     cudaStream_t stream);
 
 // Number of 2048x2048 DC groups (256x256 blocks each) tiling a width x height
