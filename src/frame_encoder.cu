@@ -268,8 +268,8 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
 }
 
 // A frame in flight: its parameters and result, and the resources it uses. The
-// device work runs on `stream`, with the DC path on `dc_stream` and the AC
-// token copies on `copy_stream`.
+// device work runs on `stream`, with the DC path on `dc_stream`; the AC token
+// copies run on the encoder's copy stream.
 struct Slot {
     Slot() = default;
     Slot(const Slot&) = delete;
@@ -282,13 +282,13 @@ struct Slot {
     // Creates the streams and events on the current device, once.
     bool init();
     void release();
-    // Waits until the slot's streams have no queued work. False on a CUDA error.
+    // Waits until the slot's streams and copies have no queued work. False on a
+    // CUDA error.
     bool wait_idle();
 
     bool ready{false};
     cudaStream_t stream{nullptr};
     cudaStream_t dc_stream{nullptr};
-    cudaStream_t copy_stream{nullptr};
     cudaEvent_t input_ready{nullptr};
     cudaEvent_t forked{nullptr};
     cudaEvent_t layout_copied{nullptr};
@@ -296,7 +296,7 @@ struct Slot {
     cudaEvent_t dc_body_copied{nullptr};
     std::array<cudaEvent_t, AC_BATCHES> batch_packed{};
     std::array<cudaEvent_t, AC_BATCHES> batch_copied{};
-    std::array<cudaEvent_t, 3> stream_idle{};
+    std::array<cudaEvent_t, 2> stream_idle{};
 
     DeviceArena arena;
     FrameBuffers device{};
@@ -316,8 +316,7 @@ struct Slot {
     std::size_t out_capacity{0};
     std::vector<StageTiming>* stats{nullptr};
     Clock::time_point entropy_start{};
-    Clock::time_point layout_landed{};
-    bool copies_started{false};
+    bool copies_issued{false};
     EncodeResult result{};
 };
 
@@ -338,10 +337,8 @@ bool Slot::init() {
     // through the legacy default stream.
     ready = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
             cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess &&
-            create_event(input_ready) && create_event(forked) &&
-            create_host_event(layout_copied) && create_host_event(dc_sizes_copied) &&
-            create_host_event(dc_body_copied);
+            create_event(input_ready) && create_event(forked) && create_host_event(layout_copied) &&
+            create_host_event(dc_sizes_copied) && create_host_event(dc_body_copied);
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
         ready = ready && create_event(batch_packed[b]) && create_host_event(batch_copied[b]);
     }
@@ -352,14 +349,16 @@ bool Slot::init() {
 }
 
 bool Slot::wait_idle() {
-    const std::array<cudaStream_t, 3> streams{stream, dc_stream, copy_stream};
+    const std::array<cudaStream_t, 2> streams{stream, dc_stream};
     for (std::size_t i{0}; i < streams.size(); ++i) {
         if (cudaEventRecord(stream_idle[i], streams[i]) != cudaSuccess ||
             cudaEventSynchronize(stream_idle[i]) != cudaSuccess) {
             return false;
         }
     }
-    return true;
+    // The copy stream also holds the other slots' copies; the slot's own end
+    // with the last batch's.
+    return cudaEventSynchronize(batch_copied.back()) == cudaSuccess;
 }
 
 void Slot::release() {
@@ -380,7 +379,7 @@ void Slot::release() {
     for (cudaEvent_t& e : stream_idle) {
         destroy_event(e);
     }
-    for (cudaStream_t* s : {&stream, &dc_stream, &copy_stream}) {
+    for (cudaStream_t* s : {&stream, &dc_stream}) {
         if (*s != nullptr) {
             cudaStreamDestroy(*s);
             *s = nullptr;
@@ -415,8 +414,10 @@ std::size_t max_encoded_size(std::size_t width, std::size_t height) {
 }
 
 // Frame k uses slot k % depth. The caller thread enqueues a frame's device work
-// in submit(); the driver thread then runs each frame's host stage in order, on
-// the worker pool as its thread 0.
+// in submit(); the copy thread enqueues each frame's AC token copies, in order,
+// as soon as its token layout lands, so that they do not wait for the host
+// stage of the frames before it; the driver thread runs each frame's host stage
+// in order, on the worker pool as its thread 0.
 struct FrameEncoder::State {
     State(int device_ordinal, GpuArch arch, std::size_t worker_threads, std::size_t pipeline_depth)
         : device{device_ordinal},
@@ -424,6 +425,7 @@ struct FrameEncoder::State {
           depth{pipeline_depth},
           slots{std::make_unique<Slot[]>(pipeline_depth)},
           pool{worker_threads},
+          copier{[this] { copy(); }},
           driver{[this] { drive(); }} {}
     State(const State&) = delete;
     State& operator=(const State&) = delete;
@@ -432,23 +434,34 @@ struct FrameEncoder::State {
             const std::lock_guard<std::mutex> lock{mutex};
             stop = true;
         }
-        submitted_cv.notify_one();
+        submitted_cv.notify_all();
         driver.join();
+        copier.join();
+        if (copy_stream != nullptr) {
+            cudaStreamDestroy(copy_stream);
+        }
+    }
+
+    bool init_copy_stream() {
+        return copy_stream != nullptr ||
+               cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess;
     }
 
     bool enqueue_frame(Slot& slot, const std::uint8_t* luma, std::size_t luma_pitch,
                        const std::uint8_t* chroma, std::size_t chroma_pitch,
                        cudaStream_t input_stream, float distance);
+    void copy();
+    bool issue_copies(Slot& slot);
+    bool await_copies(const Slot& slot, std::uint64_t frame);
     void drive();
     EncodeResult code_frame(Slot& slot, std::uint64_t frame);
-    bool start_copies(Slot& slot, bool wait);
-    void start_next_copies(std::uint64_t frame);
     bool release_batches(Slot& slot, bitstream::StreamQueue& queue);
 
     const int device;
     const GpuArch arch;
     const std::size_t depth;
     const std::unique_ptr<Slot[]> slots;
+    cudaStream_t copy_stream{nullptr};
     WorkerPool pool;
 
     bitstream::TokenCode code;
@@ -461,14 +474,18 @@ struct FrameEncoder::State {
     std::vector<std::uint32_t> section_sizes;
 
     // Frame counts since construction; submitted and received change only on
-    // the caller thread, completed only on the driver thread.
+    // the caller thread, copied only on the copy thread, completed only on the
+    // driver thread.
     std::mutex mutex;
     std::condition_variable submitted_cv;
+    std::condition_variable copied_cv;
     std::condition_variable completed_cv;
     std::uint64_t submitted{0};
+    std::uint64_t copied{0};
     std::uint64_t completed{0};
     std::uint64_t received{0};
     bool stop{false};
+    std::thread copier;
     std::thread driver;
 };
 
@@ -615,26 +632,31 @@ void FrameEncoder::State::drive() {
     }
 }
 
+void FrameEncoder::State::copy() {
+    // A failure shows in the frames' `copies_issued`.
+    cudaSetDevice(device);
+    std::unique_lock<std::mutex> lock{mutex};
+    for (;;) {
+        submitted_cv.wait(lock, [this] { return stop || copied != submitted; });
+        if (copied == submitted) {
+            return;
+        }
+        Slot& slot{slots[copied % depth]};
+        lock.unlock();
+        const bool issued{issue_copies(slot)};
+        lock.lock();
+        slot.copies_issued = issued;
+        ++copied;
+        copied_cv.notify_one();
+    }
+}
+
 // Enqueues the copies of the slot's AC token batches once its token layout has
-// landed; with `wait` false, only if it already has. False on a CUDA error.
-bool FrameEncoder::State::start_copies(Slot& slot, bool wait) {
-    if (slot.copies_started) {
-        return true;
+// landed. False on a CUDA error.
+bool FrameEncoder::State::issue_copies(Slot& slot) {
+    if (cudaEventSynchronize(slot.layout_copied) != cudaSuccess) {
+        return false;
     }
-    if (wait) {
-        if (cudaEventSynchronize(slot.layout_copied) != cudaSuccess) {
-            return false;
-        }
-    } else {
-        const cudaError_t status{cudaEventQuery(slot.layout_copied)};
-        if (status == cudaErrorNotReady) {
-            return true;
-        }
-        if (status != cudaSuccess) {
-            return false;
-        }
-    }
-    slot.layout_landed = Clock::now();
     const std::size_t num_ac{bitstream::ac_group_count(slot.width, slot.height)};
     const std::uint32_t* const token_offset{slot.layout.data()};
     const std::uint32_t* const raw_offset{token_offset + num_ac + 1};
@@ -647,35 +669,31 @@ bool FrameEncoder::State::start_copies(Slot& slot, bool wait) {
         const std::size_t g1{batch_begin(num_ac, b + 1)};
         const std::size_t num_tokens{token_offset[g1] - token_offset[g0]};
         const std::size_t num_raw{raw_offset[g1] - raw_offset[g0]};
-        if (cudaStreamWaitEvent(slot.copy_stream, slot.batch_packed[b], 0) != cudaSuccess ||
+        if (cudaStreamWaitEvent(copy_stream, slot.batch_packed[b], 0) != cudaSuccess ||
             (num_tokens != 0 &&
              cudaMemcpyAsync(slot.entries.data() + token_offset[g0],
                              slot.device.entries + token_offset[g0],
                              num_tokens * sizeof(std::uint16_t), cudaMemcpyDeviceToHost,
-                             slot.copy_stream) != cudaSuccess) ||
+                             copy_stream) != cudaSuccess) ||
             (num_raw != 0 &&
              cudaMemcpyAsync(slot.raw.data() + raw_offset[g0], slot.device.raw + raw_offset[g0],
                              num_raw * sizeof(std::uint64_t), cudaMemcpyDeviceToHost,
-                             slot.copy_stream) != cudaSuccess) ||
-            cudaEventRecord(slot.batch_copied[b], slot.copy_stream) != cudaSuccess) {
+                             copy_stream) != cudaSuccess) ||
+            cudaEventRecord(slot.batch_copied[b], copy_stream) != cudaSuccess) {
+            // Ends the copies enqueued so far for Slot::wait_idle.
+            cudaEventRecord(slot.batch_copied.back(), copy_stream);
             return false;
         }
     }
-    slot.copies_started = true;
     return true;
 }
 
-// Starts the next frame's copies if its token layout has already landed, so that
-// they overlap the end of this frame's host stage instead of delaying the next
-// one's. A failure shows again when the next frame's host stage starts them.
-void FrameEncoder::State::start_next_copies(std::uint64_t frame) {
-    {
-        const std::lock_guard<std::mutex> lock{mutex};
-        if (frame + 1 == submitted) {
-            return;
-        }
-    }
-    start_copies(slots[(frame + 1) % depth], false);
+// Waits until the copy thread has handled `frame`, in `slot`; whether its copies
+// were enqueued.
+bool FrameEncoder::State::await_copies(const Slot& slot, std::uint64_t frame) {
+    std::unique_lock<std::mutex> lock{mutex};
+    copied_cv.wait(lock, [this, frame] { return copied > frame; });
+    return slot.copies_issued;
 }
 
 // Releases the AC groups to `queue` batch by batch as their copies land, each
@@ -721,11 +739,13 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     StageTiming entropy{"entropy", 0, 0.0, 0.0};
     StageTiming assembly{"assembly", 0, 0.0, 0.0};
 
-    if (!start_copies(slot, true)) {
+    if (cudaEventSynchronize(slot.layout_copied) != cudaSuccess) {
+        // The slot may be reused only once the copy thread is done with it.
+        await_copies(slot, frame);
         return ENCODE_FAILED;
     }
     entropy.gpu_us =
-        std::chrono::duration<double, std::micro>(slot.layout_landed - slot.entropy_start).count();
+        std::chrono::duration<double, std::micro>(Clock::now() - slot.entropy_start).count();
     const Clock::time_point entropy_cpu_start{Clock::now()};
     const QuantCalibration& calibration{*slot.calibration.data()};
     const std::vector<std::uint8_t> dc_global{bitstream::build_dc_global(
@@ -743,9 +763,9 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
     ac_offsets.resize(num_ac);
     std::size_t slot_total{0};
     for (std::size_t g{0}; g < num_ac; ++g) {
-        streams[g] = bitstream::TokenStream{slot.entries.data() + token_offset[g],
-                                            token_offset[g + 1] - token_offset[g],
-                                            slot.raw.data() + raw_offset[g], raw_bits[g]};
+        // The data pointers are set once the copy thread has reserved the buffers.
+        streams[g] = bitstream::TokenStream{.num_tokens = token_offset[g + 1] - token_offset[g],
+                                            .raw_bits = raw_bits[g]};
         slot_total += bitstream::coded_stream_capacity_words(streams[g]);
         slot_end[g] = slot_total;
     }
@@ -794,7 +814,15 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
             }
             ac_global = tables.finish();
             code_ready.store(true, std::memory_order_release);
-            if (!release_batches(slot, queue)) {
+            bool copies_ok{await_copies(slot, frame)};
+            if (copies_ok) {
+                for (std::size_t g{0}; g < num_ac; ++g) {
+                    streams[g].entries = slot.entries.data() + token_offset[g];
+                    streams[g].raw = slot.raw.data() + raw_offset[g];
+                }
+                copies_ok = release_batches(slot, queue);
+            }
+            if (!copies_ok) {
                 queue.cancelled.store(true, std::memory_order_release);
             }
         } else {
@@ -809,7 +837,6 @@ EncodeResult FrameEncoder::State::code_frame(Slot& slot, std::uint64_t frame) {
                 std::this_thread::yield();
             }
         } else {
-            start_next_copies(frame);
             bool dc_ok{!queue.cancelled.load(std::memory_order_acquire) &&
                        cudaEventSynchronize(slot.dc_sizes_copied) == cudaSuccess};
             std::size_t dc_total{0};
@@ -912,7 +939,8 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
     Slot& slot{s.slots[s.submitted % s.depth]};
     // The slot's previous frame has completed, but after a failure its device
     // work may still be running.
-    if (cudaSetDevice(s.device) != cudaSuccess || !slot.init() || !slot.wait_idle()) {
+    if (cudaSetDevice(s.device) != cudaSuccess || !s.init_copy_stream() || !slot.init() ||
+        !slot.wait_idle()) {
         return false;
     }
     slot.width = width;
@@ -920,7 +948,6 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
     slot.out_file = out_file;
     slot.out_capacity = out_capacity;
     slot.stats = stats;
-    slot.copies_started = false;
     if (!s.enqueue_frame(slot, luma, luma_pitch, chroma, chroma_pitch, input_stream, distance)) {
         return false;
     }
@@ -928,7 +955,7 @@ bool FrameEncoder::submit(const std::uint8_t* luma, std::size_t luma_pitch,
         const std::lock_guard<std::mutex> lock{s.mutex};
         ++s.submitted;
     }
-    s.submitted_cv.notify_one();
+    s.submitted_cv.notify_all();
     return true;
 }
 
