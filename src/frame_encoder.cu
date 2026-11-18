@@ -333,10 +333,17 @@ bool Slot::init() {
         return cudaEventCreateWithFlags(&e, cudaEventDisableTiming | cudaEventBlockingSync) ==
                cudaSuccess;
     };
-    // Non-blocking, so that the slots' streams do not synchronize with each other
-    // through the legacy default stream.
-    ready = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess &&
-            cudaStreamCreateWithFlags(&dc_stream, cudaStreamNonBlocking) == cudaSuccess &&
+    // The main stream gets the greatest priority, so that the block scheduler
+    // dispatches the AC path's short kernels ahead of pending blocks of the DC
+    // path's large grids. Non-blocking, so that the slots' streams do not
+    // synchronize with each other through the legacy default stream.
+    int least_priority{0};
+    int greatest_priority{0};
+    ready = cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority) == cudaSuccess &&
+            cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatest_priority) ==
+                cudaSuccess &&
+            cudaStreamCreateWithPriority(&dc_stream, cudaStreamNonBlocking, least_priority) ==
+                cudaSuccess &&
             create_event(input_ready) && create_event(forked) && create_host_event(layout_copied) &&
             create_host_event(dc_sizes_copied) && create_host_event(dc_body_copied);
     for (std::size_t b{0}; b < AC_BATCHES; ++b) {
