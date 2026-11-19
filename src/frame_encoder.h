@@ -77,9 +77,9 @@ public:
     // `out_file` and `stats` valid until the frame is received. False, with
     // the frame not in flight, on a CUDA error or for a single-AC-group frame.
     //
-    // `luma`/`chroma` are device addresses (see nv12_to_xyb). The chroma texture
-    // requires a 32-byte-aligned row pitch; if `chroma_pitch` is not aligned the
-    // plane is first copied into an aligned buffer. The image is read after the
+    // `luma`/`chroma` are device addresses (see nv12_to_xyb). The planes are read
+    // through textures, which require 32-byte-aligned row pitches; a plane whose
+    // pitch is not aligned is first copied into an aligned buffer. The image is read after the
     // work enqueued on `input_stream`, a stream of the encoder's device, before
     // the call. `distance` drives quantization. The chroma plane holds
     // (width+1)/2 pairs per row over (height+1)/2 rows. Single-AC-group frames

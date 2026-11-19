@@ -276,9 +276,9 @@ int main(int argc, char** argv) {
 
         // Front-end sub-stages, in FrameEncoder order.
         timed(s_fe, record, [&] {
-            const ChromaTexture chroma{d_chroma, width, width, height, nullptr};
-            encode_frontend(d_luma, width, chroma, width, height, args.distance, d_coeffs, d_acs,
-                            d_adaptive_field, d_field_histogram, d_qf, d_calibration, nullptr);
+            const Nv12Textures image{d_luma, width, d_chroma, width, width, height, nullptr};
+            encode_frontend(image, width, height, args.distance, d_coeffs, d_acs, d_adaptive_field,
+                            d_field_histogram, d_qf, d_calibration, nullptr);
         });
         timed(s_qz, record, [&] {
             quantize_residual(d_coeffs, d_acs, d_qf, d_calibration, width, height, d_mx, d_mb,

@@ -905,11 +905,10 @@ __global__ void __launch_bounds__(FIELD_THREADS)
 }
 
 __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPILED_ARCH])
-    frontend_fused_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
-                          cudaTextureObject_t chroma_tex, std::size_t width, std::size_t height,
-                          std::size_t bw, std::size_t bh, float km0, float km1, float km2,
-                          float km3, float mul_pb, float add_pb, float qgsf,
-                          __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
+    frontend_fused_kernel(cudaTextureObject_t luma_tex, cudaTextureObject_t chroma_tex,
+                          std::size_t width, std::size_t height, std::size_t bw, std::size_t bh,
+                          float km0, float km1, float km2, float km3, float mul_pb, float add_pb,
+                          float qgsf, __half* __restrict__ coeffs, std::int8_t* __restrict__ acs,
                           float* __restrict__ adaptive_field,
                           std::uint32_t* __restrict__ field_histogram) {
     extern __shared__ __align__(16) unsigned char workspace_bytes[];
@@ -931,24 +930,28 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     const int tid{static_cast<int>(threadIdx.x)};
 
     // Load the padded tile and compute XYB into shared memory. The fixed trip
-    // count lets the loop unroll fully. The clamped coordinates are
-    // non-negative, so the luma offset needs no sign extension.
+    // count lets the loop unroll fully. The pixels outside the image take the
+    // nearest edge pixel's samples: the luma texture's clamp addressing selects
+    // it, and the chroma coordinates of the pixels before the image filter the
+    // same clamped texels as the first pixel's, while those past it are clamped
+    // to the last pixel's (for odd dimensions they would filter differently).
     const int gx0{static_cast<int>(tbx0) * 8 - HALO};
     const int gy0{static_cast<int>(tby0) * 8 - HALO};
-    const int gx_max{static_cast<int>(width) - 1};
-    const int gy_max{static_cast<int>(height) - 1};
+    const float chroma_x_max{fmaf(static_cast<float>(width - 1), 0.5f, 0.25f)};
+    const float chroma_y_max{fmaf(static_cast<float>(height - 1), 0.5f, 0.25f)};
 #pragma unroll
     for (int k{0}; k < (PAD_SAMPLES + FRONTEND_THREADS - 1) / FRONTEND_THREADS; ++k) {
         const int i{tid + k * FRONTEND_THREADS};
         if (i >= PAD_SAMPLES) {
             break;
         }
-        const std::uint32_t gx{static_cast<std::uint32_t>(min(max(gx0 + i % PAD, 0), gx_max))};
-        const std::uint32_t gy{static_cast<std::uint32_t>(min(max(gy0 + i / PAD, 0), gy_max))};
-        const float yv{luma[gy * luma_pitch + gx] * (1.0f / 255.0f)};
+        const float gx{static_cast<float>(gx0 + i % PAD)};
+        const float gy{static_cast<float>(gy0 + i / PAD)};
+        // Point sampling at an integral coordinate reads that texel.
+        const float yv{tex2D<unsigned char>(luma_tex, gx, gy) * (1.0f / 255.0f)};
         // The pixel centre in chroma texels, (g + 0.5) / 2 in one rounding.
-        const float2 c{tex2D<float2>(chroma_tex, fmaf(static_cast<float>(gx), 0.5f, 0.25f),
-                                     fmaf(static_cast<float>(gy), 0.5f, 0.25f))};
+        const float2 c{tex2D<float2>(chroma_tex, fminf(fmaf(gx, 0.5f, 0.25f), chroma_x_max),
+                                     fminf(fmaf(gy, 0.5f, 0.25f), chroma_y_max))};
         float xo{};
         float yo{};
         float bo{};
@@ -1129,48 +1132,72 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
 
 }  // namespace
 
-ChromaTexture::ChromaTexture(const std::uint8_t* chroma, std::size_t chroma_pitch,
-                             std::size_t width, std::size_t height, cudaStream_t stream)
+Nv12Textures::Nv12Textures(const std::uint8_t* luma, std::size_t luma_pitch,
+                           const std::uint8_t* chroma, std::size_t chroma_pitch, std::size_t width,
+                           std::size_t height, cudaStream_t stream)
     : stream_{stream} {
-    cudaResourceDesc resource{};
-    resource.resType = cudaResourceTypePitch2D;
-    resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
-    resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
-    resource.res.pitch2D.width = (width + 1) / 2;
-    resource.res.pitch2D.height = (height + 1) / 2;
-    resource.res.pitch2D.pitchInBytes = chroma_pitch;
+    cudaResourceDesc luma_resource{};
+    luma_resource.resType = cudaResourceTypePitch2D;
+    luma_resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(luma);
+    luma_resource.res.pitch2D.desc = cudaCreateChannelDesc<unsigned char>();
+    luma_resource.res.pitch2D.width = width;
+    luma_resource.res.pitch2D.height = height;
+    luma_resource.res.pitch2D.pitchInBytes = luma_pitch;
 
-    cudaTextureDesc texture{};
-    texture.addressMode[0] = cudaAddressModeClamp;
-    texture.addressMode[1] = cudaAddressModeClamp;
-    texture.filterMode = cudaFilterModeLinear;
-    texture.readMode = cudaReadModeNormalizedFloat;
-    texture.normalizedCoords = 0;
+    cudaTextureDesc luma_texture{};
+    luma_texture.addressMode[0] = cudaAddressModeClamp;
+    luma_texture.addressMode[1] = cudaAddressModeClamp;
+    luma_texture.filterMode = cudaFilterModePoint;
+    luma_texture.readMode = cudaReadModeElementType;
+    luma_texture.normalizedCoords = 0;
+
+    cudaResourceDesc chroma_resource{};
+    chroma_resource.resType = cudaResourceTypePitch2D;
+    chroma_resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
+    chroma_resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
+    chroma_resource.res.pitch2D.width = (width + 1) / 2;
+    chroma_resource.res.pitch2D.height = (height + 1) / 2;
+    chroma_resource.res.pitch2D.pitchInBytes = chroma_pitch;
+
+    cudaTextureDesc chroma_texture{};
+    chroma_texture.addressMode[0] = cudaAddressModeClamp;
+    chroma_texture.addressMode[1] = cudaAddressModeClamp;
+    chroma_texture.filterMode = cudaFilterModeLinear;
+    chroma_texture.readMode = cudaReadModeNormalizedFloat;
+    chroma_texture.normalizedCoords = 0;
 
     if (cudaEventCreateWithFlags(&released_, cudaEventDisableTiming | cudaEventBlockingSync) !=
         cudaSuccess) {
         released_ = nullptr;
         return;
     }
-    valid_ = cudaCreateTextureObject(&texture_, &resource, &texture, nullptr) == cudaSuccess;
+    if (cudaCreateTextureObject(&luma_, &luma_resource, &luma_texture, nullptr) != cudaSuccess) {
+        return;
+    }
+    if (cudaCreateTextureObject(&chroma_, &chroma_resource, &chroma_texture, nullptr) !=
+        cudaSuccess) {
+        cudaDestroyTextureObject(luma_);
+        return;
+    }
+    valid_ = true;
 }
 
-ChromaTexture::~ChromaTexture() {
+Nv12Textures::~Nv12Textures() {
     if (valid_) {
         cudaEventRecord(released_, stream_);
         cudaEventSynchronize(released_);
-        cudaDestroyTextureObject(texture_);
+        cudaDestroyTextureObject(chroma_);
+        cudaDestroyTextureObject(luma_);
     }
     if (released_ != nullptr) {
         cudaEventDestroy(released_);
     }
 }
 
-bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const ChromaTexture& chroma,
-                     std::size_t width, std::size_t height, float distance, __half* coeffs,
-                     std::int8_t* acs, float* adaptive_field, std::uint32_t* field_histogram,
-                     std::int32_t* quant_field, QuantCalibration* calibration,
-                     cudaStream_t stream) {
+bool encode_frontend(const Nv12Textures& image, std::size_t width, std::size_t height,
+                     float distance, __half* coeffs, std::int8_t* acs, float* adaptive_field,
+                     std::uint32_t* field_histogram, std::int32_t* quant_field,
+                     QuantCalibration* calibration, cudaStream_t stream) {
     const std::size_t bw{padded_to_blocks(width) / 8};
     const std::size_t bh{padded_to_blocks(height) / 8};
     const std::uint32_t blocks{static_cast<std::uint32_t>(bw * bh)};
@@ -1207,7 +1234,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
     km2 *= norm;
     km3 *= norm;
 
-    if (!chroma.valid()) {
+    if (!image.valid()) {
         return false;
     }
 
@@ -1219,7 +1246,7 @@ bool encode_frontend(const std::uint8_t* luma, std::size_t luma_pitch, const Chr
     const dim3 grid{static_cast<unsigned int>((bw + TB - 1) / TB),
                     static_cast<unsigned int>((bh + TB - 1) / TB)};
     frontend_fused_kernel<<<grid, block, WORKSPACE_BYTES, stream>>>(
-        luma, luma_pitch, chroma.get(), width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
+        image.luma(), image.chroma(), width, height, bw, bh, km0, km1, km2, km3, mul_pb, add_pb,
         qgsf, coeffs, acs, adaptive_field, field_histogram);
     calibrate_field_kernel<<<1, CALIBRATE_THREADS, 0, stream>>>(field_histogram, quant_dc_float,
                                                                 calibration);

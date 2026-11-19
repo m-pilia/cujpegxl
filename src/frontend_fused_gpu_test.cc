@@ -76,10 +76,10 @@ struct Frontend {
 
     bool ok{false};
     {
-        const ChromaTexture chroma{d_nv12 + WIDTH * HEIGHT, WIDTH, WIDTH, HEIGHT, nullptr};
-        ok = encode_frontend(d_nv12, WIDTH, chroma, WIDTH, HEIGHT, distance, d_coeffs, d_acs,
-                             d_adaptive_field, d_field_histogram, d_quant_field, d_calibration,
-                             nullptr);
+        const Nv12Textures image{d_nv12, WIDTH,  d_nv12 + WIDTH * HEIGHT, WIDTH, WIDTH,
+                                 HEIGHT, nullptr};
+        ok = encode_frontend(image, WIDTH, HEIGHT, distance, d_coeffs, d_acs, d_adaptive_field,
+                             d_field_histogram, d_quant_field, d_calibration, nullptr);
     }
     out.adaptive_field = download(d_adaptive_field, BLOCKS);
     out.quant_field = download(d_quant_field, BLOCKS);

@@ -45,7 +45,7 @@ constexpr EncodeResult ENCODE_FAILED{EncodeStatus::FAILED, 0};
 // the host codes a batch while the device packs and copies the next ones.
 constexpr std::size_t AC_BATCHES{4};
 
-constexpr std::size_t CHROMA_PITCH_ALIGNMENT{32};
+constexpr std::size_t TEXTURE_PITCH_ALIGNMENT{32};
 
 // About one wake-up latency of a blocked pool thread.
 constexpr std::chrono::microseconds PLACEMENT_SPIN{20};
@@ -58,8 +58,29 @@ std::size_t batch_begin(std::size_t num_ac, std::size_t b) {
     return b * num_ac / AC_BATCHES;
 }
 
-std::size_t aligned_chroma_pitch(std::size_t width) {
+std::size_t aligned_plane_pitch(std::size_t width) {
     return (width + 511) & ~std::size_t{511};
+}
+
+struct Plane {
+    const std::uint8_t* data;
+    std::size_t pitch;
+};
+
+// `plane` itself if a texture can sample its pitch, else its `row_bytes` x `rows`
+// copy into `aligned` at aligned_plane_pitch(width), enqueued on `stream`.
+// Nullopt on a CUDA error.
+std::optional<Plane> texture_plane(Plane plane, std::size_t row_bytes, std::size_t rows,
+                                   std::size_t width, std::uint8_t* aligned, cudaStream_t stream) {
+    if (plane.pitch % TEXTURE_PITCH_ALIGNMENT == 0) {
+        return plane;
+    }
+    const Plane copy{aligned, aligned_plane_pitch(width)};
+    if (cudaMemcpy2DAsync(aligned, copy.pitch, plane.data, plane.pitch, row_bytes, rows,
+                          cudaMemcpyDeviceToDevice, stream) != cudaSuccess) {
+        return std::nullopt;
+    }
+    return copy;
 }
 
 // Grow-only page-locked host buffer of `T`, kept across frames.
@@ -168,6 +189,7 @@ private:
 };
 
 struct FrameBuffers {
+    std::uint8_t* aligned_luma{nullptr};
     std::uint8_t* aligned_chroma{nullptr};
     __half* coeffs{nullptr};
     std::int8_t* acs{nullptr};
@@ -221,7 +243,8 @@ FrameBuffers carve_frame_buffers(ArenaCarver& carver, std::size_t width, std::si
     const std::size_t num_dc{bitstream::dc_group_count(width, height)};
     const std::size_t codes{num_dc * bitstream::HISTOGRAM_STRIDE};
     return FrameBuffers{
-        .aligned_chroma = carver.take<std::uint8_t>(aligned_chroma_pitch(width) * (height / 2)),
+        .aligned_luma = carver.take<std::uint8_t>(aligned_plane_pitch(width) * height),
+        .aligned_chroma = carver.take<std::uint8_t>(aligned_plane_pitch(width) * (height / 2)),
         .coeffs = carver.take<__half>(3 * blocks * COEFFS_PER_BLOCK),
         .acs = carver.take<std::int8_t>(blocks),
         .ytox_map = carver.take<std::int8_t>(color_tiles),
@@ -276,7 +299,7 @@ struct Slot {
     Slot(const Slot&) = delete;
     Slot& operator=(const Slot&) = delete;
     ~Slot() {
-        chroma.reset();
+        textures.reset();
         release();
     }
 
@@ -309,7 +332,7 @@ struct Slot {
     PinnedBuffer<std::uint8_t> dc_body;
     PinnedBuffer<std::uint16_t> entries;
     PinnedBuffer<std::uint64_t> raw;
-    std::optional<ChromaTexture> chroma;
+    std::optional<Nv12Textures> textures;
 
     std::size_t width{0};
     std::size_t height{0};
@@ -533,23 +556,21 @@ bool FrameEncoder::State::enqueue_frame(Slot& slot, const std::uint8_t* luma,
         return false;
     }
 
-    const std::uint8_t* chroma_src{chroma};
-    std::size_t chroma_src_pitch{chroma_pitch};
-    if (chroma_pitch % CHROMA_PITCH_ALIGNMENT != 0) {
-        chroma_src_pitch = aligned_chroma_pitch(width);
-        if (cudaMemcpy2DAsync(d.aligned_chroma, chroma_src_pitch, chroma, chroma_pitch,
-                              (slot.width + 1) / 2 * 2, (slot.height + 1) / 2,
-                              cudaMemcpyDeviceToDevice, slot.stream) != cudaSuccess) {
-            return false;
-        }
-        chroma_src = d.aligned_chroma;
+    const std::optional<Plane> luma_src{texture_plane({luma, luma_pitch}, slot.width, slot.height,
+                                                      width, d.aligned_luma, slot.stream)};
+    const std::optional<Plane> chroma_src{
+        texture_plane({chroma, chroma_pitch}, (slot.width + 1) / 2 * 2, (slot.height + 1) / 2,
+                      width, d.aligned_chroma, slot.stream)};
+    if (!luma_src || !chroma_src) {
+        return false;
     }
-    slot.chroma.emplace(chroma_src, chroma_src_pitch, slot.width, slot.height, slot.stream);
+    slot.textures.emplace(luma_src->data, luma_src->pitch, chroma_src->data, chroma_src->pitch,
+                          slot.width, slot.height, slot.stream);
 
     const Clock::time_point frontend_start{Clock::now()};
-    if (!encode_frontend(luma, luma_pitch, *slot.chroma, slot.width, slot.height, distance,
-                         d.coeffs, d.acs, d.adaptive_field, d.field_histogram, d.quant_field,
-                         d.calibration, slot.stream) ||
+    if (!encode_frontend(*slot.textures, slot.width, slot.height, distance, d.coeffs, d.acs,
+                         d.adaptive_field, d.field_histogram, d.quant_field, d.calibration,
+                         slot.stream) ||
         !quantize_residual(d.coeffs, d.acs, d.quant_field, d.calibration, width, height, d.ytox_map,
                            d.ytob_map, d.ac, d.dc, d.nz_exact, d.nz_grid, d.order_stats,
                            slot.stream)) {
