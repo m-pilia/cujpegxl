@@ -1,0 +1,29 @@
+diff -ruN a/cuda/private/template_helper.bzl b/cuda/private/template_helper.bzl
+--- a/cuda/private/template_helper.bzl
++++ b/cuda/private/template_helper.bzl
+@@ -68,7 +68,9 @@
+ 
+ def _component_owns_cuda_repo_alias(component, target, components):
+     if target == "culibos_a" and "culibos" in components:
+-        return component == "culibos"
++        # Multi-version facades may mix CUDA 12 (cudart owns culibos) with
++        # CUDA 13 (culibos component); the merged target below covers both.
++        return "cudart" not in components
+     if target in ["cicc", "libdevice", "libdevice.10.bc"] and "nvvm" in components:
+         return component == "nvvm"
+     return True
+@@ -118,6 +120,14 @@
+             # add an empty line to separate aliased targets from different components
+             template_content.append("")
+ 
++        if "culibos" in components and "cudart" in components:
++            # Each version leaves the other owner empty or a dummy.
++            template_content.append('cc_library(name = "culibos_a", deps = ["{}//:culibos_a", "{}//:culibos_a"])'.format(
++                components["cudart"],
++                components["culibos"],
++            ))
++            template_content.append("")
++
+     template_content = "\n".join(template_content)
+ 
+     template_path = repository_ctx.path("BUILD.tpl")

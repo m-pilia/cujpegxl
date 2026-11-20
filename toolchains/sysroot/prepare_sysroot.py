@@ -78,6 +78,42 @@ def installed_packages(root, names):
     return records
 
 
+def gcc_version(names):
+    versions = [
+        match[1]
+        for name in names
+        if (match := re.fullmatch(r"libstdc\+\+-([0-9]+)-dev", name))
+    ]
+    if len(versions) != 1:
+        raise ValueError("Select exactly one libstdc++-<version>-dev package")
+    return versions[0]
+
+
+def linker_script_inputs(path):
+    data = path.read_bytes()
+    if data.startswith(b"\x7fELF"):
+        return []
+    text = re.sub(r"/\*.*?\*/", "", data.decode(), flags=re.DOTALL)
+    return re.findall(r"[^\s()]+", text)
+
+
+def materialize_linker_script_aliases(root, output):
+    # Merged-/usr packages own their libraries under /usr/lib, while linker
+    # scripts keep referencing them through the /lib alias, which the linker
+    # resolves inside its sysroot.
+    for script in sorted(output.rglob("*.so")):
+        for token in linker_script_inputs(script):
+            if not token.startswith("/"):
+                continue
+            destination = output / token.lstrip("/")
+            if destination.exists():
+                continue
+            owned = output / resolve_image_path(root, token).relative_to(root)
+            if owned.is_file():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(owned, destination)
+
+
 def materialize_packages(root, output, packages):
     output.mkdir()
     for name, record in packages.items():
@@ -110,6 +146,7 @@ def materialize_packages(root, output, packages):
         documentation = output / "usr/share/doc" / name
         documentation.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(copyright_path, documentation / "copyright")
+    materialize_linker_script_aliases(root, output)
 
     licenses = output / "usr/share/common-licenses"
     licenses.mkdir(parents=True)
@@ -141,7 +178,7 @@ def materialize_packages(root, output, packages):
     (output / "SOURCES.md").write_text("\n".join(sources) + "\n")
 
 
-def validate_sysroot(root):
+def validate_sysroot(root, gcc):
     required = [
         "usr/include/stdio.h",
         "usr/include/stdint.h",
@@ -149,8 +186,8 @@ def validate_sysroot(root):
         "usr/include/pthread.h",
         "usr/include/dlfcn.h",
         "usr/include/linux/types.h",
-        "usr/include/c++/11/vector",
-        "usr/include/aarch64-linux-gnu/c++/11/bits/c++config.h",
+        f"usr/include/c++/{gcc}/vector",
+        f"usr/include/aarch64-linux-gnu/c++/{gcc}/bits/c++config.h",
         "lib/ld-linux-aarch64.so.1",
     ]
     required += [
@@ -166,7 +203,7 @@ def validate_sysroot(root):
         )
     ]
     required += [
-        f"usr/lib/gcc/aarch64-linux-gnu/11/{name}"
+        f"usr/lib/gcc/aarch64-linux-gnu/{gcc}/{name}"
         for name in (
             "crtbegin.o",
             "crtbeginS.o",
@@ -186,7 +223,7 @@ def validate_sysroot(root):
     library_dirs = [
         root / "lib/aarch64-linux-gnu",
         root / "usr/lib/aarch64-linux-gnu",
-        root / "usr/lib/gcc/aarch64-linux-gnu/11",
+        root / f"usr/lib/gcc/aarch64-linux-gnu/{gcc}",
     ]
     versions = {}
     elf_count = 0
@@ -224,9 +261,7 @@ def validate_sysroot(root):
                             ).decode()
                     versions[str(path.relative_to(root))] = maxima
             elif path.suffix == ".so":
-                text = (header + source.read()).decode()
-                text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-                for token in re.findall(r"[^\s()]+", text):
+                for token in linker_script_inputs(path):
                     if token.startswith("/"):
                         candidates = [root / token.lstrip("/")]
                     elif token.startswith("-l"):
@@ -256,6 +291,7 @@ def validate_sysroot(root):
 
 
 def prepare_sysroot(image, umoci, packages, output):
+    gcc = gcc_version(packages)
     index = json.loads((image / "index.json").read_text())
     if len(index["manifests"]) != 1:
         raise ValueError("Sysroot image must contain exactly one platform manifest")
@@ -290,7 +326,7 @@ def prepare_sysroot(image, umoci, packages, output):
         root = work / "bundle/rootfs"
         records = installed_packages(root, packages)
         materialize_packages(root, output / "sysroot", records)
-        report = validate_sysroot(output / "sysroot")
+        report = validate_sysroot(output / "sysroot", gcc)
         report.update(
             {
                 "image_manifest": descriptor["digest"],

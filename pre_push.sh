@@ -11,7 +11,8 @@ function echo_and_run() {
 
 echo_and_run bazelisk run //tools/format:format.check
 echo_and_run bazelisk build //...
-echo_and_run bazelisk build --config=jetson //packaging:install_tree //tools/benchmark:encode_bench
+echo_and_run bazelisk build --config=jetson_jp62 //packaging:install_tree //tools/benchmark:encode_bench
+echo_and_run bazelisk build --config=jetson_jp72 //packaging:install_tree //tools/benchmark:encode_bench
 echo_and_run bazelisk test //...
 echo_and_run bazelisk test --config=asan //... --test_tag_filters=-gpu,-no-sanitizers
 echo_and_run bazelisk test --config=ubsan //... --test_tag_filters=-gpu,-no-sanitizers

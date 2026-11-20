@@ -28,6 +28,16 @@ cuda.redist_json(
     sha256 = "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf",
     version = "12.6.3",
 )
+
+# JetPack 7.2. NVIDIA publishes no linux-aarch64 redistribution from CUDA 13 on,
+# so its target components come from linux-sbsa.
+cuda.redist_json(
+    name = "cujpegxl_cuda_13_redist",
+    components = ["cccl", "crt", "cudart", "culibos", "curand", "nvcc", "nvjpeg", "nvtx", "nvvm"],
+    platforms = ["linux-x86_64", "linux-sbsa"],
+    sha256 = "a4cd46534f04a2be56e57a0300012b584276e8783333663ee56c9e8457a02783",
+    version = "13.2.1",
+)
 cuda.toolkit(name = "cuda")
 use_repo(cuda, "cuda")
 
@@ -37,6 +47,7 @@ single_version_override(
     patches = [
         "//third_party/rules_cuda:nvjpeg-static-deps.patch",
         "//third_party/rules_cuda:clang-cuda-root.patch",
+        "//third_party/rules_cuda:mixed-version-culibos.patch",
     ],
     version = "0.4.0",
 )
@@ -118,12 +129,24 @@ use_repo(python, "python_3_12", "python_3_12_x86_64-unknown-linux-gnu")
 
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci", dev_dependency = True)
 oci.pull(
-    name = "jetson_image",
+    name = "jetson_jp62_image",
     digest = "sha256:6d1a76e8f9b9c5e1b2430b392bbb61cfe58814044be3fd77aae0577a92ddaa41",
     image = "docker.io/stereolabs/zed",
     platforms = ["linux/arm64"],
 )
-use_repo(oci, "jetson_image", "jetson_image_linux_arm64")
+oci.pull(
+    name = "jetson_jp72_image",
+    digest = "sha256:47b1885ed7c38b86672be4436f18a01b58e001e396e8078031b5927ed866f3ed",
+    image = "docker.io/stereolabs/zed",
+    platforms = ["linux/arm64"],
+)
+use_repo(
+    oci,
+    "jetson_jp62_image",
+    "jetson_jp62_image_linux_arm64",
+    "jetson_jp72_image",
+    "jetson_jp72_image_linux_arm64",
+)
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
@@ -138,15 +161,32 @@ http_file(
 oci_sysroot = use_repo_rule("//toolchains/sysroot:repositories.bzl", "oci_sysroot")
 
 oci_sysroot(
-    name = "jetson_sysroot",
+    name = "jetson_jp62_sysroot",
     dev_dependency = True,
-    image = "@jetson_image_linux_arm64//:index.json",
+    image = "@jetson_jp62_image_linux_arm64//:index.json",
     packages = [
         "libc6",
         "libc6-dev",
         "libgcc-11-dev",
         "libgcc-s1",
         "libstdc++-11-dev",
+        "libstdc++6",
+        "linux-libc-dev",
+    ],
+    python = "@python_3_12_x86_64-unknown-linux-gnu//:python",
+    umoci = "@umoci//file:downloaded",
+)
+
+oci_sysroot(
+    name = "jetson_jp72_sysroot",
+    dev_dependency = True,
+    image = "@jetson_jp72_image_linux_arm64//:index.json",
+    packages = [
+        "libc6",
+        "libc6-dev",
+        "libgcc-13-dev",
+        "libgcc-s1",
+        "libstdc++-13-dev",
         "libstdc++6",
         "linux-libc-dev",
     ],
@@ -190,18 +230,44 @@ llvm.toolchain(
     urls = {"linux-x86_64": ["https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/LLVM-23.1.6-Linux-X64.tar.xz"]},
 )
 llvm.sysroot(
-    label = "@jetson_sysroot//sysroot:sysroot",
+    label = "@jetson_jp62_sysroot//sysroot:sysroot",
     targets = ["linux-aarch64"],
 )
 llvm.extra_target_compatible_with(
-    constraints = ["//platforms:jetson_linux"],
+    constraints = ["//platforms:jetson_jp62"],
     targets = ["linux-aarch64"],
 )
-use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
+
+# A second instance on the same distribution, since sysroot and C++ standard
+# library are configured per target and JetPack 7.2 differs in both.
+llvm.toolchain(
+    name = "llvm_toolchain_jetson_jp72",
+    extra_compile_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
+    extra_link_flags = {"linux-aarch64": ["-mcpu=cortex-a78ae"]},
+    extra_opt_compile_flags = {"": ["-O3"]},
+    llvm_version = "23.1.6",
+    stdlib = {"linux-aarch64": "dynamic-stdc++-13"},
+)
+llvm.toolchain_root(
+    name = "llvm_toolchain_jetson_jp72",
+    label = "@llvm_toolchain_llvm//:BUILD.bazel",
+)
+llvm.sysroot(
+    name = "llvm_toolchain_jetson_jp72",
+    label = "@jetson_jp72_sysroot//sysroot:sysroot",
+    targets = ["linux-aarch64"],
+)
+llvm.extra_target_compatible_with(
+    name = "llvm_toolchain_jetson_jp72",
+    constraints = ["//platforms:jetson_jp72"],
+    targets = ["linux-aarch64"],
+)
+use_repo(llvm, "llvm_toolchain", "llvm_toolchain_jetson_jp72", "llvm_toolchain_llvm")
 
 register_toolchains(
     "@llvm_toolchain//:cc-toolchain-x86_64-linux",
     "@llvm_toolchain//:cc-toolchain-aarch64-linux",
+    "@llvm_toolchain_jetson_jp72//:cc-toolchain-aarch64-linux",
     dev_dependency = True,
 )
 

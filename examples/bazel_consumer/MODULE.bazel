@@ -49,6 +49,7 @@ single_version_override(
     patches = [
         "//:nvjpeg-static-deps.patch",
         "//:clang-cuda-root.patch",
+        "//:mixed-version-culibos.patch",
     ],
     version = "0.4.0",
 )

@@ -34,14 +34,15 @@ constexpr float CB_TO_B{1.8556f};
 
 constexpr float CHROMA_CENTER{128.0f / 255.0f};
 
-// libdevice's __powf and cbrtf without its handling of denormal, zero, negative
-// and infinite operands: the flushing lg2 and ex2 give libdevice's results while
-// the lg2 operand is normal and the ex2 operand is at least -126.
+// libdevice's __powf and CUDA 12's cbrtf without their handling of denormal,
+// zero, negative and infinite operands: the flushing lg2 and ex2 give
+// libdevice's results while the lg2 operand is normal and the ex2 operand is at
+// least -126.
 __device__ inline float pow_normal(float base, float exponent) {
     return __nvvm_ex2_approx_ftz_f(exponent * __nvvm_lg2_approx_ftz_f(base));
 }
 
-// cbrtf(v) for positive normal v: libdevice's estimate and Newton step.
+// cbrtf(v) for positive normal v: CUDA 12 libdevice's estimate and Newton step.
 __device__ inline float cbrt_normal(float v) {
     constexpr float THIRD{1.0f / 3.0f};
     const float estimate{__nvvm_ex2_approx_ftz_f(THIRD * __nvvm_lg2_approx_ftz_f(v))};

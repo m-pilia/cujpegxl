@@ -564,8 +564,8 @@
     },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
-        "bzlTransitiveDigest": "/fdBIanQ8cj0tMXwjr9+iqekwnlxRoy8nuxhjLTH+Do=",
-        "usagesDigest": "2pu7vnk6elpRH9jv1+wzgEGHNTou2sHDIVTbWaSc6Dk=",
+        "bzlTransitiveDigest": "1wQIUF+kfTcyVLBQ27L1lovc6DB3DNS63yUfIpsvXrw=",
+        "usagesDigest": "qPha7gw51o9yajPpZv6vB4dvY5c7zXVs1mNqiXZ17rc=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
           "REPO_MAPPING:bazel_features+,bazel_features_version bazel_features++version_extension+bazel_features_version",
@@ -749,19 +749,275 @@
               "toolkit_version": "12.6.3"
             }
           },
+          "cuda_cccl_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "cccl",
+              "descriptive_name": "CXX Core Compute Libraries",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "1801f304d92085a327ab46db58264d7f7f48cce80f5825637c405c3a2410dadd",
+              "strip_prefix": "cuda_cccl-linux-x86_64-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_crt_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "crt",
+              "descriptive_name": "CUDA CRT",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "17e731ba749765c2e2e325e3bffecee94226c866cf59f13ba3792aa4f2b1bb31",
+              "strip_prefix": "cuda_crt-linux-x86_64-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_cudart_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "cudart",
+              "descriptive_name": "CUDA Runtime (cudart)",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "9502ab2c7824e5ef3b554d290b9f564c5026994f469b99c72451a53578f386b9",
+              "strip_prefix": "cuda_cudart-linux-x86_64-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_culibos_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "culibos",
+              "descriptive_name": "CUDA MATH Library (cuda culibos)",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_culibos/linux-x86_64/cuda_culibos-linux-x86_64-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "1e6acf1fd637272d4eb1706aa68ed9bffd8768eac91bed2d3b376de19c58fa39",
+              "strip_prefix": "cuda_culibos-linux-x86_64-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_curand_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "curand",
+              "descriptive_name": "CUDA cuRAND",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libcurand/linux-x86_64/libcurand-linux-x86_64-10.4.2.55-archive.tar.xz"
+              ],
+              "sha256": "78141da80fa96d9e56ff365e402e27d1873068e5e3e0f528e11c7e1a59cf8bc3",
+              "strip_prefix": "libcurand-linux-x86_64-10.4.2.55-archive",
+              "version": "10.4.2.55",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvcc_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvcc",
+              "descriptive_name": "CUDA NVCC",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "1dc73b03f1d74081866986ca406f7b5981d14306ccbb03127ba45401f36e1862",
+              "strip_prefix": "cuda_nvcc-linux-x86_64-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvjpeg_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvjpeg",
+              "descriptive_name": "CUDA nvJPEG",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libnvjpeg/linux-x86_64/libnvjpeg-linux-x86_64-13.1.0.48-archive.tar.xz"
+              ],
+              "sha256": "dde259ec09f408b6e75ead30d85fe6033778a5681d0c38b48a58b89ea9310566",
+              "strip_prefix": "libnvjpeg-linux-x86_64-13.1.0.48-archive",
+              "version": "13.1.0.48",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvtx_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvtx",
+              "descriptive_name": "CUDA NVTX",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvtx/linux-x86_64/cuda_nvtx-linux-x86_64-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "731246c65881fa5bab9b48ee66aa44a8f578cafc40b0e6ed706359d260a306e7",
+              "strip_prefix": "cuda_nvtx-linux-x86_64-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvvm_linux_x86_64_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvvm",
+              "descriptive_name": "CUDA NVVM",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/linux-x86_64/libnvvm-linux-x86_64-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "9c665ebec40d0dec4df1858d5a0129972b00351dd674e783d30405cf712d925d",
+              "strip_prefix": "libnvvm-linux-x86_64-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_cccl_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "cccl",
+              "descriptive_name": "CXX Core Compute Libraries",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/linux-sbsa/cuda_cccl-linux-sbsa-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "296248ed702ea9e1a5e43c367d7a09a9ce2fda8a8c21101c428ea79eecf1a46c",
+              "strip_prefix": "cuda_cccl-linux-sbsa-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_crt_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "crt",
+              "descriptive_name": "CUDA CRT",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/linux-sbsa/cuda_crt-linux-sbsa-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "5704c8d2123abdfb34dcd19b1728f8ed10a112865e1685d33091f2f4efffecba",
+              "strip_prefix": "cuda_crt-linux-sbsa-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_cudart_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "cudart",
+              "descriptive_name": "CUDA Runtime (cudart)",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-sbsa/cuda_cudart-linux-sbsa-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "42caf374e4e7e90ebcbb1470c08a51417c5a941e8c04b745d8be0ade759119fb",
+              "strip_prefix": "cuda_cudart-linux-sbsa-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_culibos_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "culibos",
+              "descriptive_name": "CUDA MATH Library (cuda culibos)",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_culibos/linux-sbsa/cuda_culibos-linux-sbsa-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "4d90195b2a6b7d6a4b36583e8dead5f10fe702c4d76d5d1b78abc074bb2ec893",
+              "strip_prefix": "cuda_culibos-linux-sbsa-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_curand_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "curand",
+              "descriptive_name": "CUDA cuRAND",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libcurand/linux-sbsa/libcurand-linux-sbsa-10.4.2.55-archive.tar.xz"
+              ],
+              "sha256": "694f6e67fe63cef8785ab766ce3d29cbe4ce5f1a822a892ad1a6f4e52b44f0c6",
+              "strip_prefix": "libcurand-linux-sbsa-10.4.2.55-archive",
+              "version": "10.4.2.55",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvcc_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvcc",
+              "descriptive_name": "CUDA NVCC",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-sbsa/cuda_nvcc-linux-sbsa-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "02ae0459399e8ee851150c5489c0193bb699e4b2e8aed8ba58986e4bca9eb799",
+              "strip_prefix": "cuda_nvcc-linux-sbsa-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvjpeg_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvjpeg",
+              "descriptive_name": "CUDA nvJPEG",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libnvjpeg/linux-sbsa/libnvjpeg-linux-sbsa-13.1.0.48-archive.tar.xz"
+              ],
+              "sha256": "5b796f26ec94c2cafadd9e0ce2fb38896e3c2751da26a28a9a49c47184c64e6c",
+              "strip_prefix": "libnvjpeg-linux-sbsa-13.1.0.48-archive",
+              "version": "13.1.0.48",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvtx_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvtx",
+              "descriptive_name": "CUDA NVTX",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvtx/linux-sbsa/cuda_nvtx-linux-sbsa-13.2.75-archive.tar.xz"
+              ],
+              "sha256": "5204874402c29651caed2608d2fdad52bc30f954b0bba74b111cb1d0bac78c85",
+              "strip_prefix": "cuda_nvtx-linux-sbsa-13.2.75-archive",
+              "version": "13.2.75",
+              "toolkit_version": "13.2.1"
+            }
+          },
+          "cuda_nvvm_linux_sbsa_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
+            "attributes": {
+              "component_name": "nvvm",
+              "descriptive_name": "CUDA NVVM",
+              "urls": [
+                "https://developer.download.nvidia.com/compute/cuda/redist/libnvvm/linux-sbsa/libnvvm-linux-sbsa-13.2.78-archive.tar.xz"
+              ],
+              "sha256": "416208460e96932362bb7d703cb174ce819b4bfac4859bc50f54d4f65aba3ff2",
+              "strip_prefix": "libnvvm-linux-sbsa-13.2.78-archive",
+              "version": "13.2.78",
+              "toolkit_version": "13.2.1"
+            }
+          },
           "cuda_cccl": {
             "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
             "attributes": {
               "component_name": "cccl",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_cccl_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_cccl_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_cccl_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_cccl_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_cccl_linux_aarch64_12_6_3"
               }
@@ -772,14 +1028,18 @@
             "attributes": {
               "component_name": "cudart",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_cudart_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_cudart_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_cudart_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_cudart_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_cudart_linux_aarch64_12_6_3"
               }
@@ -790,14 +1050,18 @@
             "attributes": {
               "component_name": "curand",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_curand_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_curand_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_curand_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_curand_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_curand_linux_aarch64_12_6_3"
               }
@@ -808,14 +1072,18 @@
             "attributes": {
               "component_name": "nvcc",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_nvcc_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_nvcc_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_nvcc_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvcc_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_nvcc_linux_aarch64_12_6_3"
               }
@@ -826,14 +1094,18 @@
             "attributes": {
               "component_name": "nvjpeg",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_nvjpeg_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_nvjpeg_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_nvjpeg_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvjpeg_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_nvjpeg_linux_aarch64_12_6_3"
               }
@@ -844,17 +1116,78 @@
             "attributes": {
               "component_name": "nvtx",
               "versions": [
-                "12.6.3"
+                "12.6.3",
+                "13.2.1"
               ],
               "linux_x86_64_repos": {
-                "12.6.3": "cuda_nvtx_linux_x86_64_12_6_3"
+                "12.6.3": "cuda_nvtx_linux_x86_64_12_6_3",
+                "13.2.1": "cuda_nvtx_linux_x86_64_13_2_1"
               },
               "windows_x86_64_repos": {},
               "windows_arm64_repos": {},
-              "linux_sbsa_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvtx_linux_sbsa_13_2_1"
+              },
               "linux_aarch64_repos": {
                 "12.6.3": "cuda_nvtx_linux_aarch64_12_6_3"
               }
+            }
+          },
+          "cuda_crt": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "crt",
+              "versions": [
+                "12.6.3",
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_crt_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_crt_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_culibos": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "culibos",
+              "versions": [
+                "12.6.3",
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_culibos_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_culibos_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_nvvm": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvvm",
+              "versions": [
+                "12.6.3",
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_nvvm_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvvm_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
             }
           },
           "cuda_cccl_toolchain_12_6_3": {
@@ -979,6 +1312,185 @@
               "version": "12.6.3"
             }
           },
+          "cuda_cccl_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "cccl",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_cccl_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_cccl_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_cudart_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "cudart",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_cudart_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_cudart_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_curand_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "curand",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_curand_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_curand_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_nvcc_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvcc",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_nvcc_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvcc_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_nvjpeg_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvjpeg",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_nvjpeg_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvjpeg_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_nvtx_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvtx",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_nvtx_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvtx_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_crt_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "crt",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_crt_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_crt_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_culibos_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "culibos",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_culibos_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_culibos_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_nvvm_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvvm",
+              "versions": [
+                "13.2.1"
+              ],
+              "linux_x86_64_repos": {
+                "13.2.1": "cuda_nvvm_linux_x86_64_13_2_1"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {
+                "13.2.1": "cuda_nvvm_linux_sbsa_13_2_1"
+              },
+              "linux_aarch64_repos": {}
+            }
+          },
+          "cuda_toolchain_13_2_1": {
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit",
+            "attributes": {
+              "components_mapping": {
+                "cccl": "@cuda_cccl_toolchain_13_2_1",
+                "cudart": "@cuda_cudart_toolchain_13_2_1",
+                "curand": "@cuda_curand_toolchain_13_2_1",
+                "nvcc": "@cuda_nvcc_toolchain_13_2_1",
+                "nvjpeg": "@cuda_nvjpeg_toolchain_13_2_1",
+                "nvtx": "@cuda_nvtx_toolchain_13_2_1",
+                "crt": "@cuda_crt_toolchain_13_2_1",
+                "culibos": "@cuda_culibos_toolchain_13_2_1",
+                "nvvm": "@cuda_nvvm_toolchain_13_2_1"
+              },
+              "version": "13.2.1"
+            }
+          },
           "cuda": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit",
             "attributes": {
@@ -988,11 +1500,15 @@
                 "curand": "@cuda_curand",
                 "nvcc": "@cuda_nvcc",
                 "nvjpeg": "@cuda_nvjpeg",
-                "nvtx": "@cuda_nvtx"
+                "nvtx": "@cuda_nvtx",
+                "crt": "@cuda_crt",
+                "culibos": "@cuda_culibos",
+                "nvvm": "@cuda_nvvm"
               },
-              "version": "12.6.3",
+              "version": "13.2.1",
               "toolchain_repositories": {
-                "12.6.3": "@cuda_toolchain_12_6_3"
+                "12.6.3": "@cuda_toolchain_12_6_3",
+                "13.2.1": "@cuda_toolchain_13_2_1"
               }
             }
           }

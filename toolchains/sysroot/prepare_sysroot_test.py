@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prepare_sysroot import installed_packages, materialize_packages, resolve_image_path
+from prepare_sysroot import (
+    gcc_version,
+    installed_packages,
+    materialize_packages,
+    resolve_image_path,
+)
 
 
 class ImagePathsTest(unittest.TestCase):
@@ -115,6 +120,48 @@ class PackagesTest(unittest.TestCase):
                 "[glibc](https://launchpad.net/ubuntu/+source/glibc/2.35) | 2.35 |",
                 (workspace / "sysroot/SOURCES.md").read_text(),
             )
+
+    def test_materializes_merged_usr_linker_script_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            root = workspace / "image"
+            files = {
+                "var/lib/dpkg/status": (
+                    "Package: libc6-dev\nStatus: install ok installed\n"
+                    "Architecture: arm64\nVersion: 2.39\nSource: glibc\n"
+                ),
+                "var/lib/dpkg/info/libc6-dev:arm64.list": (
+                    "/usr/lib/libc.so\n/usr/lib/libc.so.6\n"
+                ),
+                "usr/lib/libc.so": (
+                    "/* GNU ld script */\n"
+                    "GROUP ( /lib/libc.so.6 AS_NEEDED ( /lib/unowned.so.1 ) )\n"
+                ),
+                "usr/lib/libc.so.6": "target runtime",
+                "usr/lib/unowned.so.1": "unrelated library",
+                "usr/share/doc/libc6-dev/copyright": "license",
+                "usr/share/common-licenses/GPL-3": "GPL version 3 license text",
+            }
+            for name, contents in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents)
+            (root / "lib").symlink_to("usr/lib")
+
+            packages = installed_packages(root, ["libc6-dev"])
+            materialize_packages(root, workspace / "sysroot", packages)
+
+            alias = workspace / "sysroot/lib/libc.so.6"
+            self.assertEqual(alias.read_text(), "target runtime")
+            self.assertFalse(alias.is_symlink())
+            self.assertFalse((workspace / "sysroot/lib/unowned.so.1").exists())
+
+    def test_derives_gcc_version_from_libstdcxx_development_package(self):
+        self.assertEqual(gcc_version(["libc6-dev", "libstdc++-13-dev"]), "13")
+        for names in (["libc6-dev"], ["libstdc++-11-dev", "libstdc++-13-dev"]):
+            with self.subTest(names=names):
+                with self.assertRaisesRegex(ValueError, "exactly one"):
+                    gcc_version(names)
 
     def test_identifies_source_package_and_version(self):
         for source_field, expected_source, expected_version in (

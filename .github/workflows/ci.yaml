@@ -64,11 +64,17 @@ jobs:
         working-directory: examples/bazel_consumer
         run: bazelisk run //:consumer
 
-      - name: Build Jetson CMake install tree
-        run: bazelisk build --config=jetson //packaging:install_tree
+      - name: Build Jetson JetPack 6.2 CMake install tree
+        run: bazelisk build --config=jetson_jp62 //packaging:install_tree
 
-      - name: Build Jetson encode_bench
-        run: bazelisk build --config=jetson //tools/benchmark:encode_bench
+      - name: Build Jetson JetPack 6.2 encode_bench
+        run: bazelisk build --config=jetson_jp62 //tools/benchmark:encode_bench
+
+      - name: Build Jetson JetPack 7.2 CMake install tree
+        run: bazelisk build --config=jetson_jp72 //packaging:install_tree
+
+      - name: Build Jetson JetPack 7.2 encode_bench
+        run: bazelisk build --config=jetson_jp72 //tools/benchmark:encode_bench
 
       - name: Run clang-tidy
         run: bazelisk build --config=clang-tidy //...

@@ -8,7 +8,12 @@ constraint_setting(
 )
 
 constraint_value(
-    name = "jetson_linux",
+    name = "jetson_jp62",
+    constraint_setting = ":target_system",
+)
+
+constraint_value(
+    name = "jetson_jp72",
     constraint_setting = ":target_system",
 )
 
@@ -21,9 +26,18 @@ config_setting(
 )
 
 config_setting(
-    name = "is_jetson",
+    name = "is_jetson_jp62",
     constraint_values = [
-        ":jetson_linux",
+        ":jetson_jp62",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+)
+
+config_setting(
+    name = "is_jetson_jp72",
+    constraint_values = [
+        ":jetson_jp72",
         "@platforms//cpu:aarch64",
         "@platforms//os:linux",
     ],
@@ -38,9 +52,18 @@ platform(
 )
 
 platform(
-    name = "jetson_orin_nano",
+    name = "jetson_orin_nano_jp62",
     constraint_values = [
-        ":jetson_linux",
+        ":jetson_jp62",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:linux",
+    ],
+)
+
+platform(
+    name = "jetson_orin_nano_jp72",
+    constraint_values = [
+        ":jetson_jp72",
         "@platforms//cpu:aarch64",
         "@platforms//os:linux",
     ],

@@ -3,5 +3,6 @@
 
 exports_files([
     "clang-cuda-root.patch",
+    "mixed-version-culibos.patch",
     "nvjpeg-static-deps.patch",
 ])

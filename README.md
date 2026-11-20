@@ -30,6 +30,13 @@ Target CUDA architecture(s) can be specified with the `--@rules_cuda//cuda:archs
 bazelisk build //... '--@rules_cuda//cuda:archs=sm_86;sm_89'
 ```
 
+Example toolchain integrations for hermetic cross-compilation targeting Tegra T234 on JetPack 6.2 (CUDA 12.6) and 7.2 (CUDA 13.2) are provided for illustrative purpose:
+
+```sh
+bazelisk build --config=jetson_jp62 //packaging:install_tree
+bazelisk build --config=jetson_jp72 //packaging:install_tree
+```
+
 ## Features
 
 Quality and compression rate are lower compared to the reference libjxl implementation. This is expected, as cujpegxl only implements a subset of the JPEG XL algorithm, excluding some parts of it (in particular, some GPU-unfriendly steps are intentionally omitted for performance reasons).
