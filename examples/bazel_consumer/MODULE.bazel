@@ -7,7 +7,7 @@ module(
 )
 
 bazel_dep(name = "rules_cc", version = "0.2.22")
-bazel_dep(name = "rules_cuda", version = "0.3.0")
+bazel_dep(name = "rules_cuda", version = "0.4.0")
 bazel_dep(name = "cujpegxl", version = "0.0.0")
 local_path_override(
     module_name = "cujpegxl",
@@ -17,12 +17,15 @@ local_path_override(
 # The root module owns the C++ toolchain. cujpegxl builds its CUDA sources with
 # the registered cc toolchain's clang, so the consumer supplies the same
 # hermetic clang the library is developed against.
-bazel_dep(name = "toolchains_llvm", version = "1.8.0")
+bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
 llvm.toolchain(
-    llvm_version = "19.1.0",
+    llvm_version = "23.1.6",
+    sha256 = {"linux-x86_64": "bd4d1c434ff69ef06d19e7934c04708da677e5f2eb51f5bcf052ab91818f0094"},
     stdlib = {"linux-x86_64": "stdc++"},
+    strip_prefix = {"linux-x86_64": "LLVM-23.1.6-Linux-X64"},
+    urls = {"linux-x86_64": ["https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/LLVM-23.1.6-Linux-X64.tar.xz"]},
 )
 use_repo(llvm, "llvm_toolchain")
 
@@ -32,7 +35,20 @@ register_toolchains("@llvm_toolchain//:all")
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
 cuda.redist_json(
     name = "cujpegxl_cuda_redist",
+    platforms = ["linux-x86_64"],
     version = "12.6.3",
 )
 cuda.toolkit(name = "cuda")
 use_repo(cuda, "cuda")
+
+# Overrides apply only from the root module, so the consumer carries the same
+# rules_cuda patches as cujpegxl; the patch files link to cujpegxl's copies.
+single_version_override(
+    module_name = "rules_cuda",
+    patch_strip = 1,
+    patches = [
+        "//:nvjpeg-static-deps.patch",
+        "//:clang-cuda-root.patch",
+    ],
+    version = "0.4.0",
+)

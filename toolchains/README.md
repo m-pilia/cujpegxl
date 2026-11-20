@@ -1,6 +1,6 @@
 # Build toolchains
 
-The root module registers two C++ toolchains from the pinned Clang 19.1.0
+The root module registers two C++ toolchains from the pinned Clang 23.1.6
 distribution. Both execute their compiler and linker on Linux x86_64.
 
 | Target platform | CPU | System and C++ libraries |
@@ -38,10 +38,12 @@ The root module selects CUDA 12.6.3 redistributions for Linux x86_64 and Jetson
 `linux-aarch64`, with the manifest and component archives pinned by checksum.
 `linux-sbsa` is a different distribution and is not used for Jetson.
 
-Both CUDA toolchains use the registered Clang 19.1.0 C++ compiler and x86_64 CUDA
-executables. The Jetson toolchain uses ARM64 runtime libraries and target headers
+CUDA code is compiled by the registered Clang 23.1.6 C++ compiler with x86_64
+CUDA executables. Jetson builds use ARM64 runtime libraries and target headers
 along with the Jetson C++ toolchain's CPU settings and sysroot. Existing `@cuda`
-library labels select the appropriate concrete toolkit for the target platform.
+library labels select the redistribution matching the target platform; on
+AArch64, `--@rules_cuda//cuda:aarch64=aarch64` selects `linux-aarch64` over
+`linux-sbsa`.
 The root module owns this selection; downstream Bazel consumers still supply
 their own C++ and CUDA toolchains.
 
@@ -56,7 +58,8 @@ standard-library code, and links the selected CUDA runtime. Its runtime check
 allocates device memory, launches the kernel, and verifies the copied result;
 it requires a GPU and should execute on the platform it was built for.
 
-`--config=jetson` selects the Jetson platform and `sm_87` for project kernels.
+`--config=jetson` selects the Jetson platform, its CUDA redistribution and
+`sm_87` for project kernels.
 The install tree retains its relocatable layout and static cudart linkage.
 The Jetson benchmark links cudart, nvJPEG, and its culibos support library
 statically and uses the NVTX 3 headers for profiling. It can be copied as a single

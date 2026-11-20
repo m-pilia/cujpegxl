@@ -1,35 +1,30 @@
-# CUDA cross-compilation support
+# rules_cuda patches
 
-`cross-compilation.patch` extends the pinned `rules_cuda` 0.3.0 module extension
-and toolkit repository rules without changing application rule interfaces.
+The pinned `rules_cuda` 0.4.0 selects CUDA redistributions by target platform,
+build-host platform and toolkit version on its own: `cuda.redist_json(platforms
+= ...)` declares the platforms, `@cuda` labels resolve to the target platform's
+components, and compiler executables resolve to the execution platform's. On
+AArch64, `--@rules_cuda//cuda:aarch64` chooses between `linux-sbsa` and the
+Jetson `linux-aarch64` redistribution.
 
-- `cuda.redist_json(platform = ...)` selects a NVIDIA redistribution platform.
-  Component repository names are scoped by the redistribution name to prevent
-  native and target archives with identical component versions from colliding.
-- Concrete `cuda.toolkit` declarations select `redist` for target components and
-  optionally `exec_redist` for compiler executables. Both must have the same CUDA
-  release version. Toolchain execution and target constraints are explicit.
-- `cuda.toolkit(target_toolkits = ..., default_toolkit = ...)` provides a common
-  library interface using target `config_setting` labels. Its concrete toolkits
-  must have the same version and component set. The default toolkit supplies the
-  standard automatically registered toolchain aliases; additional concrete
-  toolchains are registered by the root module.
+Two patches cover what the release does not, applied in this order:
 
-The common `@cuda` interface keeps runtime libraries and header dependencies
-consistent throughout the graph. Concrete toolchain compiler inputs refer to
-their own repositories, so an execution transition cannot accidentally select
-native CUDA runtime data for a cross-compilation action. Compiler tools and the
-compiler root use the execution redistribution; CPU libraries and target headers
-use the target redistribution. Existing native NVCC constraint defaults are
-preserved when callers omit explicit constraints.
+- `nvjpeg-static-deps.patch`: `@cuda//:nvjpeg_static` declares its cudart and
+  culibos dependencies, so consumers of the static library receive its complete
+  link requirements through the existing `@cuda` interface.
+- `clang-cuda-root.patch`: a backport of the upstream fix for
+  [bazel-contrib/rules_cuda#532](https://github.com/bazel-contrib/rules_cuda/issues/532).
+  With redistribution components, `--cuda-path` points at the nvcc component,
+  which lacks `include/cuda.h`. Clang reads the toolkit version only from that
+  header, so it assumes the newest CUDA it knows and emits PTX that an older
+  `ptxas` rejects. The patch assembles a CUDA root at build time from the
+  execution platform's `ptxas`, `fatbinary` and libdevice and the target's
+  `cuda.h`, and passes it to Clang. Delete it once a rules_cuda release
+  contains the fix.
 
-Version-aware component exports expose `culibos_a` from the cudart archive before
-CUDA 13 and from the separate culibos component thereafter. The `nvjpeg_static`
-target declares its cudart and culibos dependencies so consumers receive the
-complete static link requirements through the existing `@cuda` interface.
+`examples/bazel_consumer` is a root module of its own, so it repeats the
+override; its patch files link to these.
 
-The project configures x86_64 and Jetson toolchains from the same release using
-these general settings. `//toolchains/tests:cuda_toolchain_test` exercises a host
-code generator, target C++ headers, a CUDA kernel, and runtime linking. Build it
-for both supported platforms; GPU execution requires the corresponding hardware
-and driver.
+`//toolchains/tests:cuda_toolchain_test` exercises a host code generator, target
+C++ headers, a CUDA kernel, and runtime linking. Build it for both supported
+platforms; GPU execution requires the corresponding hardware and driver.

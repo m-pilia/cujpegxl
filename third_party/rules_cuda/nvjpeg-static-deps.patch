@@ -1,0 +1,12 @@
+diff --git a/cuda/private/templates/BUILD.nvjpeg b/cuda/private/templates/BUILD.nvjpeg
+index 30a3689..f4d5fbe 100644
+--- a/cuda/private/templates/BUILD.nvjpeg
++++ b/cuda/private/templates/BUILD.nvjpeg
+@@ -37,5 +37,7 @@ cc_library(
+         ":%{component_name}_headers",
+     ] + if_linux([
+         ":nvjpeg_static_a",
++        "@cuda//:cuda_runtime_static",
++        "@cuda//:culibos_a",
+     ]),
+ )

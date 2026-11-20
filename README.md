@@ -16,7 +16,7 @@ This project is a CUDA port of a JPEG XL encoder, implementing a GPU- and real-t
 The project is still in an early development stage, and further iterations are required to improve compression quality, runtime performance, feature support, and general robustness.
 
 - Current quality/size ratio is close to the reference JPEG XL at mid compression rate, but it falls off a bit at high or low compression settings. Substantially better than JPEG, with 40-60% better compression rate at equal quality, and 5-50% better quality (SSIMULACRA2) at equal compression rate (especially better at higher compression rates), but inferior to the libjxl JPEG XL implementation (on average 15% worse compression rate at comparable quality).
-- Performance is currently limited (it achieves sustained 300 fps at 4K resolution on a GTX 1080Ti + Ryzen 7 2700X). The future ambition would be to sustain 15 fps at 4K resolution using a limited slice (ideally <10%) of an embedded/constrained device (e.g. a Jetson Orin Nano). Tegra- and RTX-specific optimizations (FP16 calculations, tensor core usage, etc.) are not implemented yet.
+- Performance is currently limited (it achieves sustained 320 fps at 4K resolution on a GTX 1080Ti + Ryzen 7 2700X). The future ambition would be to sustain 15 fps at 4K resolution using a limited slice (ideally <10%) of an embedded/constrained device (e.g. a Jetson Orin Nano). Tegra- and RTX-specific optimizations (FP16 calculations, tensor core usage, etc.) are not implemented yet.
 
 ## Usage
 

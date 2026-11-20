@@ -9,6 +9,7 @@ def _jetson_transition_impl(settings, attr):
             if feature not in ["asan", "ubsan", "tsan"]
         ],
         "//command_line_option:platforms": ["//platforms:jetson_orin_nano"],
+        "@rules_cuda//cuda:aarch64": "aarch64",
         "@rules_cuda//cuda:archs": "sm_87",
     }
 
@@ -18,6 +19,7 @@ _jetson_transition = transition(
     outputs = [
         "//command_line_option:features",
         "//command_line_option:platforms",
+        "@rules_cuda//cuda:aarch64",
         "@rules_cuda//cuda:archs",
     ],
 )

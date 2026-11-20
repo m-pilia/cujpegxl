@@ -10,7 +10,7 @@ module(
 bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
-bazel_dep(name = "rules_cuda", version = "0.3.0")
+bazel_dep(name = "rules_cuda", version = "0.4.0")
 
 # The CUDA toolkit, like the C++ toolchain, is selected by the root module:
 # rules_cuda only honours toolkit tags from the root, so this hermetic redist is
@@ -21,52 +21,24 @@ cuda = use_extension(
     "toolchain",
     dev_dependency = True,
 )
-CUDA_VERSION = "12.6.3"
-CUDA_REDIST_SHA256 = "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf"
-CUDA_COMPONENTS = ["cccl", "cudart", "curand", "nvcc", "nvjpeg", "nvtx"]
-
 cuda.redist_json(
     name = "cujpegxl_cuda_redist",
-    components = CUDA_COMPONENTS,
-    platform = "linux-x86_64",
-    sha256 = CUDA_REDIST_SHA256,
-    version = CUDA_VERSION,
+    components = ["cccl", "cudart", "curand", "nvcc", "nvjpeg", "nvtx"],
+    platforms = ["linux-x86_64", "linux-aarch64"],
+    sha256 = "9c598598457a6463eb92889080c16b2b9dc04150e501b8bfc1536d403ba70aaf",
+    version = "12.6.3",
 )
-cuda.redist_json(
-    name = "cujpegxl_cuda_jetson_redist",
-    components = CUDA_COMPONENTS,
-    platform = "linux-aarch64",
-    sha256 = CUDA_REDIST_SHA256,
-    version = CUDA_VERSION,
-)
-cuda.toolkit(
-    name = "cuda_native",
-    exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
-    redist = "cujpegxl_cuda_redist",
-    target_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
-)
-cuda.toolkit(
-    name = "cuda_jetson",
-    exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"],
-    exec_redist = "cujpegxl_cuda_redist",
-    redist = "cujpegxl_cuda_jetson_redist",
-    target_compatible_with = ["//platforms:jetson_linux", "@platforms//cpu:aarch64", "@platforms//os:linux"],
-)
-cuda.toolkit(
-    name = "cuda",
-    default_toolkit = "cuda_native",
-    target_toolkits = {
-        "//platforms:is_linux_x86_64": "cuda_native",
-        "//platforms:is_jetson": "cuda_jetson",
-    },
-)
-use_repo(cuda, "cuda", "cuda_jetson")
+cuda.toolkit(name = "cuda")
+use_repo(cuda, "cuda")
 
 single_version_override(
     module_name = "rules_cuda",
     patch_strip = 1,
-    patches = ["//third_party/rules_cuda:cross-compilation.patch"],
-    version = "0.3.0",
+    patches = [
+        "//third_party/rules_cuda:nvjpeg-static-deps.patch",
+        "//third_party/rules_cuda:clang-cuda-root.patch",
+    ],
+    version = "0.4.0",
 )
 
 # Development- and test-only dependencies. Marked dev so downstream consumers
@@ -76,7 +48,7 @@ bazel_dep(name = "googletest", version = "1.17.0.bcr.2", dev_dependency = True)
 bazel_dep(name = "rules_pkg", version = "1.3.0", dev_dependency = True)
 bazel_dep(name = "rules_python", version = "2.2.0", dev_dependency = True)
 bazel_dep(name = "pybind11_bazel", version = "3.0.1", dev_dependency = True)
-bazel_dep(name = "toolchains_llvm", version = "1.8.0", dev_dependency = True)
+bazel_dep(name = "toolchains_llvm", version = "1.13.0", dev_dependency = True)
 bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
 bazel_dep(name = "aspect_rules_lint", version = "2.7.2", dev_dependency = True)
 
@@ -86,22 +58,14 @@ bazel_dep(name = "aspect_rules_lint", version = "2.7.2", dev_dependency = True)
 bazel_dep(name = "rules_go", version = "0.63.0", dev_dependency = True)
 bazel_dep(name = "gazelle", version = "0.52.2", dev_dependency = True)
 
-# Hermetic dependencies of the pinned libjxl oracle, tracking the versions in
+# Hermetic dependencies of the pinned libjxl oracle, based on the versions in
 # libjxl's own MODULE.bazel (skcms replaces the lcms2 of the CMake build). The
-# .bcr.1 revisions carry the load()-statement fixes Bazel 9 requires.
-bazel_dep(name = "highway", version = "1.3.0.bcr.1", dev_dependency = True)
+# .bcr.1 revisions carry the load()-statement fixes Bazel 9 requires. highway is
+# newer than libjxl's because older releases request the AVX-512 `evex512`
+# target feature that Clang 22 removed, which voids their target attributes.
+bazel_dep(name = "highway", version = "1.4.0.bcr.1", dev_dependency = True)
 bazel_dep(name = "brotli", version = "1.2.0.bcr.1", dev_dependency = True)
 bazel_dep(name = "skcms", version = "20250916.0.bcr.1", dev_dependency = True)
-
-# libjxl's headers include highway with angle brackets, which does not resolve
-# through Bazel's -iquote dependency include paths; expose the highway repo
-# root via includes = ["."] on the hwy target.
-single_version_override(
-    module_name = "highway",
-    patches = ["//third_party/libjxl:highway-includes.patch"],
-    patch_strip = 1,
-    version = "1.3.0.bcr.1",
-)
 
 # libjxl is fetched from pinned source and built (testonly) with its vendored
 # Bazel BUILD files as the validation oracle, resolving @highway/@brotli/@skcms
@@ -213,13 +177,17 @@ llvm.toolchain(
     # rules_cuda appends the toolchain's flags after a cuda_library's copts,
     # where the default opt `-O2` would override their `-O3`.
     extra_opt_compile_flags = {"": ["-O3"]},
-    llvm_version = "19.1.0",
+    llvm_version = "23.1.6",
+    # toolchains_llvm 1.13.0 predates 23.1.6, so its distribution is pinned here.
+    sha256 = {"linux-x86_64": "bd4d1c434ff69ef06d19e7934c04708da677e5f2eb51f5bcf052ab91818f0094"},
     # CUDA's crt headers reject libc++ on x86; host and CUDA host-side objects
     # must use the same C++ standard library.
     stdlib = {
         "linux-aarch64": "dynamic-stdc++-11",
         "linux-x86_64": "stdc++",
     },
+    strip_prefix = {"linux-x86_64": "LLVM-23.1.6-Linux-X64"},
+    urls = {"linux-x86_64": ["https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.6/LLVM-23.1.6-Linux-X64.tar.xz"]},
 )
 llvm.sysroot(
     label = "@jetson_sysroot//sysroot:sysroot",
@@ -234,7 +202,6 @@ use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
 register_toolchains(
     "@llvm_toolchain//:cc-toolchain-x86_64-linux",
     "@llvm_toolchain//:cc-toolchain-aarch64-linux",
-    "@cuda_jetson//toolchain/clang:clang-local-toolchain",
     dev_dependency = True,
 )
 

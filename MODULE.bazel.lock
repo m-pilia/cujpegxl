@@ -63,7 +63,8 @@
     "https://bcr.bazel.build/modules/bazel_features/1.42.1/MODULE.bazel": "275a59b5406ff18c01739860aa70ad7ccb3cfb474579411decca11c93b951080",
     "https://bcr.bazel.build/modules/bazel_features/1.43.0/MODULE.bazel": "defa2226f06ba20550d6548c3a2ea2a7929634437a52973869c20c225450eb91",
     "https://bcr.bazel.build/modules/bazel_features/1.50.0/MODULE.bazel": "2083ef9c7a469f520890483ccf8e0189d6e71e2117e7752e15e6554433d5ae3e",
-    "https://bcr.bazel.build/modules/bazel_features/1.50.0/source.json": "e0ee3debde2789ff56e4452e612d126925ba9ab64d4bde79c67f099d2902df9b",
+    "https://bcr.bazel.build/modules/bazel_features/1.54.1/MODULE.bazel": "026b77134bd460e2ca0f44c57f4f3a3a8593f27a497b4ee98336e065047834f5",
+    "https://bcr.bazel.build/modules/bazel_features/1.54.1/source.json": "23ba6f9625d32f5f718393ae65f05ac70025448aed23543c238b1cffec08f28a",
     "https://bcr.bazel.build/modules/bazel_features/1.9.0/MODULE.bazel": "885151d58d90d8d9c811eb75e3288c11f850e1d6b481a8c9f766adee4712358b",
     "https://bcr.bazel.build/modules/bazel_features/1.9.1/MODULE.bazel": "8f679097876a9b609ad1f60249c49d68bfab783dd9be012faf9d82547b14815a",
     "https://bcr.bazel.build/modules/bazel_lib/3.0.0-rc.0/MODULE.bazel": "d6e00979a98ac14ada5e31c8794708b41434d461e7e7ca39b59b765e6d233b18",
@@ -113,10 +114,8 @@
     "https://bcr.bazel.build/modules/googletest/1.17.0.bcr.2/MODULE.bazel": "827f54f492a3ce549c940106d73de332c2b30cebd0c20c0bc5d786aba7f116cb",
     "https://bcr.bazel.build/modules/googletest/1.17.0.bcr.2/source.json": "3664514073a819992320ffbce5825e4238459df344d8b01748af2208f8d2e1eb",
     "https://bcr.bazel.build/modules/googletest/1.17.0/MODULE.bazel": "dbec758171594a705933a29fcf69293d2468c49ec1f2ebca65c36f504d72df46",
-    "https://bcr.bazel.build/modules/helly25_bzl/0.4.3/MODULE.bazel": "9c20052fd3f1fb767c48b78c1bbc46f501a4ca69d14558429d1234e68e449f68",
-    "https://bcr.bazel.build/modules/helly25_bzl/0.4.3/source.json": "e8c54d81e72633fb6f1d23c7e2d44e0b39b1caef2a256141136a2f63e6204b78",
-    "https://bcr.bazel.build/modules/highway/1.3.0.bcr.1/MODULE.bazel": "bb8d1a882bb9a320e3088eddfe655d0a6514cc65f4ede613ca15170b585d5206",
-    "https://bcr.bazel.build/modules/highway/1.3.0.bcr.1/source.json": "634f49d4cb6048be3167e44b338456fc77626099f09c906385f65c46c7771d41",
+    "https://bcr.bazel.build/modules/highway/1.4.0.bcr.1/MODULE.bazel": "ec140a90d5a5211bb0fb12cc9270cb4a0a0d7e6b3029a55ed0048ea0ed33c5e8",
+    "https://bcr.bazel.build/modules/highway/1.4.0.bcr.1/source.json": "17b0a2adbf850d40f01506f59186b46238bd2dba14efb9f5eb6f9c721eedd183",
     "https://bcr.bazel.build/modules/jq.bzl/0.1.0/MODULE.bazel": "2ce69b1af49952cd4121a9c3055faa679e748ce774c7f1fda9657f936cae902f",
     "https://bcr.bazel.build/modules/jq.bzl/0.6.0/MODULE.bazel": "26ec5118e66a55fef36f8ea39d6415d55fc966671fe4d61a6b9ef0cd6bc7b6a1",
     "https://bcr.bazel.build/modules/jq.bzl/0.6.0/source.json": "2ed4e35b9fa9505495784114f7637fbde5846ec14af917841b6c045d877f20eb",
@@ -124,6 +123,8 @@
     "https://bcr.bazel.build/modules/jsoncpp/1.9.6/MODULE.bazel": "2f8d20d3b7d54143213c4dfc3d98225c42de7d666011528dc8fe91591e2e17b0",
     "https://bcr.bazel.build/modules/jsoncpp/1.9.6/source.json": "a04756d367a2126c3541682864ecec52f92cdee80a35735a3cb249ce015ca000",
     "https://bcr.bazel.build/modules/libpfm/4.11.0/MODULE.bazel": "45061ff025b301940f1e30d2c16bea596c25b176c8b6b3087e92615adbd52902",
+    "https://bcr.bazel.build/modules/mboworks_bzl/0.8.0/MODULE.bazel": "4d4bf94f5765d0380228fcde92513ca042ec1a1d369f59fc5dd0c68279cf78ff",
+    "https://bcr.bazel.build/modules/mboworks_bzl/0.8.0/source.json": "82da3ae5eccccbfc12e6d3d3c0b5ad7efeee13941b3051defed4808d5bcaa318",
     "https://bcr.bazel.build/modules/nlohmann_json/3.6.1/MODULE.bazel": "6f7b417dcc794d9add9e556673ad25cb3ba835224290f4f848f8e2db1e1fca74",
     "https://bcr.bazel.build/modules/nlohmann_json/3.6.1/source.json": "f448c6e8963fdfa7eb831457df83ad63d3d6355018f6574fb017e8169deb43a9",
     "https://bcr.bazel.build/modules/package_metadata/0.0.2/MODULE.bazel": "fb8d25550742674d63d7b250063d4580ca530499f045d70748b1b142081ebb92",
@@ -199,8 +200,8 @@
     "https://bcr.bazel.build/modules/rules_cc/0.2.22/MODULE.bazel": "94df4328edef9e44d38de5e73b037cd348e75e7ae55f4e21bf07878c41a31ebb",
     "https://bcr.bazel.build/modules/rules_cc/0.2.22/source.json": "b2d6d6f9c332ce269ad75b89c6f3168d809a66173c9040210fb9bcc733ab42fa",
     "https://bcr.bazel.build/modules/rules_cc/0.2.8/MODULE.bazel": "f1df20f0bf22c28192a794f29b501ee2018fa37a3862a1a2132ae2940a23a642",
-    "https://bcr.bazel.build/modules/rules_cuda/0.3.0/MODULE.bazel": "46123ed5d0133b178bba7dc3a338f4fc5f5aee501171ac72e36c5c8ec1f47b8a",
-    "https://bcr.bazel.build/modules/rules_cuda/0.3.0/source.json": "15f7869652f5bcae8ab115f0eaab40b086a6435555997cc96e2cea47852741b6",
+    "https://bcr.bazel.build/modules/rules_cuda/0.4.0/MODULE.bazel": "1add3a738780daef06c8d0b2e769be8d32e873bc4924762d8da8c71cf7e928f5",
+    "https://bcr.bazel.build/modules/rules_cuda/0.4.0/source.json": "b2f3ff92e6aea97740ae52cbcc6c47065d5c200db3dbc6d4ad599a04a4de64dc",
     "https://bcr.bazel.build/modules/rules_foreign_cc/0.9.0/MODULE.bazel": "c9e8c682bf75b0e7c704166d79b599f93b72cfca5ad7477df596947891feeef6",
     "https://bcr.bazel.build/modules/rules_fuzzing/0.5.2/MODULE.bazel": "40c97d1144356f52905566c55811f13b299453a14ac7769dfba2ac38192337a8",
     "https://bcr.bazel.build/modules/rules_go/0.33.0/MODULE.bazel": "a2b11b64cd24bf94f57454f53288a5dacfe6cb86453eee7761b7637728c1910c",
@@ -316,8 +317,8 @@
     "https://bcr.bazel.build/modules/tar.bzl/0.7.0/source.json": "9becb80306f42d4810bfa16379fb48aad0b01ce5342bc12fe47dcd6af3ac4d7a",
     "https://bcr.bazel.build/modules/toml.bzl/0.4.1/MODULE.bazel": "6bc0b938f03ade8d58c2fca0ad5c3fa12b4764e1e1927ad50b0c860286db2167",
     "https://bcr.bazel.build/modules/toml.bzl/0.4.1/source.json": "86a90afd8b43c9b69ad31f5c03998c3adcf4b08175e621addb93e3a38eec538b",
-    "https://bcr.bazel.build/modules/toolchains_llvm/1.8.0/MODULE.bazel": "68259b66e5fb84f94fa37125ad476c3eb8edf602a34bf58377cde9a16dd8fa98",
-    "https://bcr.bazel.build/modules/toolchains_llvm/1.8.0/source.json": "70d80fe5b626a3fadf812af41dda4a028640a1184f5a3c7e6cb20130d93ed783",
+    "https://bcr.bazel.build/modules/toolchains_llvm/1.13.0/MODULE.bazel": "0e5b6bdbcef2db9ba77d843524893d471854535dcb83f9c8b3342e12caeb241b",
+    "https://bcr.bazel.build/modules/toolchains_llvm/1.13.0/source.json": "76c655990ec05694b67a9b73d970f3cc81e36994e83a8d74019e0f4b197180a4",
     "https://bcr.bazel.build/modules/upb/0.0.0-20220923-a547704/MODULE.bazel": "7298990c00040a0e2f121f6c32544bab27d4452f80d9ce51349b1a28f3005c43",
     "https://bcr.bazel.build/modules/upb/0.0.0-20230516-61a97ef/MODULE.bazel": "c0df5e35ad55e264160417fd0875932ee3c9dda63d9fccace35ac62f45e1b6f9",
     "https://bcr.bazel.build/modules/yq.bzl/0.1.1/MODULE.bazel": "9039681f9bcb8958ee2c87ffc74bdafba9f4369096a2b5634b88abc0eaefa072",
@@ -332,7 +333,7 @@
   "moduleExtensions": {
     "@@aspect_rules_js+//npm:extensions.bzl%pnpm": {
       "general": {
-        "bzlTransitiveDigest": "eEOr/UOeVC0aIkxoM0U0I/klAGGP8LcXrHgU9Lvym8w=",
+        "bzlTransitiveDigest": "6z7owRBfrMSaJBSVPj3RywES9qY/gq/zocNqxDd25bk=",
         "usagesDigest": "ZYGEy1FrDUNPBzAzD+ujlHkMEsVPMYOvpHm9RhUexUE=",
         "recordedInputs": [
           "REPO_MAPPING:aspect_bazel_lib+,bazel_skylib bazel_skylib+",
@@ -563,10 +564,9 @@
     },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
-        "bzlTransitiveDigest": "MPQcuOdfklyzNlmjCQS2KWO/6yQKg9erwYQrf3iAJV8=",
-        "usagesDigest": "iHsZuBQlzHawTMahOez6f1mSTpPEf4137eT4hS1DxXc=",
+        "bzlTransitiveDigest": "/fdBIanQ8cj0tMXwjr9+iqekwnlxRoy8nuxhjLTH+Do=",
+        "usagesDigest": "2pu7vnk6elpRH9jv1+wzgEGHNTou2sHDIVTbWaSc6Dk=",
         "recordedInputs": [
-          "REPO_MAPPING:,platforms platforms",
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
           "REPO_MAPPING:bazel_features+,bazel_features_version bazel_features++version_extension+bazel_features_version",
           "REPO_MAPPING:bazel_tools,rules_cc rules_cc+",
@@ -581,7 +581,7 @@
           "REPO_MAPPING:rules_cuda+,rules_cc rules_cc+"
         ],
         "generatedRepoSpecs": {
-          "cujpegxl_cuda_redist_cuda_cccl_v12.6.77": {
+          "cuda_cccl_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "cccl",
@@ -591,10 +591,11 @@
               ],
               "sha256": "9c3145ef01f73e50c0f5fcf923f0899c847f487c529817daa8f8b1a3ecf20925",
               "strip_prefix": "cuda_cccl-linux-x86_64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_redist_cuda_cudart_v12.6.77": {
+          "cuda_cudart_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "cudart",
@@ -604,10 +605,11 @@
               ],
               "sha256": "f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9",
               "strip_prefix": "cuda_cudart-linux-x86_64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_redist_cuda_curand_v10.3.7.77": {
+          "cuda_curand_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "curand",
@@ -617,10 +619,11 @@
               ],
               "sha256": "981339cc86d7b8779e9a3c17e72d8c5e1a8a2d06c24db692eecabed8e746a3c7",
               "strip_prefix": "libcurand-linux-x86_64-10.3.7.77-archive",
-              "version": "10.3.7.77"
+              "version": "10.3.7.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_redist_cuda_nvcc_v12.6.85": {
+          "cuda_nvcc_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvcc",
@@ -630,10 +633,11 @@
               ],
               "sha256": "840deff234d9bef20d6856439c49881cb4f29423b214f9ecd2fa59b7ac323817",
               "strip_prefix": "cuda_nvcc-linux-x86_64-12.6.85-archive",
-              "version": "12.6.85"
+              "version": "12.6.85",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_redist_cuda_nvjpeg_v12.3.3.54": {
+          "cuda_nvjpeg_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvjpeg",
@@ -643,10 +647,11 @@
               ],
               "sha256": "f74f6aee35ef4fb1619bc2a67be943c3d1a84d6746b41788c44a7d3b0d9ae3b4",
               "strip_prefix": "libnvjpeg-linux-x86_64-12.3.3.54-archive",
-              "version": "12.3.3.54"
+              "version": "12.3.3.54",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_redist_cuda_nvtx_v12.6.77": {
+          "cuda_nvtx_linux_x86_64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvtx",
@@ -656,10 +661,11 @@
               ],
               "sha256": "d97dd4f3bbc23e57302990c1573f737bea55f3174b2c8e3d19067d9b189a446b",
               "strip_prefix": "cuda_nvtx-linux-x86_64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_cccl_v12.6.77": {
+          "cuda_cccl_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "cccl",
@@ -669,10 +675,11 @@
               ],
               "sha256": "ab8bd5c346ca69c96ac9afb9d317e8cbc0ec8fc32629ca17b38c14b3dede2fb7",
               "strip_prefix": "cuda_cccl-linux-aarch64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_cudart_v12.6.77": {
+          "cuda_cudart_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "cudart",
@@ -682,10 +689,11 @@
               ],
               "sha256": "d5b8f6f5a2ab34066c267daf5f73f25d2f24ea25d8fa3dce427c196ff07504e7",
               "strip_prefix": "cuda_cudart-linux-aarch64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_curand_v10.3.7.77": {
+          "cuda_curand_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "curand",
@@ -695,10 +703,11 @@
               ],
               "sha256": "eab273ca1d30659f026600d15cd0492d511408ae2141349cdf2edadd3da2661d",
               "strip_prefix": "libcurand-linux-aarch64-10.3.7.77-archive",
-              "version": "10.3.7.77"
+              "version": "10.3.7.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_nvcc_v12.6.85": {
+          "cuda_nvcc_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvcc",
@@ -708,10 +717,11 @@
               ],
               "sha256": "ef9dfb2c7327e196f8601ed216908de56911578f26e6ab9ac13c3e7dfff784f9",
               "strip_prefix": "cuda_nvcc-linux-aarch64-12.6.85-archive",
-              "version": "12.6.85"
+              "version": "12.6.85",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_nvjpeg_v12.3.3.54": {
+          "cuda_nvjpeg_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvjpeg",
@@ -721,10 +731,11 @@
               ],
               "sha256": "e81f56682cb4d6e837d5527aaf1acd26ab8eace470b5e7a32f9a8d685e7ef2bc",
               "strip_prefix": "libnvjpeg-linux-aarch64-12.3.3.54-archive",
-              "version": "12.3.3.54"
+              "version": "12.3.3.54",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cujpegxl_cuda_jetson_redist_cuda_nvtx_v12.6.77": {
+          "cuda_nvtx_linux_aarch64_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_component",
             "attributes": {
               "component_name": "nvtx",
@@ -734,91 +745,255 @@
               ],
               "sha256": "38cafee61f9cf1001e3c2b03de3c85fbea1b4c1b5d84f7fdac72ed7c98cb314a",
               "strip_prefix": "cuda_nvtx-linux-aarch64-12.6.77-archive",
-              "version": "12.6.77"
+              "version": "12.6.77",
+              "toolkit_version": "12.6.3"
             }
           },
-          "cuda_native": {
-            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit",
+          "cuda_cccl": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
             "attributes": {
-              "components_mapping": {
-                "cccl": "@cujpegxl_cuda_redist_cuda_cccl_v12.6.77",
-                "cudart": "@cujpegxl_cuda_redist_cuda_cudart_v12.6.77",
-                "curand": "@cujpegxl_cuda_redist_cuda_curand_v10.3.7.77",
-                "nvcc": "@cujpegxl_cuda_redist_cuda_nvcc_v12.6.85",
-                "nvjpeg": "@cujpegxl_cuda_redist_cuda_nvjpeg_v12.3.3.54",
-                "nvtx": "@cujpegxl_cuda_redist_cuda_nvtx_v12.6.77"
+              "component_name": "cccl",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_cccl_linux_x86_64_12_6_3"
               },
-              "exec_compatible_with": [
-                "'@@platforms//cpu:x86_64'",
-                "'@@platforms//os:linux'"
-              ],
-              "nvcc_version": "",
-              "target_compatible_with": [
-                "'@@platforms//cpu:x86_64'",
-                "'@@platforms//os:linux'"
-              ],
-              "toolkit_path": "",
-              "version": "12.6.3",
-              "compiler_components_mapping": {
-                "cccl": "@cujpegxl_cuda_redist_cuda_cccl_v12.6.77",
-                "cudart": "@cujpegxl_cuda_redist_cuda_cudart_v12.6.77",
-                "curand": "@cujpegxl_cuda_redist_cuda_curand_v10.3.7.77",
-                "nvcc": "@cujpegxl_cuda_redist_cuda_nvcc_v12.6.85",
-                "nvjpeg": "@cujpegxl_cuda_redist_cuda_nvjpeg_v12.3.3.54",
-                "nvtx": "@cujpegxl_cuda_redist_cuda_nvtx_v12.6.77"
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_cccl_linux_aarch64_12_6_3"
               }
             }
           },
-          "cuda_jetson": {
+          "cuda_cudart": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "cudart",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_cudart_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_cudart_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_curand": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "curand",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_curand_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_curand_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvcc": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvcc",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvcc_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvcc_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvjpeg": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvjpeg",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvjpeg_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvjpeg_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvtx": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvtx",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvtx_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvtx_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_cccl_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "cccl",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_cccl_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_cccl_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_cudart_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "cudart",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_cudart_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_cudart_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_curand_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "curand",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_curand_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_curand_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvcc_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvcc",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvcc_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvcc_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvjpeg_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvjpeg",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvjpeg_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvjpeg_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_nvtx_toolchain_12_6_3": {
+            "repoRuleId": "@@rules_cuda+//cuda:platform_alias_extension.bzl%platform_alias_repo",
+            "attributes": {
+              "component_name": "nvtx",
+              "versions": [
+                "12.6.3"
+              ],
+              "linux_x86_64_repos": {
+                "12.6.3": "cuda_nvtx_linux_x86_64_12_6_3"
+              },
+              "windows_x86_64_repos": {},
+              "windows_arm64_repos": {},
+              "linux_sbsa_repos": {},
+              "linux_aarch64_repos": {
+                "12.6.3": "cuda_nvtx_linux_aarch64_12_6_3"
+              }
+            }
+          },
+          "cuda_toolchain_12_6_3": {
             "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit",
             "attributes": {
               "components_mapping": {
-                "cccl": "@cujpegxl_cuda_jetson_redist_cuda_cccl_v12.6.77",
-                "cudart": "@cujpegxl_cuda_jetson_redist_cuda_cudart_v12.6.77",
-                "curand": "@cujpegxl_cuda_jetson_redist_cuda_curand_v10.3.7.77",
-                "nvcc": "@cujpegxl_cuda_jetson_redist_cuda_nvcc_v12.6.85",
-                "nvjpeg": "@cujpegxl_cuda_jetson_redist_cuda_nvjpeg_v12.3.3.54",
-                "nvtx": "@cujpegxl_cuda_jetson_redist_cuda_nvtx_v12.6.77"
+                "cccl": "@cuda_cccl_toolchain_12_6_3",
+                "cudart": "@cuda_cudart_toolchain_12_6_3",
+                "curand": "@cuda_curand_toolchain_12_6_3",
+                "nvcc": "@cuda_nvcc_toolchain_12_6_3",
+                "nvjpeg": "@cuda_nvjpeg_toolchain_12_6_3",
+                "nvtx": "@cuda_nvtx_toolchain_12_6_3"
               },
-              "exec_compatible_with": [
-                "'@@platforms//cpu:x86_64'",
-                "'@@platforms//os:linux'"
-              ],
-              "nvcc_version": "",
-              "target_compatible_with": [
-                "'@@//platforms:jetson_linux'",
-                "'@@platforms//cpu:aarch64'",
-                "'@@platforms//os:linux'"
-              ],
-              "toolkit_path": "",
-              "version": "12.6.3",
-              "compiler_components_mapping": {
-                "cccl": "@cujpegxl_cuda_redist_cuda_cccl_v12.6.77",
-                "cudart": "@cujpegxl_cuda_redist_cuda_cudart_v12.6.77",
-                "curand": "@cujpegxl_cuda_redist_cuda_curand_v10.3.7.77",
-                "nvcc": "@cujpegxl_cuda_redist_cuda_nvcc_v12.6.85",
-                "nvjpeg": "@cujpegxl_cuda_redist_cuda_nvjpeg_v12.3.3.54",
-                "nvtx": "@cujpegxl_cuda_redist_cuda_nvtx_v12.6.77"
-              }
+              "version": "12.6.3"
             }
           },
           "cuda": {
-            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit_alias",
+            "repoRuleId": "@@rules_cuda+//cuda/private:repositories.bzl%cuda_toolkit",
             "attributes": {
-              "target_toolkits": {
-                "'@@//platforms:is_linux_x86_64'": "@cuda_native",
-                "'@@//platforms:is_jetson'": "@cuda_jetson"
+              "components_mapping": {
+                "cccl": "@cuda_cccl",
+                "cudart": "@cuda_cudart",
+                "curand": "@cuda_curand",
+                "nvcc": "@cuda_nvcc",
+                "nvjpeg": "@cuda_nvjpeg",
+                "nvtx": "@cuda_nvtx"
               },
-              "default_toolkit": "@cuda_native",
-              "components": [
-                "cccl",
-                "cudart",
-                "curand",
-                "nvcc",
-                "nvjpeg",
-                "nvtx"
-              ],
-              "version": "12.6.3"
+              "version": "12.6.3",
+              "toolchain_repositories": {
+                "12.6.3": "@cuda_toolchain_12_6_3"
+              }
             }
           }
         }
@@ -883,7 +1058,7 @@
     },
     "@@rules_multitool+//multitool:extension.bzl%multitool": {
       "general": {
-        "bzlTransitiveDigest": "s+rg9YTYK9CxhExLmokBLy6sbL6I8ELJ7FgNiXGKZu4=",
+        "bzlTransitiveDigest": "5nXLC1zbc0i4BU+TMgEmB8eIpdAC5cOCBuIDKIAXaGw=",
         "usagesDigest": "OxXTEbe+pxnGKai6ApFrmdjQOvsZ1xgjkDb718C0Kl0=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
@@ -1132,8 +1307,8 @@
     },
     "@@toolchains_llvm+//toolchain/extensions:distributions.bzl%llvm_distributions": {
       "general": {
-        "bzlTransitiveDigest": "gCdXpBt3HBBc280OILOFheHmO7lXWXJYnPgYiTtyapI=",
-        "usagesDigest": "VyKGZSw79ryPJ9gt0sqBfIkA7qGOU6tnlDHd7awkb6Q=",
+        "bzlTransitiveDigest": "RfYsFLwRh0rVY8ReiYgbOEyr84zuBs7mbcHq3dPY3jI=",
+        "usagesDigest": "SpzySxlrOW6f2CQobJdEjFJjMM7e9Gt1jpvpK52eaMA=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "llvm_distributions_data": {

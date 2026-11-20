@@ -1,0 +1,192 @@
+diff --git a/cuda/private/rules/cuda_toolkit_info.bzl b/cuda/private/rules/cuda_toolkit_info.bzl
+index 3f0e034..d99b1c8 100644
+--- a/cuda/private/rules/cuda_toolkit_info.bzl
++++ b/cuda/private/rules/cuda_toolkit_info.bzl
+@@ -1,9 +1,14 @@
++load("@bazel_skylib//lib:paths.bzl", "paths")
+ load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+ load("//cuda/private:providers.bzl", "CudaToolkitInfo")
+ 
+ def _impl(ctx):
+     version_major, version_minor = ctx.attr.version.split(".")[:2]
+     expanded_path = ctx.expand_location(ctx.attr.path, ctx.attr.path_data)
++    root_files = []
++    if not expanded_path and ctx.file.cuda_h:
++        root_files = _assemble_root(ctx)
++        expanded_path = paths.dirname(root_files[0].dirname)
+     runtime_files = []
+     runtime_depsets = []
+     for target in ctx.attr.device_runtime_static_libs:
+@@ -19,7 +24,7 @@ def _impl(ctx):
+             runtime_depsets.append(target[DefaultInfo].files)
+     device_runtime_static_libs = depset(runtime_files, transitive = runtime_depsets)
+ 
+-    return CudaToolkitInfo(
++    return [DefaultInfo(files = depset(root_files)), CudaToolkitInfo(
+         path = expanded_path,
+         version_major = int(version_major),
+         version_minor = int(version_minor),
+@@ -31,13 +36,32 @@ def _impl(ctx):
+         cicc = ctx.file.cicc,
+         libdevice = ctx.file.libdevice,
+         device_runtime_static_libs = device_runtime_static_libs,
+-    )
++    )]
++
++def _assemble_root(ctx):
++    # Clang locates ptxas, fatbinary and libdevice relative to `--cuda-path`
++    # and detects the toolkit version from its include/cuda.h.
++    root_files = []
++    for directory, file in [
++        ("bin", ctx.file.ptxas),
++        ("bin", ctx.file.fatbinary),
++        ("nvvm/libdevice", ctx.file.libdevice),
++        ("include", ctx.file.cuda_h),
++    ]:
++        if not file:
++            fail("cuda_h requires ptxas, fatbinary and libdevice to assemble a CUDA Toolkit root")
++        link = ctx.actions.declare_file(paths.join(ctx.label.name, directory, file.basename))
++        ctx.actions.symlink(output = link, target_file = file)
++        root_files.append(link)
++    return root_files
+ 
+ cuda_toolkit_info = rule(
+     doc = """This rule provides CudaToolkitInfo.""",
+     implementation = _impl,
+     attrs = {
+-        "path": attr.string(mandatory = True, doc = "Root path to the CUDA Toolkit. Will expand location."),
++        "path": attr.string(mandatory = True, doc = "Root path to the CUDA Toolkit. Will expand location. If empty and `cuda_h` is set, " +
++                                                    "the root is assembled from `ptxas`, `fatbinary`, `libdevice` and `cuda_h`, " +
++                                                    "and its files are the default outputs of this target."),
+         "path_data": attr.label_list(mandatory = False, doc = "Required if expand location."),
+         "version": attr.string(mandatory = True, doc = "Version of the CUDA Toolkit."),
+         "nvlink": attr.label(allow_single_file = True, cfg = "exec", doc = "The nvlink executable."),
+@@ -46,6 +70,7 @@ cuda_toolkit_info = rule(
+         "fatbinary": attr.label(allow_single_file = True, cfg = "exec", doc = "The fatbinary executable."),
+         "ptxas": attr.label(allow_single_file = True, cfg = "exec", doc = "The ptxas executable."),
+         "cicc": attr.label(default = None, allow_single_file = True, cfg = "exec", doc = "The cicc executable."),
++        "cuda_h": attr.label(default = None, allow_single_file = True, doc = "The cuda.h header of the CUDA Toolkit."),
+         "libdevice": attr.label(default = None, allow_single_file = True, cfg = "exec", doc = "The libdevice LLVM bitcode library."),
+         "device_runtime_static_libs": attr.label_list(allow_files = True, doc = "Static libraries needed for RDC device link and final host link."),
+     },
+diff --git a/cuda/private/template_helper.bzl b/cuda/private/template_helper.bzl
+index 1fedcd8..90dc7a8 100644
+--- a/cuda/private/template_helper.bzl
++++ b/cuda/private/template_helper.bzl
+@@ -342,13 +342,12 @@ def _generate_toolchain_clang_build(repository_ctx, cuda, clang_path_or_label):
+ 
+     compiler_files = []
+     cuda_path_for_subst = ""
+-    path_data = None
++    cuda_h_line = ""
+     if cuda.path:  # local installation
+         compiler_files.append("//:compiler_deps")
+         cuda_path_for_subst = _to_forward_slash(cuda.path)
+     else:  # scattered components
+-        cuda_path_for_subst = "$(location //:compiler_root)"
+-        path_data = ["//:compiler_root"]
++        cuda_h_line = 'cuda_h = "//:cuda.h",'
+         compiler_files.extend([
+             "//:nvcc_all_files",
+             "//:cccl_all_files",
+@@ -359,7 +358,6 @@ def _generate_toolchain_clang_build(repository_ctx, cuda, clang_path_or_label):
+             compiler_files.extend([
+                 "//:nvvm_all_files",
+             ])
+-    path_data_line = "path_data = " + repr(path_data) + ","
+     compiler_files_line = "compiler_files = " + repr(compiler_files) + ","
+     device_runtime_static_libs_line = "device_runtime_static_libs = " + repr(cuda.device_runtime_static_libs_labels) + ","
+ 
+@@ -370,7 +368,7 @@ def _generate_toolchain_clang_build(repository_ctx, cuda, clang_path_or_label):
+         "%{clang_path}": clang_path_for_subst,  # Will be empty if label is used
+         "%{clang_label}": clang_label_for_subst,  # Will be empty if path is used
+         "%{cuda_path}": cuda_path_for_subst,
+-        "# %{path_data_line}": path_data_line,
++        "# %{cuda_h_line}": cuda_h_line,
+         "%{cuda_version}": "{}.{}".format(cuda.version_major, cuda.version_minor),
+         "%{nvcc_label}": cuda.nvcc_label,
+         "%{nvlink_label}": cuda.nvlink_label,
+diff --git a/cuda/private/templates/BUILD.cudart b/cuda/private/templates/BUILD.cudart
+index cb11e1f..392209a 100644
+--- a/cuda/private/templates/BUILD.cudart
++++ b/cuda/private/templates/BUILD.cudart
+@@ -99,6 +99,11 @@ cc_library(
+     # visibility = ["@rules_cuda//cuda:__pkg__"],
+ )
+ 
++alias(
++    name = "cuda.h",
++    actual = "%{component_name}/include/cuda.h",
++)
++
+ cc_import(
+     name = "cuda_so",
+     interface_library = "%{component_name}/%{libpath}/stubs/libcuda.so",
+diff --git a/cuda/private/templates/BUILD.toolchain_clang b/cuda/private/templates/BUILD.toolchain_clang
+index 795042f..02eede5 100644
+--- a/cuda/private/templates/BUILD.toolchain_clang
++++ b/cuda/private/templates/BUILD.toolchain_clang
+@@ -10,6 +10,7 @@ load(
+ cuda_toolkit_info(
+     name = "cuda-toolkit",
+     bin2c = "%{bin2c_label}",
++    # %{cuda_h_line}
+     fatbinary = "%{fatbinary_label}",
+     link_stub = "%{link_stub_label}",
+     nvlink = "%{nvlink_label}",
+@@ -18,7 +19,6 @@ cuda_toolkit_info(
+     # %{device_runtime_static_libs_line}
+     path = "%{cuda_path}",
+     ptxas = "%{ptxas_label}",
+-    # %{path_data_line}
+     version = "%{cuda_version}",
+ )
+ 
+diff --git a/cuda/private/templates/registry.bzl b/cuda/private/templates/registry.bzl
+index 5ce91d8..1db6e7b 100644
+--- a/cuda/private/templates/registry.bzl
++++ b/cuda/private/templates/registry.bzl
+@@ -1,6 +1,6 @@
+ # map short component name to consumable targets
+ REGISTRY = {
+-    "cudart": ["cudart_all_files", "cudart_license", "cudart_headers", "cuda", "cuda_runtime", "cuda_runtime_static", "cudadevrt_a", "cudadevrt_lib", "culibos_a"],  # device-runtime targets are not for end users.
++    "cudart": ["cudart_all_files", "cudart_license", "cudart_headers", "cuda.h", "cuda", "cuda_runtime", "cuda_runtime_static", "cudadevrt_a", "cudadevrt_lib", "culibos_a"],  # device-runtime targets are not for end users.
+     "nvcc": ["nvcc_all_files", "nvcc_license", "nvcc_headers", "compiler_root", "compiler_deps", "nvptxcompiler", "nvcc", "nvlink", "ptxas", "bin2c", "fatbinary", "link.stub", "cicc", "libdevice", "libdevice.10.bc"],
+     "nvvm": ["nvvm_all_files", "nvvm_license", "nvvm_headers", "cicc", "libdevice", "libdevice.10.bc"],
+     "cccl": ["cccl_all_files", "cccl_license", "cccl_headers", "libcudacxx", "cub", "thrust"],
+diff --git a/cuda/private/toolchain.bzl b/cuda/private/toolchain.bzl
+index 1469f4b..5457e68 100644
+--- a/cuda/private/toolchain.bzl
++++ b/cuda/private/toolchain.bzl
+@@ -95,7 +95,8 @@ def _cuda_toolchain_impl(ctx):
+             fail("compiler_label specified is not an executable, specify a valid compiler_label")
+         compiler_depset = depset(direct = [compiler_target_info.files_to_run.executable], transitive = [compiler_target_info.default_runfiles.files])
+ 
+-    toolchain_files = depset(transitive = [compiler_depset] + [cf.files for cf in ctx.attr.compiler_files])
++    toolkit_files = cuda_toolchain_config.cuda_toolkit[DefaultInfo].files
++    toolchain_files = depset(transitive = [compiler_depset, toolkit_files] + [cf.files for cf in ctx.attr.compiler_files])
+ 
+     optional_attributes = {}
+     cc_sysroot = _get_cc_sysroot(ctx, cc_toolchain)
+diff --git a/cuda/private/toolchain_configs/clang.bzl b/cuda/private/toolchain_configs/clang.bzl
+index 23837d6..f2c8b26 100644
+--- a/cuda/private/toolchain_configs/clang.bzl
++++ b/cuda/private/toolchain_configs/clang.bzl
+@@ -126,13 +126,14 @@ def _impl(ctx):
+         ],
+     )
+ 
++    cuda_root = ctx.attr.cuda_toolkit[CudaToolkitInfo].path
++    has_cuda_root = cuda_root and cuda_root != "cuda-not-found"
+     nvvm_root = None
+-    if libdevice_dir:
++    if libdevice_dir and not has_cuda_root:
+         # Clang expects --cuda-path to point at a CTK root containing
+         # bin/, include/, and nvvm/libdevice/libdevice.10.bc.
+         nvvm_root = paths.dirname(paths.dirname(libdevice_dir))
+-    cuda_root = ctx.attr.cuda_toolkit[CudaToolkitInfo].path
+-    if (not cuda_root or cuda_root == "cuda-not-found") and ctx.attr.cuda_toolkit[CudaToolkitInfo].nvlink:
++    if not has_cuda_root and ctx.attr.cuda_toolkit[CudaToolkitInfo].nvlink:
+         # For deliverable toolkits, infer CUDA root from nvlink location.
+         cuda_root = paths.dirname(ctx.attr.cuda_toolkit[CudaToolkitInfo].nvlink.dirname)
+ 

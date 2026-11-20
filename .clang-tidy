@@ -11,4 +11,5 @@ Checks: >
   readability-redundant-*
 
 WarningsAsErrors: '*'
+HeaderFilterRegex: ''
 ...
