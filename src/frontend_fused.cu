@@ -939,14 +939,18 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
     const int gy0{static_cast<int>(tby0) * 8 - HALO};
     const float chroma_x_max{fmaf(static_cast<float>(width - 1), 0.5f, 0.25f)};
     const float chroma_y_max{fmaf(static_cast<float>(height - 1), 0.5f, 0.25f)};
+    // The pixel coordinates of sample i, advanced with i by whole rows and
+    // columns: the column wraps at most once per step, as the step's column
+    // part is below PAD. Integral floats this small add exactly.
+    float gx{static_cast<float>(gx0 + tid % PAD)};
+    float gy{static_cast<float>(gy0 + tid / PAD)};
+    const float gx_end{static_cast<float>(gx0 + PAD)};
 #pragma unroll
     for (int k{0}; k < (PAD_SAMPLES + FRONTEND_THREADS - 1) / FRONTEND_THREADS; ++k) {
         const int i{tid + k * FRONTEND_THREADS};
         if (i >= PAD_SAMPLES) {
             break;
         }
-        const float gx{static_cast<float>(gx0 + i % PAD)};
-        const float gy{static_cast<float>(gy0 + i / PAD)};
         // Point sampling at an integral coordinate reads that texel.
         const float yv{tex2D<float>(luma_tex, gx, gy)};
         // The pixel centre in chroma texels, (g + 0.5) / 2 in one rounding.
@@ -962,6 +966,12 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         } else {
             raw_x[i] = xo;
             raw_b[i] = bo;
+        }
+        gx += FRONTEND_THREADS % PAD;
+        gy += FRONTEND_THREADS / PAD;
+        if (gx >= gx_end) {
+            gx -= PAD;
+            gy += 1.0f;
         }
     }
     __syncthreads();
