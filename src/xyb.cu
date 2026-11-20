@@ -10,16 +10,16 @@
 namespace cujpegxl {
 namespace {
 
-__global__ void nv12_to_xyb_kernel(const std::uint8_t* __restrict__ luma, std::size_t luma_pitch,
-                                   cudaTextureObject_t chroma_tex, std::size_t width,
-                                   std::size_t height, float* __restrict__ xyb) {
+__global__ void nv12_to_xyb_kernel(cudaTextureObject_t luma_tex, cudaTextureObject_t chroma_tex,
+                                   std::size_t width, std::size_t height, float* __restrict__ xyb) {
     const std::size_t x{blockIdx.x * blockDim.x + threadIdx.x};
     const std::size_t y{blockIdx.y * blockDim.y + threadIdx.y};
     if (x >= width || y >= height) {
         return;
     }
 
-    const float yv{luma[y * luma_pitch + x] * (1.0f / 255.0f)};
+    // Point sampling at an integral coordinate reads that texel.
+    const float yv{tex2D<float>(luma_tex, static_cast<float>(x), static_cast<float>(y))};
     // Centered bilinear chroma upsample: luma pixel x maps to chroma texel
     // coordinate (x + 0.5) / 2 (texel centers at index + 0.5).
     const float2 c{tex2D<float2>(chroma_tex, (x + 0.5f) * 0.5f, (y + 0.5f) * 0.5f)};
@@ -33,34 +33,56 @@ __global__ void nv12_to_xyb_kernel(const std::uint8_t* __restrict__ luma, std::s
 
 bool nv12_to_xyb(const std::uint8_t* luma, std::size_t luma_pitch, const std::uint8_t* chroma,
                  std::size_t chroma_pitch, std::size_t width, std::size_t height, float* xyb) {
-    cudaResourceDesc resource{};
-    resource.resType = cudaResourceTypePitch2D;
-    resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
-    resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
-    resource.res.pitch2D.width = width / 2;
-    resource.res.pitch2D.height = height / 2;
-    resource.res.pitch2D.pitchInBytes = chroma_pitch;
+    cudaResourceDesc luma_resource{};
+    luma_resource.resType = cudaResourceTypePitch2D;
+    luma_resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(luma);
+    luma_resource.res.pitch2D.desc = cudaCreateChannelDesc<unsigned char>();
+    luma_resource.res.pitch2D.width = width;
+    luma_resource.res.pitch2D.height = height;
+    luma_resource.res.pitch2D.pitchInBytes = luma_pitch;
 
-    cudaTextureDesc texture{};
-    texture.addressMode[0] = cudaAddressModeClamp;
-    texture.addressMode[1] = cudaAddressModeClamp;
-    texture.filterMode = cudaFilterModeLinear;
-    texture.readMode = cudaReadModeNormalizedFloat;
-    texture.normalizedCoords = 0;
+    cudaTextureDesc luma_texture{};
+    luma_texture.addressMode[0] = cudaAddressModeClamp;
+    luma_texture.addressMode[1] = cudaAddressModeClamp;
+    luma_texture.filterMode = cudaFilterModePoint;
+    luma_texture.readMode = cudaReadModeNormalizedFloat;
+    luma_texture.normalizedCoords = 0;
 
+    cudaResourceDesc chroma_resource{};
+    chroma_resource.resType = cudaResourceTypePitch2D;
+    chroma_resource.res.pitch2D.devPtr = const_cast<std::uint8_t*>(chroma);
+    chroma_resource.res.pitch2D.desc = cudaCreateChannelDesc<uchar2>();
+    chroma_resource.res.pitch2D.width = width / 2;
+    chroma_resource.res.pitch2D.height = height / 2;
+    chroma_resource.res.pitch2D.pitchInBytes = chroma_pitch;
+
+    cudaTextureDesc chroma_texture{};
+    chroma_texture.addressMode[0] = cudaAddressModeClamp;
+    chroma_texture.addressMode[1] = cudaAddressModeClamp;
+    chroma_texture.filterMode = cudaFilterModeLinear;
+    chroma_texture.readMode = cudaReadModeNormalizedFloat;
+    chroma_texture.normalizedCoords = 0;
+
+    cudaTextureObject_t luma_tex{};
+    if (cudaCreateTextureObject(&luma_tex, &luma_resource, &luma_texture, nullptr) != cudaSuccess) {
+        return false;
+    }
     cudaTextureObject_t chroma_tex{};
-    if (cudaCreateTextureObject(&chroma_tex, &resource, &texture, nullptr) != cudaSuccess) {
+    if (cudaCreateTextureObject(&chroma_tex, &chroma_resource, &chroma_texture, nullptr) !=
+        cudaSuccess) {
+        cudaDestroyTextureObject(luma_tex);
         return false;
     }
 
     const dim3 block{16, 16};
     const dim3 grid{static_cast<unsigned int>((width + block.x - 1) / block.x),
                     static_cast<unsigned int>((height + block.y - 1) / block.y)};
-    nv12_to_xyb_kernel<<<grid, block>>>(luma, luma_pitch, chroma_tex, width, height, xyb);
+    nv12_to_xyb_kernel<<<grid, block>>>(luma_tex, chroma_tex, width, height, xyb);
 
     const cudaError_t launch{cudaGetLastError()};
     const cudaError_t sync{cudaDeviceSynchronize()};
     cudaDestroyTextureObject(chroma_tex);
+    cudaDestroyTextureObject(luma_tex);
     return launch == cudaSuccess && sync == cudaSuccess;
 }
 

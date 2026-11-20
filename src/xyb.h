@@ -15,7 +15,8 @@ namespace cujpegxl {
 //
 // All pointers are device addresses. `luma` is width x height bytes with the
 // given row pitch; `chroma` is the interleaved Cb/Cr plane, (width/2) pairs per
-// row over height/2 rows, with `chroma_pitch` bytes per row. `xyb` receives
+// row over height/2 rows, with `chroma_pitch` bytes per row. Both planes are
+// read through textures, so both pitches must be 32-byte aligned. `xyb` receives
 // three tightly packed width*height float planes (X, then Y, then B),
 // row-major.
 //

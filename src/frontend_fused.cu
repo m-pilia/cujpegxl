@@ -948,7 +948,7 @@ __global__ void __launch_bounds__(FRONTEND_THREADS, FRONTEND_BLOCKS_PER_SM[COMPI
         const float gx{static_cast<float>(gx0 + i % PAD)};
         const float gy{static_cast<float>(gy0 + i / PAD)};
         // Point sampling at an integral coordinate reads that texel.
-        const float yv{tex2D<unsigned char>(luma_tex, gx, gy) * (1.0f / 255.0f)};
+        const float yv{tex2D<float>(luma_tex, gx, gy)};
         // The pixel centre in chroma texels, (g + 0.5) / 2 in one rounding.
         const float2 c{tex2D<float2>(chroma_tex, fminf(fmaf(gx, 0.5f, 0.25f), chroma_x_max),
                                      fminf(fmaf(gy, 0.5f, 0.25f), chroma_y_max))};
@@ -1148,7 +1148,7 @@ Nv12Textures::Nv12Textures(const std::uint8_t* luma, std::size_t luma_pitch,
     luma_texture.addressMode[0] = cudaAddressModeClamp;
     luma_texture.addressMode[1] = cudaAddressModeClamp;
     luma_texture.filterMode = cudaFilterModePoint;
-    luma_texture.readMode = cudaReadModeElementType;
+    luma_texture.readMode = cudaReadModeNormalizedFloat;
     luma_texture.normalizedCoords = 0;
 
     cudaResourceDesc chroma_resource{};

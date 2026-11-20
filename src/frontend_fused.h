@@ -15,9 +15,10 @@
 namespace cujpegxl {
 
 // Textures over a device NV12 image, as the front end samples it: the luma plane
-// (width*height bytes at `luma_pitch`), point-sampled, and the chroma plane
-// (interleaved Cb/Cr, (width+1)/2 pairs per row over (height+1)/2 rows at
-// `chroma_pitch`), linearly filtered. Both pitches must be 32-byte aligned.
+// (width*height bytes at `luma_pitch`), point-sampled as the correctly rounded
+// v / 255, and the chroma plane (interleaved Cb/Cr, (width+1)/2 pairs per row
+// over (height+1)/2 rows at `chroma_pitch`), linearly filtered. Both pitches
+// must be 32-byte aligned.
 // Destruction first waits, blocking, for `stream`, where the front end reads the
 // textures.
 class Nv12Textures {
